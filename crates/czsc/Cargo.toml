@@ -1,0 +1,12 @@
+[package]
+name = "yifang-czsc"
+version = "0.1.0"
+edition = "2021"
+description = "墨岩K线分析 - 缠论核心"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+yifang-data = { path = "../data" }

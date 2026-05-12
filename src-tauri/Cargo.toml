@@ -1,0 +1,28 @@
+[package]
+name = "yifang-app"
+version = "0.1.0"
+edition = "2021"
+description = "墨岩K线分析系统 - Tauri桌面应用"
+
+[lib]
+name = "yifang_app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+yifang-data = { path = "../crates/data" }
+yifang-czsc = { path = "../crates/czsc" }
+yifang-wyckoff = { path = "../crates/wyckoff" }
+yifang-indicator = { path = "../crates/indicator" }
+
+[dev-dependencies]
+yifang-data = { path = "../crates/data" }
+yifang-czsc = { path = "../crates/czsc" }
+yifang-indicator = { path = "../crates/indicator" }

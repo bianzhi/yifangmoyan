@@ -1,0 +1,24 @@
+# Rust
+target/
+
+# Node.js / Vue
+node_modules/
+dist/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# AtomCode
+.atomcode/
+
+# Build artifacts
+*.d
+*.rlib
+*.pdb

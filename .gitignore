@@ -22,3 +22,4 @@ Thumbs.db
 *.d
 *.rlib
 *.pdb
+**/__pycache__/

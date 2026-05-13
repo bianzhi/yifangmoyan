@@ -248,6 +248,9 @@ export interface AnalysisSettings {
   fusion: {
     showFusion: boolean;
   };
+  chart: {
+    showMacd: boolean;
+  };
 }
 
 export const DEFAULT_SETTINGS: AnalysisSettings = {
@@ -281,6 +284,9 @@ export const DEFAULT_SETTINGS: AnalysisSettings = {
   fusion: {
     showFusion: true,
   },
+  chart: {
+    showMacd: true,
+  },
 };
 
 // ===== 视图模式 =====
@@ -300,6 +306,7 @@ export const VIEW_MODE_SETTINGS: Record<ViewMode, AnalysisSettings> = {
       showPSY: false, showBC: false, showUTAD: false, showSOW: false, showLPSY: false,
     },
     fusion: { showFusion: false },
+    chart: { showMacd: true },
   },
   czsc: {
     czsc: {
@@ -313,6 +320,7 @@ export const VIEW_MODE_SETTINGS: Record<ViewMode, AnalysisSettings> = {
       showPSY: false, showBC: false, showUTAD: false, showSOW: false, showLPSY: false,
     },
     fusion: { showFusion: false },
+    chart: { showMacd: true },
   },
   wyckoff: {
     czsc: {
@@ -326,6 +334,7 @@ export const VIEW_MODE_SETTINGS: Record<ViewMode, AnalysisSettings> = {
       showPSY: true, showBC: true, showUTAD: true, showSOW: true, showLPSY: true,
     },
     fusion: { showFusion: false },
+    chart: { showMacd: true },
   },
   fusion: {
     czsc: {
@@ -339,6 +348,7 @@ export const VIEW_MODE_SETTINGS: Record<ViewMode, AnalysisSettings> = {
       showPSY: true, showBC: true, showUTAD: true, showSOW: false, showLPSY: false,
     },
     fusion: { showFusion: true },
+    chart: { showMacd: true },
   },
 };
 

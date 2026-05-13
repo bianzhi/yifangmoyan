@@ -47,6 +47,8 @@ const showSearch = ref(false);
 // ===== 后台同步状态 =====
 const bgSyncProgress = ref<SyncProgress | null>(null);
 let bgSyncTimer: ReturnType<typeof setInterval> | null = null;
+const bgSyncElapsed = ref(0);
+let bgSyncStartTs = 0;
 
 // ===== 自选股 & 持久化 =====
 const { addToWatchlist, isInWatchlist } = useWatchlist();
@@ -108,8 +110,8 @@ async function loadData() {
     const data = await getChartData(
       symbol.value,
       timeframe.value,
-      hasAnyCzscEnabled(),
-      hasAnyWyckoffEnabled()
+      true,   // 始终获取缠论数据，以便设置面板控制显示
+      true    // 始终获取威科夫数据，以便设置面板控制显示
     );
     chartData.value = data;
     await nextTick();
@@ -123,10 +125,6 @@ async function loadData() {
 
 function hasAnyCzscEnabled(): boolean {
   return Object.values(settings.value.czsc).some(Boolean);
-}
-
-function hasAnyWyckoffEnabled(): boolean {
-  return Object.values(settings.value.wyckoff).some(Boolean);
 }
 
 // ===== 时间格式化 =====
@@ -174,7 +172,7 @@ function renderChart() {
     },
     rightPriceScale: {
       borderColor: "#2a2a4a",
-      scaleMargins: { top: 0.1, bottom: 0.25 },
+      scaleMargins: { top: 0.05, bottom: 0.3 },
     },
     timeScale: {
       borderColor: "#2a2a4a",
@@ -223,8 +221,66 @@ function renderChart() {
   });
   volumeSeries.setData(volumeData);
   mainChart.priceScale("volume").applyOptions({
-    scaleMargins: { top: 0.8, bottom: 0 },
+    scaleMargins: { top: 0.75, bottom: 0.55 },
   });
+
+  // MACD 副图
+  if (settings.value.chart.showMacd && data.macd && data.macd.dif.length > 0) {
+    const macdData = data.macd;
+
+    // DIF 线
+    const difSeries = mainChart.addLineSeries({
+      color: "#2196f3",
+      lineWidth: 1,
+      priceLineVisible: false,
+      lastValueVisible: false,
+      crosshairMarkerVisible: false,
+      priceScaleId: "macd",
+    });
+    const difLineData: LineData<Time>[] = [];
+    for (let i = 0; i < macdData.dif.length && i < data.klines.length; i++) {
+      difLineData.push({ time: toTime(data.klines[i].dt), value: macdData.dif[i] });
+    }
+    difSeries.setData(difLineData);
+
+    // DEA 线
+    const deaSeries = mainChart.addLineSeries({
+      color: "#ff9800",
+      lineWidth: 1,
+      priceLineVisible: false,
+      lastValueVisible: false,
+      crosshairMarkerVisible: false,
+      priceScaleId: "macd",
+    });
+    const deaLineData: LineData<Time>[] = [];
+    for (let i = 0; i < macdData.dea.length && i < data.klines.length; i++) {
+      deaLineData.push({ time: toTime(data.klines[i].dt), value: macdData.dea[i] });
+    }
+    deaSeries.setData(deaLineData);
+
+    // MACD 柱状图
+    const macdHistSeries = mainChart.addHistogramSeries({
+      priceFormat: { type: "price", precision: 3, minMove: 0.001 },
+      priceLineVisible: false,
+      lastValueVisible: false,
+      priceScaleId: "macd",
+    });
+    const macdHistData: HistogramData<Time>[] = [];
+    for (let i = 0; i < macdData.macd_hist.length && i < data.klines.length; i++) {
+      const v = macdData.macd_hist[i];
+      macdHistData.push({
+        time: toTime(data.klines[i].dt),
+        value: v,
+        color: v >= 0 ? "rgba(239,83,80,0.6)" : "rgba(38,166,154,0.6)",
+      });
+    }
+    macdHistSeries.setData(macdHistData);
+
+    // MACD 副图位置：底部 45% 区域
+    mainChart.priceScale("macd").applyOptions({
+      scaleMargins: { top: 0.6, bottom: 0 },
+    });
+  }
 
   // 缠论覆盖层
   if (data.czsc) {
@@ -758,10 +814,12 @@ function selectStock(sym: string, name?: string) {
 // ===== 后台同步轮询 =====
 function startBgSyncPolling() {
   if (bgSyncTimer) return;
+  bgSyncStartTs = Date.now();
   bgSyncTimer = setInterval(async () => {
     try {
       const status = await getSyncStatus();
       bgSyncProgress.value = status;
+      bgSyncElapsed.value = Math.floor((Date.now() - bgSyncStartTs) / 1000);
       // 同步完成后停止轮询
       if (!status.running) {
         if (bgSyncTimer) {
@@ -772,7 +830,7 @@ function startBgSyncPolling() {
     } catch {
       // 轮询失败不影响主流程
     }
-  }, 2000);
+  }, 1000);
 }
 
 // ===== 事件处理 =====
@@ -785,7 +843,8 @@ function onTimeframeChange(tf: TimeFrame) {
 function onSettingsChange(newSettings: AnalysisSettings) {
   settings.value = newSettings;
   persistedSettings.value = JSON.parse(JSON.stringify(newSettings)) as any;
-  loadData();
+  // 只重新渲染图表，不重新获取数据（设置变更不影响后端数据）
+  renderChart();
 }
 
 function onViewModeChange(mode: ViewMode) {
@@ -848,12 +907,65 @@ function handleKeydown(e: KeyboardEvent) {
     return;
   }
 
-  // ← / → 平移
-  if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
-    // lightweight-charts 自带，无需处理
+  // ↑↓ 缩放（同花顺风格）
+  if (e.key === "ArrowUp") {
+    e.preventDefault();
+    if (mainChart) {
+      const ts = mainChart.timeScale();
+      const range = ts.getVisibleLogicalRange();
+      if (range) {
+        const barCount = range.to - range.from;
+        const zoomFactor = 0.8; // 每次缩小20%可见范围
+        const center = (range.from + range.to) / 2;
+        const newHalf = (barCount * zoomFactor) / 2;
+        ts.setVisibleLogicalRange({ from: center - newHalf, to: center + newHalf });
+      }
+    }
+    return;
+  }
+  if (e.key === "ArrowDown") {
+    e.preventDefault();
+    if (mainChart) {
+      const ts = mainChart.timeScale();
+      const range = ts.getVisibleLogicalRange();
+      if (range) {
+        const barCount = range.to - range.from;
+        const zoomFactor = 1.25; // 每次扩大25%可见范围
+        const center = (range.from + range.to) / 2;
+        const newHalf = (barCount * zoomFactor) / 2;
+        ts.setVisibleLogicalRange({ from: center - newHalf, to: center + newHalf });
+      }
+    }
+    return;
   }
 
-  // +/- 缩放
+  // ←→ 平移时间窗口（同花顺风格：每次移动可见范围的1/3）
+  if (e.key === "ArrowLeft") {
+    e.preventDefault();
+    if (mainChart) {
+      const ts = mainChart.timeScale();
+      const range = ts.getVisibleLogicalRange();
+      if (range) {
+        const shift = (range.to - range.from) / 3;
+        ts.setVisibleLogicalRange({ from: range.from - shift, to: range.to - shift });
+      }
+    }
+    return;
+  }
+  if (e.key === "ArrowRight") {
+    e.preventDefault();
+    if (mainChart) {
+      const ts = mainChart.timeScale();
+      const range = ts.getVisibleLogicalRange();
+      if (range) {
+        const shift = (range.to - range.from) / 3;
+        ts.setVisibleLogicalRange({ from: range.from + shift, to: range.to + shift });
+      }
+    }
+    return;
+  }
+
+  // +/- 缩放（补充）
   if (e.key === "+" || e.key === "=") {
     mainChart?.timeScale().scrollToRealTime();
   }
@@ -947,6 +1059,17 @@ watch(timeframe, () => loadData());
           数据同步
           <span v-if="bgSyncProgress?.running" class="inline-block w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse"></span>
         </button>
+
+        <!-- 后台同步进度条 -->
+        <div v-if="bgSyncProgress?.running" class="flex items-center gap-2 text-[10px] text-[#9e9e9e] min-w-[180px]">
+          <div class="flex-1 h-1 bg-[#0f3460] rounded-full overflow-hidden">
+            <div class="h-full bg-green-500 rounded-full transition-all duration-500"
+              :style="{ width: `${bgSyncProgress.total > 0 ? Math.round(bgSyncProgress.completed / bgSyncProgress.total * 100) : 0}%` }"></div>
+          </div>
+          <span class="whitespace-nowrap">{{ bgSyncProgress.completed }}/{{ bgSyncProgress.total }}
+            <span v-if="bgSyncProgress.retrying" class="text-[#ff9800]">重试#{{ bgSyncProgress.retry_round }}</span>
+          </span>
+        </div>
 
         <StockSearch
           v-if="currentView === 'chart'"

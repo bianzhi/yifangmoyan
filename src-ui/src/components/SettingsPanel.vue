@@ -26,6 +26,12 @@ function toggleFusion(key: keyof AnalysisSettings["fusion"]) {
   newSettings.fusion[key] = !newSettings.fusion[key];
   emit("change", newSettings);
 }
+
+function toggleChart(key: keyof AnalysisSettings["chart"]) {
+  const newSettings = JSON.parse(JSON.stringify(props.settings));
+  newSettings.chart[key] = !newSettings.chart[key];
+  emit("change", newSettings);
+}
 </script>
 
 <template>
@@ -121,6 +127,24 @@ function toggleFusion(key: keyof AnalysisSettings["fusion"]) {
             class="w-3 h-3 rounded accent-[#ffd700]"
           />
           <span class="text-xs text-gray-300 group-hover:text-white transition-colors">显示融合信号</span>
+        </label>
+      </div>
+    </div>
+
+    <div class="h-px bg-[#2a2a4a]"></div>
+
+    <!-- 图表设置 -->
+    <div>
+      <h3 class="text-[10px] font-bold text-[#2196f3] uppercase tracking-wider mb-1.5">图表</h3>
+      <div class="space-y-1">
+        <label class="flex items-center gap-2 cursor-pointer group">
+          <input
+            type="checkbox"
+            :checked="settings.chart.showMacd"
+            @change="toggleChart('showMacd')"
+            class="w-3 h-3 rounded accent-[#2196f3]"
+          />
+          <span class="text-xs text-gray-300 group-hover:text-white transition-colors">MACD 副图</span>
         </label>
       </div>
     </div>

@@ -59,7 +59,7 @@ const syncElapsed = ref("");
 let syncTimer: ReturnType<typeof setInterval> | null = null;
 
 // 同步选项
-const selectedLevels = ref<string[]>(["m", "w", "d"]);
+const selectedLevels = ref<string[]>(["m", "w", "d", "f60", "f30", "f15", "f5", "f1"]);
 const startDate = ref("2023-01-01");
 const forceSync = ref(false);
 const selectedBoard = ref("all_a");
@@ -462,6 +462,78 @@ function severityColor(s: string) {
 onMounted(async () => {
   await refreshStatus();
   loadBoardOnlineInfo();
+
+  // 检查是否有后台同步正在运行
+  try {
+    const status = await invoke<{
+      running: boolean;
+      board: string;
+      levels: string[];
+      total: number;
+      completed: number;
+      success: number;
+      failures: [string, string, string][];
+      retrying: boolean;
+      retry_round: number;
+      cancelled: boolean;
+    }>("get_sync_status");
+
+    if (status.running) {
+      syncing.value = true;
+      syncingBoard.value = status.board;
+      syncTotal.value = status.total;
+      syncCompleted.value = status.completed;
+      syncFailedDetails.value = status.failures.map(f => ({
+        symbol: f[0],
+        level: f[1],
+        msg: f[2],
+      }));
+      startSyncTimer();
+
+      // 轮询进度
+      const pollTimer = setInterval(async () => {
+        try {
+          const s = await invoke<{
+            running: boolean;
+            board: string;
+            levels: string[];
+            total: number;
+            completed: number;
+            success: number;
+            failures: [string, string, string][];
+            retrying: boolean;
+            retry_round: number;
+            cancelled: boolean;
+          }>("get_sync_status");
+
+          syncTotal.value = s.total;
+          syncCompleted.value = s.completed;
+          syncFailedDetails.value = s.failures.map(f => ({
+            symbol: f[0],
+            level: f[1],
+            msg: f[2],
+          }));
+
+          if (!s.running) {
+            clearInterval(pollTimer);
+            lastSyncSuccess.value = s.success;
+            lastSyncFailed.value = s.failures.length;
+            lastSyncElapsed.value = syncElapsed.value;
+            syncing.value = false;
+            syncingBoard.value = null;
+            stopSyncTimer();
+            showSyncResult.value = true;
+            refreshStatus();
+            loadBoardOnlineInfo();
+          }
+        } catch {
+          // 轮询失败不中断
+        }
+      }, 1000);
+    }
+  } catch {
+    // 获取状态失败不影响页面
+  }
 });
 </script>
 

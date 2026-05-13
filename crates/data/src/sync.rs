@@ -554,7 +554,8 @@ fn fetch_board_codes_eastmoney_v2(strategies: &[EastMoneyBoardStrategy]) -> Resu
 
     for strategy in strategies {
         let mut page = 1u64;
-        let page_size = 100u64; // 每页100条，多次请求更稳健
+        let page_size = 100u64;
+        let mut strategy_consecutive_errors = 0u32;
 
         loop {
             let url = format!(
@@ -566,8 +567,8 @@ fn fetch_board_codes_eastmoney_v2(strategies: &[EastMoneyBoardStrategy]) -> Resu
             let mut codes = Vec::new();
             let mut total = 0usize;
 
-            // 每页最多重试 3 次
-            for attempt in 0..3 {
+            // 每页最多重试 2 次，快速失败不死等
+            for attempt in 0..2 {
                 match try_fetch_board_codes_with_total(&client, &url) {
                     Ok((c, t)) => {
                         codes = c;
@@ -576,17 +577,40 @@ fn fetch_board_codes_eastmoney_v2(strategies: &[EastMoneyBoardStrategy]) -> Resu
                     }
                     Err(e) => {
                         last_err = Some(e);
-                        if attempt < 2 {
-                            std::thread::sleep(std::time::Duration::from_millis(500 * (attempt as u64 + 1)));
+                        let err_msg = last_err.as_ref().unwrap().to_string();
+                        let is_connection_error = err_msg.contains("connection")
+                            || err_msg.contains("reset")
+                            || err_msg.contains("refused")
+                            || err_msg.contains("timed out")
+                            || err_msg.contains("Empty");
+                        if is_connection_error {
+                            // 连接级别错误，不重试，直接放弃本策略
+                            eprintln!("东方财富 {} 连接失败，跳过: {}", strategy.name, err_msg);
+                            strategy_consecutive_errors = 99; // 强制跳出外层循环
+                            break;
+                        }
+                        if attempt == 0 {
+                            std::thread::sleep(std::time::Duration::from_millis(200));
                         }
                     }
                 }
             }
 
+            if strategy_consecutive_errors >= 99 {
+                break; // 连接失败，跳到下一个策略
+            }
+
             if let Some(e) = last_err {
                 eprintln!("东方财富 {} 第{}页获取失败: {}", strategy.name, page, e);
-                break; // 本策略失败，跳到下一个策略
+                strategy_consecutive_errors += 1;
+                if strategy_consecutive_errors >= 2 {
+                    break; // 连续2页失败，跳到下一个策略
+                }
+                page += 1;
+                continue;
             }
+
+            strategy_consecutive_errors = 0; // 成功则重置错误计数
 
             // 用 filter 过滤出属于此板块的代码
             let page_count = codes.len();
@@ -661,50 +685,101 @@ pub struct BoardOnlineInfo {
 }
 
 /// 从在线 API 获取指定板块的股票总数
-/// 策略：对于精确 fs 参数（不含逗号），直接取 total；
-/// 对于混合 fs 参数（含逗号），需要分页获取并用 filter 过滤统计
+/// 优先东方财富(轻量total查询) → 新浪(列表计数) → 网易(列表计数) → 东方财富(完整列表计数)
+/// 任一源成功即返回，不死等限流的源
 pub fn fetch_board_online_count(board: &str) -> Result<usize> {
+    // ── 1. 东方财富轻量级 total 查询（最快） ──
     let strategies = get_eastmoney_strategies(board);
-    if strategies.is_empty() {
-        return Err(anyhow::anyhow!("无东方财富策略用于板块 {}", board));
-    }
+    let client = build_eastmoney_client().ok();
 
-    let client = build_eastmoney_client()?;
+    if let Some(ref client) = client {
+        for strategy in &strategies {
+            if strategy.fs.contains(",") {
+                continue; // 跳过混合策略
+            }
 
-    // 优先使用精确策略（fs 不含逗号），直接取 total
-    for strategy in &strategies {
-        if strategy.fs.contains(",") {
-            continue; // 跳过混合策略
-        }
+            let url = format!(
+                "http://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=1&np=1&ut=bd1d9ddb04089700cf9c27f6f7426281&fltt=2&invt=2&fid={}&fs={}&fields=f12",
+                strategy.fid, strategy.fs
+            );
 
-        let url = format!(
-            "http://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=1&np=1&ut=bd1d9ddb04089700cf9c27f6f7426281&fltt=2&invt=2&fid={}&fs={}&fields=f12",
-            strategy.fid, strategy.fs
-        );
-
-        for attempt in 0..3 {
-            match try_fetch_online_count(&client, &url) {
-                Ok(total) if total > 0 => {
-                    return Ok(total);
-                }
-                Err(e) => {
-                    if attempt == 2 {
-                        eprintln!("东方财富获取 {} 在线总数第{}次失败: {}", strategy.name, attempt + 1, e);
-                    } else {
-                        std::thread::sleep(std::time::Duration::from_millis(500 * (attempt as u64 + 1)));
+            // 最多重试 2 次，间隔短（快速失败，不死等）
+            for attempt in 0..2 {
+                match try_fetch_online_count(client, &url) {
+                    Ok(total) if total > 0 => {
+                        return Ok(total);
                     }
-                }
-                Ok(_) => {
-                    if attempt < 2 {
-                        std::thread::sleep(std::time::Duration::from_millis(500));
+                    Err(e) => {
+                        let is_connection_error = e.to_string().contains("connection")
+                            || e.to_string().contains("reset")
+                            || e.to_string().contains("refused")
+                            || e.to_string().contains("timed out")
+                            || e.to_string().contains("Empty");
+                        if is_connection_error {
+                            // 连接级别错误，不重试了，直接换源
+                            eprintln!("东方财富连接失败({}), 切换数据源: {}", strategy.name, e);
+                            break;
+                        }
+                        if attempt == 0 {
+                            std::thread::sleep(std::time::Duration::from_millis(300));
+                        } else {
+                            eprintln!("东方财富获取 {} 在线总数失败: {}", strategy.name, e);
+                        }
+                    }
+                    Ok(_) => {
+                        // total=0，可能是接口返回异常，不重试直接换策略
+                        break;
                     }
                 }
             }
         }
     }
 
-    // 精确策略全部失败，回退到获取完整股票列表取长度
-    eprintln!("东方财富轻量级获取 {} 在线总数失败，回退到获取完整列表", board);
+    eprintln!("东方财富轻量级查询失败，尝试新浪/网易获取列表计数");
+
+    // ── 2. 新浪：获取列表取长度 ──
+    if board != "all_a" {
+        match fetch_board_codes_sina(board) {
+            Ok(codes) if !codes.is_empty() => {
+                eprintln!("新浪获取 {} 列表成功: {} 只", board, codes.len());
+                return Ok(codes.len());
+            }
+            result => {
+                eprintln!("新浪获取 {} 失败: {:?}, 尝试网易", board, result.err());
+            }
+        }
+
+        // ── 3. 网易：获取列表取长度 ──
+        match fetch_board_codes_netease(board) {
+            Ok(codes) if !codes.is_empty() => {
+                eprintln!("网易获取 {} 列表成功: {} 只", board, codes.len());
+                return Ok(codes.len());
+            }
+            result => {
+                eprintln!("网易获取 {} 也失败: {:?}", board, result.err());
+            }
+        }
+    } else {
+        // all_a 需要合并各子板块
+        let mut total = 0usize;
+        for sub_board in &["sh_main", "sz_main", "gem", "star", "bse"] {
+            for fetcher in &[fetch_board_codes_sina as fn(&str) -> Result<Vec<String>>, fetch_board_codes_netease as fn(&str) -> Result<Vec<String>>] {
+                match fetcher(sub_board) {
+                    Ok(codes) if !codes.is_empty() => {
+                        total += codes.len();
+                        break;
+                    }
+                    _ => continue,
+                }
+            }
+        }
+        if total > 0 {
+            return Ok(total);
+        }
+    }
+
+    // ── 4. 东方财富完整列表兜底 ──
+    eprintln!("新浪/网易均失败，回退到东方财富完整列表");
     match fetch_board_stock_codes(board) {
         Ok(codes) => Ok(codes.len()),
         Err(e) => Err(e.context(format!("获取 {} 在线总数失败（所有数据源均失败）", board))),

@@ -1,297 +1,458 @@
 //! 笔的构建
 //!
-//! **严格对齐 czsc 0.9.9 的 check_bi 实现**
+//! **严格对齐 czsc 0.9.9 的 CZSC.__update_bi + check_bi 实现**
 //!
-//! 缠论笔的定义：
-//! 1. 从一个分型到另一个相反类型的分型构成一笔
-//! 2. 顶分型到底分型 → 下降笔；底分型到顶分型 → 上升笔
-//! 3. 成笔条件：
-//!    a) fx_a 和 fx_b 之间没有包含关系（即两个分型的价格区间不互相包含）
-//!    b) 笔长度 >= min_bi_len（新笔=6，老笔=7，即无包含K线数量）
-//! 4. 笔被破坏后的回退：如果当前笔被新K线破坏，废弃当前笔，重新从分型起点开始
+//! 核心原则：Python 的 CZSC 类是增量式的——逐根K线输入。
+//! 在批量模式下，必须模拟完全相同的增量过程才能得到一致的结果。
+//!
+//! 算法流程（对齐 Python CZSC）：
+//! 1. 逐根K线输入，建立 bars_ubi（去除包含后的K线序列）
+//! 2. 每次 bars_ubi 变化后调用 __update_bi：
+//!    a) 如果没有笔，找第一笔（最极端同方向分型 + check_bi）
+//!    b) 如果已有笔，对 bars_ubi 调 check_bi 找下一笔
+//!    c) 后处理：如果最后一笔被损坏，回退并合并 bars
+//! 3. check_bi：取 fxs[0] 为 fx_a，找最极端的反向分型 fx_b，
+//!    检查成笔条件（无包含 + 长度 >= min_bi_len）
 
-use crate::fenxing::{FxMark, check_fxs};
+use crate::fenxing::{FxMark, FxResult, check_fxs};
 use crate::include::NewBar;
 use yifang_data::Bi;
 
 /// 默认最小笔长度（新笔=6，老笔=7）
-/// 与 czsc 环境变量 czsc_min_bi_len 默认值 6 一致
 const DEFAULT_MIN_BI_LEN: usize = 6;
 
-/// 单笔构建结果
-pub enum BiCheckResult {
-    /// 找到一笔
-    Found(Bi, Vec<NewBar>),
-    /// 没找到，返回剩余的 bars_ubi
-    NotFound(Vec<NewBar>),
-}
-
-/// 在无包含K线序列中查找一笔
+/// 在无包含K线序列中查找一笔（严格对齐 Python check_bi）
 ///
-/// 对齐 czsc check_bi 的核心逻辑：
-/// 1. 先找出所有分型
-/// 2. 以第一个分型 fx_a 为起点
-/// 3. 找与 fx_a 方向匹配的极端 fx_b
-/// 4. 检查成笔条件：无包含 + 长度足够
-pub fn check_bi(bars: &[NewBar], min_bi_len: Option<usize>) -> BiCheckResult {
-    let min_bi_len = min_bi_len.unwrap_or(DEFAULT_MIN_BI_LEN);
+/// 算法：
+/// 1. 找出所有分型
+/// 2. 取第一个分型 fx_a
+/// 3. 根据方向找最极端的反向分型 fx_b：
+///    - 底→顶（上笔）：取 high 最高的顶分型，且 fx_b.fx > fx_a.fx
+///    - 顶→底（下笔）：取 low 最低的底分型，且 fx_b.fx < fx_a.fx
+/// 4. 如果 fx_b 不存在，返回 None
+/// 5. 检查成笔条件：
+///    a) fx_a 和 fx_b 无包含关系
+///    b) 笔长度 >= min_bi_len
+/// 6. 成笔返回 (bi, bars_b)；不成笔返回 (None, 原始 bars)
+fn check_bi(bars: &[NewBar], min_bi_len: usize) -> Option<(Bi, Vec<NewBar>)> {
     let fxs = check_fxs(bars);
 
     if fxs.len() < 2 {
-        return BiCheckResult::NotFound(bars.to_vec());
+        return None;
     }
 
-    // 缠论标准笔构建：遍历相邻的分型对，找第一对满足成笔条件的
-    // 核心：(fx_a, fx_b) 必须是一顶一底，价格合理，无包含，长度够
-    for start_fx_idx in 0..fxs.len() - 1 {
-        let fx_a = &fxs[start_fx_idx];
-
-        // 只看与 fx_a 相邻的反向分型对
-        // 即 fx_a 之后第一个反向分型 fx_b
-        let fx_b_opt = fxs
-            .iter()
-            .enumerate()
-            .skip(start_fx_idx + 1)
-            .find(|(_, fx)| fx.mark != fx_a.mark && fx.dt > fx_a.dt);
-
-        let (_fx_b_idx, fx_b) = match fx_b_opt {
-            Some((idx, fx)) => (idx, fx),
-            None => continue,
-        };
-
-        // 方向：底→顶为升笔，顶→底为降笔
-        let direction = if fx_a.mark == FxMark::Bottom {
-            "up".to_string()
-        } else {
-            "down".to_string()
-        };
-
-        // 提取笔区间内的 bars
-        let bars_a_count = bars
-            .iter()
-            .filter(|b| b.dt >= fx_a.dt && b.dt <= fx_b.dt)
-            .count();
-
-        // 判断 fx_a 和 fx_b 价格区间是否存在包含关系
-        let ab_include = (fx_a.high > fx_b.high && fx_a.low < fx_b.low)
-            || (fx_a.high < fx_b.high && fx_a.low > fx_b.low);
-
-        // 成笔条件：(1) 顶底分型之间没有包含关系；(2) 笔长度 >= min_bi_len
-        if !ab_include && bars_a_count >= min_bi_len {
-            let bars_b: Vec<NewBar> = bars
-                .iter()
-                .filter(|b| b.dt >= fx_b.dt)
-                .cloned()
-                .collect();
-
-            let bi = Bi {
-                direction,
-                start_index: fx_a.merged_index as u64,
-                end_index: fx_b.merged_index as u64,
-                start_dt: fx_a.dt.clone(),
-                end_dt: fx_b.dt.clone(),
-                start_price: fx_a.fx,
-                end_price: fx_b.fx,
-                is_finished: true,
-            };
-
-            return BiCheckResult::Found(bi, bars_b);
-        }
-        // 不成笔，继续尝试下一个起始分型
-    }
-
-    BiCheckResult::NotFound(bars.to_vec())
-}
-
-/// 找第一笔：在初始 bars_ubi 中搜索
-///
-/// 对齐 czsc CZSC.__update_bi 的第一笔查找逻辑：
-/// 1. 找出所有分型
-/// 2. 取第一个分型 fx_a
-/// 3. 在同类型分型中找最极端的（底取最低，顶取最高）
-/// 4. 从这个最极端分型开始，调用 check_bi
-pub fn find_first_bi(bars: &[NewBar], min_bi_len: Option<usize>) -> (Option<Bi>, Vec<NewBar>) {
-    let min_bi_len = min_bi_len.unwrap_or(DEFAULT_MIN_BI_LEN);
-    let fxs = check_fxs(bars);
-
-    if fxs.is_empty() {
-        return (None, bars.to_vec());
-    }
-
-    // 尝试从最极端的同方向分型开始
     let fx_a = &fxs[0];
 
-    let mut best_fx = fx_a.clone();
-    for fx in &fxs {
-        if fx.mark != fx_a.mark {
-            continue;
-        }
-        let should_replace = match fx.mark {
-            FxMark::Bottom => fx.low <= best_fx.low,
-            FxMark::Top => fx.high >= best_fx.high,
-        };
-        if should_replace {
-            best_fx = fx.clone();
-        }
-    }
+    // 根据方向找最极端的反向分型
+    let direction: String;
+    let fx_b_idx: usize;
 
-    // 从最极端分型开始截取 bars
-    let trimmed_bars: Vec<NewBar> = bars
+    if fx_a.mark == FxMark::Bottom {
+        // 底分型开头 → 找上笔 → 取最高顶分型
+        let mut best_idx: Option<usize> = None;
+        let mut best_high: f64 = f64::NEG_INFINITY;
+        for (i, fx) in fxs.iter().enumerate() {
+            if fx.mark == FxMark::Top && fx.dt > fx_a.dt && fx.fx > fx_a.fx && fx.high > best_high {
+                best_high = fx.high;
+                best_idx = Some(i);
+            }
+        }
+        match best_idx {
+            Some(idx) => {
+                direction = "up".to_string();
+                fx_b_idx = idx;
+            }
+            None => return None,
+        }
+    } else {
+        // 顶分型开头 → 找下笔 → 取最低底分型
+        let mut best_idx: Option<usize> = None;
+        let mut best_low: f64 = f64::INFINITY;
+        for (i, fx) in fxs.iter().enumerate() {
+            if fx.mark == FxMark::Bottom && fx.dt > fx_a.dt && fx.fx < fx_a.fx && fx.low < best_low {
+                best_low = fx.low;
+                best_idx = Some(i);
+            }
+        }
+        match best_idx {
+            Some(idx) => {
+                direction = "down".to_string();
+                fx_b_idx = idx;
+            }
+            None => return None,
+        }
+    };
+
+    let fx_b = &fxs[fx_b_idx];
+
+    // Python: bars_a = [x for x in bars if fx_a.elements[0].dt <= x.dt <= fx_b.elements[2].dt]
+    // fx_a.elements[0] 是构成分型左边那根K线
+    // fx_b.elements[2] 是构成分型右边那根K线
+    // 关键差异：bars_a 计数包含 fx_b 右边那根K线之后的所有K线
+    // 而 fx_b.dt 只是中间那根K线的时间，所以 bars_a 会多出 1 根
+    let fx_a_first_bar_dt = bars.get(fx_a.bars[0]).map(|b| b.dt.as_str()).unwrap_or(fx_a.dt.as_str());
+    let fx_b_last_bar_dt = bars.get(fx_b.bars[2]).map(|b| b.dt.as_str()).unwrap_or(fx_b.dt.as_str());
+    let bars_a_count = bars
         .iter()
-        .filter(|b| b.dt >= best_fx.dt)
+        .filter(|b| b.dt.as_str() >= fx_a_first_bar_dt && b.dt.as_str() <= fx_b_last_bar_dt)
+        .count();
+
+    // Python: bars_b = [x for x in bars if x.dt >= fx_b.elements[0].dt]
+    // elements[0] 是构成 fx_b 的第一根 K 线
+    let fx_b_first_bar_dt = bars.get(fx_b.bars[0]).map(|b| b.dt.as_str()).unwrap_or(&fx_b.dt);
+    let bars_b: Vec<NewBar> = bars
+        .iter()
+        .filter(|b| b.dt.as_str() >= fx_b_first_bar_dt)
         .cloned()
         .collect();
 
-    if !trimmed_bars.is_empty() {
-        if let BiCheckResult::Found(bi, remaining) = check_bi(&trimmed_bars, Some(min_bi_len)) {
-            return (Some(bi), remaining);
-        }
-    }
+    // 判断 fx_a 和 fx_b 价格区间是否存在包含关系
+    let ab_include = (fx_a.high > fx_b.high && fx_a.low < fx_b.low)
+        || (fx_a.high < fx_b.high && fx_a.low > fx_b.low);
 
-    // 如果从最极端分型开始找不到笔，直接从原始 bars 用 check_bi 搜索
-    match check_bi(bars, Some(min_bi_len)) {
-        BiCheckResult::Found(bi, remaining) => (Some(bi), remaining),
-        BiCheckResult::NotFound(remaining) => (None, remaining),
+    // 成笔条件：1）无包含关系；2）笔长度 >= min_bi_len
+    if !ab_include && bars_a_count >= min_bi_len {
+        let bi = Bi {
+            direction,
+            start_index: fx_a.merged_index as u64,
+            end_index: fx_b.merged_index as u64,
+            start_dt: fx_a.dt.clone(),
+            end_dt: fx_b.dt.clone(),
+            start_price: fx_a.fx,
+            end_price: fx_b.fx,
+            is_finished: true,
+        };
+        Some((bi, bars_b))
+    } else {
+        None
     }
 }
 
-/// 对 K 线序列进行完整笔构建（增量式）
-///
-/// 对齐 czsc CZSC 类的 update 流程：
-/// 1. 去包含 → bars_ubi
-/// 2. 如果没有笔 → 找第一笔
-/// 3. 已有笔 → 从 bars_ubi 继续检查新笔
-/// 4. 笔被破坏 → 回退重算
-pub fn build_bi_incremental(bars_ubi: &[NewBar], existing_bis: &[Bi], min_bi_len: Option<usize>) -> (Vec<Bi>, Vec<NewBar>) {
-    let min_bi_len = min_bi_len.unwrap_or(DEFAULT_MIN_BI_LEN);
-
-    if bars_ubi.len() < 3 {
-        return (existing_bis.to_vec(), bars_ubi.to_vec());
-    }
-
-    let mut bi_list = existing_bis.to_vec();
-    let mut ubi = bars_ubi.to_vec();
-
-    if bi_list.is_empty() {
-        // 第一笔查找
-        let (bi, remaining) = find_first_bi(&ubi, Some(min_bi_len));
-        if let Some(b) = bi {
-            bi_list.push(b);
-        }
-        ubi = remaining;
-        return (bi_list, ubi);
-    }
-
-    // 非第一笔
-    match check_bi(&ubi, Some(min_bi_len)) {
-        BiCheckResult::Found(bi, remaining) => {
-            bi_list.push(bi);
-            ubi = remaining;
-        }
-        BiCheckResult::NotFound(remaining) => {
-            ubi = remaining;
-        }
-    }
-
-    // 笔被破坏的后处理
-    // 对齐 czsc：如果当前最后一笔被新 K 线破坏，废弃最后一笔，合并回 bars_ubi
-    // 注意：在批量模式下此逻辑过于激进，已禁用
-    // 批量模式通过 build_bi 的循环 + remaining 机制保证笔的完整性
-    #[allow(dead_code)]
-    if false && !bi_list.is_empty() && ubi.len() >= 2 {
-        let last_bi = &bi_list[bi_list.len() - 1];
-        let last_ubi = &ubi[ubi.len() - 1];
-
-        let is_broken = (last_bi.direction == "up" && last_ubi.high > last_bi.end_price)
-            || (last_bi.direction == "down" && last_ubi.low < last_bi.end_price);
-
-        if is_broken {
-            // 废弃最后一笔，合并其 bars 到 bars_ubi
-            // 注意：czsc 用 last_bi.bars[:-2] + 新 bars，但我们用 dt 来匹配
-            let new_ubi: Vec<NewBar> = ubi.iter().cloned().collect();
-            bi_list.pop();
-            // 重新从更早的位置开始
-            // 但由于我们没有保存 last_bi 的 bars，这里简化处理：
-            // 直接返回废弃后的 bi_list 和 new_ubi
-            return (bi_list, new_ubi);
-        }
-    }
-
-    (bi_list, ubi)
+/// 内部用的扩展笔结构（包含构成笔的 bars，用于后处理回退）
+struct BiEx {
+    bi: Bi,
+    /// 构成该笔的所有无包含K线
+    bars: Vec<NewBar>,
 }
 
 /// 对完整 K 线序列构建笔（批量模式）
 ///
-/// 使用基于分型序列的直接递推方法：
-/// 1. 去包含后识别所有分型
-/// 2. 从分型序列中逐对构建笔
-/// 3. 成笔条件：相邻顶底分型无包含关系 + 笔长度 >= min_bi_len
-/// 4. 不成笔时跳过，尝试下对分型
+/// **严格模拟 Python CZSC 类的增量过程**：
+/// 1. 逐根K线模拟输入，每根K线更新 bars_ubi（去包含）
+/// 2. 每次 bars_ubi 变化后调用 __update_bi 逻辑
+/// 3. 找到第一笔后，继续找后续笔
+/// 4. 后处理：如果最后一笔被损坏，回退并合并
 pub fn build_bi(klines: &[yifang_data::KLine], min_bi_len: Option<usize>) -> Vec<Bi> {
     let min_bi_len = min_bi_len.unwrap_or(DEFAULT_MIN_BI_LEN);
-    let bars_ubi = crate::include::remove_include(klines);
-    
+    if klines.len() < 3 {
+        return Vec::new();
+    }
+
+    // === 模拟 Python CZSC 的增量过程 ===
+    let mut bi_list: Vec<BiEx> = Vec::new();
+    let mut bars_ubi: Vec<NewBar> = Vec::new();
+
+    for (i, kline) in klines.iter().enumerate() {
+        // Step 1: 将当前 K 线加入 bars_ubi（去包含处理）
+        update_bars_ubi(&mut bars_ubi, kline, i);
+
+        // Step 2: 调用 __update_bi 逻辑
+        __update_bi(&mut bi_list, &mut bars_ubi, min_bi_len);
+    }
+
+    // 转换为 Bi 列表
+    bi_list.into_iter().map(|bex| bex.bi).collect()
+}
+
+/// 将一根 K 线添加到 bars_ubi（去包含处理）
+///
+/// 对齐 Python CZSC.update() 中的去包含逻辑
+fn update_bars_ubi(bars_ubi: &mut Vec<NewBar>, kline: &yifang_data::KLine, index: usize) {
+    let new_bar = NewBar {
+        id: index as u64,
+        dt: kline.dt.clone(),
+        open: kline.open,
+        close: kline.close,
+        high: kline.high,
+        low: kline.low,
+        vol: kline.vol,
+        amount: kline.amount,
+        elements: vec![index],
+    };
+
+    if bars_ubi.len() < 2 {
+        bars_ubi.push(new_bar);
+        return;
+    }
+
+    // 先从 bars_ubi 提取需要的信息到局部变量，避免借用冲突
+    let k1_high = bars_ubi[bars_ubi.len() - 2].high;
+    let k2_high = bars_ubi[bars_ubi.len() - 1].high;
+    let k2_low = bars_ubi[bars_ubi.len() - 1].low;
+    let k2_id = bars_ubi[bars_ubi.len() - 1].id;
+    let k2_dt = bars_ubi[bars_ubi.len() - 1].dt.clone();
+    let k2_vol = bars_ubi[bars_ubi.len() - 1].vol;
+    let k2_amount = bars_ubi[bars_ubi.len() - 1].amount;
+    let k2_elements = bars_ubi[bars_ubi.len() - 1].elements.clone();
+
+    // 方向由 k1、k2 决定
+    if k1_high < k2_high {
+        // 方向向上
+        let has_include = (k2_high <= kline.high && k2_low >= kline.low)
+            || (k2_high >= kline.high && k2_low <= kline.low);
+
+        if has_include {
+            // 向上取高高
+            let high = k2_high.max(kline.high);
+            let low = k2_low.max(kline.low);
+            let dt = if k2_high > kline.high {
+                k2_dt.clone()
+            } else {
+                kline.dt.clone()
+            };
+            let (open_, close) = if kline.open > kline.close {
+                (high, low)
+            } else {
+                (low, high)
+            };
+            let vol = k2_vol + kline.vol;
+            let amount = k2_amount + kline.amount;
+
+            let mut elements = k2_elements.clone();
+            elements.push(index);
+            if elements.len() > 100 {
+                elements.drain(..elements.len() - 100);
+            }
+
+            let last = bars_ubi.last_mut().unwrap();
+            *last = NewBar {
+                id: k2_id,
+                dt,
+                open: open_,
+                close,
+                high,
+                low,
+                vol,
+                amount,
+                elements,
+            };
+        } else {
+            bars_ubi.push(new_bar);
+        }
+    } else if k1_high > k2_high {
+        // 方向向下
+        let has_include = (k2_high <= kline.high && k2_low >= kline.low)
+            || (k2_high >= kline.high && k2_low <= kline.low);
+
+        if has_include {
+            // 向下取低低
+            let high = k2_high.min(kline.high);
+            let low = k2_low.min(kline.low);
+            let dt = if k2_low < kline.low {
+                k2_dt.clone()
+            } else {
+                kline.dt.clone()
+            };
+            let (open_, close) = if kline.open > kline.close {
+                (high, low)
+            } else {
+                (low, high)
+            };
+            let vol = k2_vol + kline.vol;
+            let amount = k2_amount + kline.amount;
+
+            let mut elements = k2_elements.clone();
+            elements.push(index);
+            if elements.len() > 100 {
+                elements.drain(..elements.len() - 100);
+            }
+
+            let last = bars_ubi.last_mut().unwrap();
+            *last = NewBar {
+                id: k2_id,
+                dt,
+                open: open_,
+                close,
+                high,
+                low,
+                vol,
+                amount,
+                elements,
+            };
+        } else {
+            bars_ubi.push(new_bar);
+        }
+    } else {
+        // k1.high == k2.high：无法确定方向
+        bars_ubi.push(new_bar);
+    }
+}
+
+/// 模拟 Python CZSC.__update_bi 逻辑
+///
+/// 严格对齐 Python 代码：
+/// 1. 如果没有笔，找第一笔
+/// 2. 如果已有笔，找下一笔
+/// 3. 后处理：如果最后一笔被破坏，回退
+fn __update_bi(bi_list: &mut Vec<BiEx>, bars_ubi: &mut Vec<NewBar>, min_bi_len: usize) {
     if bars_ubi.len() < 3 {
-        return Vec::new();
+        return;
     }
 
-    let fxs = check_fxs(&bars_ubi);
-    if fxs.len() < 2 {
-        return Vec::new();
+    // 找笔
+    if bi_list.is_empty() {
+        // === 第一笔的查找（对齐 Python CZSC.__update_bi 第一笔逻辑）===
+        let fxs = check_fxs(bars_ubi);
+        if fxs.is_empty() {
+            return;
+        }
+
+        // 找同方向最极端的分型作为 fx_a
+        let mut fx_a = fxs[0].clone();
+        for fx in &fxs {
+            if fx.mark != fx_a.mark {
+                continue;
+            }
+            let should_replace = match fx.mark {
+                FxMark::Bottom => fx.low <= fx_a.low,
+                FxMark::Top => fx.high >= fx_a.high,
+            };
+            if should_replace {
+                fx_a = fx.clone();
+            }
+        }
+
+
+        // Python: bars_ubi = [x for x in bars_ubi if x.dt >= fx_a.elements[0].dt]
+        let start_dt = bars_ubi
+            .get(fx_a.bars[0])
+            .map(|b| b.dt.as_str())
+            .unwrap_or(fx_a.dt.as_str())
+            .to_string();
+
+        let trimmed: Vec<NewBar> = bars_ubi
+            .iter()
+            .filter(|b| b.dt.as_str() >= start_dt.as_str())
+            .cloned()
+            .collect();
+
+        if let Some((bi, bars_b)) = check_bi(&trimmed, min_bi_len) {
+            // 计算构成该笔的 bars_a
+            // 对齐 Python: bi.bars = bars_a（从 fx_a.elements[0].dt 到 fx_b.elements[2].dt）
+            // 我们需要用 fx_a.bars[0] 和 fx_b.bars[2] 来获取正确的范围
+            let fxs_in_trimmed = check_fxs(&trimmed);
+            let fx_a_in_trimmed = fxs_in_trimmed.iter().find(|fx| fx.dt == bi.start_dt);
+            let fx_b_in_trimmed = fxs_in_trimmed.iter().find(|fx| fx.dt == bi.end_dt);
+            
+            let bars_a_start = fx_a_in_trimmed
+                .and_then(|fx| trimmed.get(fx.bars[0]))
+                .map(|b| b.dt.as_str())
+                .unwrap_or(bi.start_dt.as_str());
+            let bars_a_end = fx_b_in_trimmed
+                .and_then(|fx| trimmed.get(fx.bars[2]))
+                .map(|b| b.dt.as_str())
+                .unwrap_or(bi.end_dt.as_str());
+            
+            let bars_a: Vec<NewBar> = trimmed
+                .iter()
+                .filter(|b| b.dt.as_str() >= bars_a_start && b.dt.as_str() <= bars_a_end)
+                .cloned()
+                .collect();
+            bi_list.push(BiEx { bi, bars: bars_a });
+            *bars_ubi = bars_b;
+        }
+        // 不成笔，保持 bars_ubi 不变（等下一根K线）
+        return;
     }
 
-    let mut bis: Vec<Bi> = Vec::new();
-    let mut i = 0;
-
-    while i < fxs.len() - 1 {
-        let fx_a = &fxs[i];
-        
-        // 找 fx_a 之后第一个反向分型
-        let fx_b_idx = match fxs[i + 1..].iter().enumerate()
-            .find(|(_, fx)| fx.mark != fx_a.mark)
-        {
-            Some((idx, _)) => i + 1 + idx,
-            None => break,
-        };
-        let fx_b = &fxs[fx_b_idx];
-
-        // 方向
-        let direction = if fx_a.mark == FxMark::Bottom {
-            "up".to_string()
-        } else {
-            "down".to_string()
-        };
-
-        // 笔区间内的 bars 数量
-        let bars_count = bars_ubi.iter()
-            .filter(|b| b.dt >= fx_a.dt && b.dt <= fx_b.dt)
-            .count();
-
-        // 包含关系判断
-        let ab_include = (fx_a.high > fx_b.high && fx_a.low < fx_b.low)
-            || (fx_a.high < fx_b.high && fx_a.low > fx_b.low);
-
-        if !ab_include && bars_count >= min_bi_len {
-            // 成笔
-            bis.push(Bi {
-                direction,
-                start_index: fx_a.merged_index as u64,
-                end_index: fx_b.merged_index as u64,
-                start_dt: fx_a.dt.clone(),
-                end_dt: fx_b.dt.clone(),
-                start_price: fx_a.fx,
-                end_price: fx_b.fx,
-                is_finished: true,
-            });
-            // 从 fx_b 继续找下一笔
-            i = fx_b_idx;
-        } else {
-            // 不成笔，跳过 fx_a，从下一个分型开始尝试
-            i += 1;
+    // === 已有笔，找下一笔 ===
+    let check_result = check_bi(bars_ubi, min_bi_len);
+    match check_result {
+        Some((bi, bars_b)) => {
+            // 计算构成该笔的 bars_a（对齐 Python bi.bars 范围）
+            let fxs_for_bars = check_fxs(bars_ubi);
+            let fx_a_for_bars = fxs_for_bars.iter().find(|fx| fx.dt == bi.start_dt);
+            let fx_b_for_bars = fxs_for_bars.iter().find(|fx| fx.dt == bi.end_dt);
+            
+            let bars_a_start = fx_a_for_bars
+                .and_then(|fx| bars_ubi.get(fx.bars[0]))
+                .map(|b| b.dt.as_str())
+                .unwrap_or(bi.start_dt.as_str());
+            let bars_a_end = fx_b_for_bars
+                .and_then(|fx| bars_ubi.get(fx.bars[2]))
+                .map(|b| b.dt.as_str())
+                .unwrap_or(bi.end_dt.as_str());
+            
+            let bars_a: Vec<NewBar> = bars_ubi
+                .iter()
+                .filter(|b| b.dt.as_str() >= bars_a_start && b.dt.as_str() <= bars_a_end)
+                .cloned()
+                .collect();
+            bi_list.push(BiEx { bi, bars: bars_a });
+            *bars_ubi = bars_b;
+        }
+        None => {
+            // check_bi 未找到新笔，bars_ubi 不变
+            // 但仍需要更新 bars_ubi（Python 总是设置 self.bars_ubi = bars_ubi_）
+            // 在 check_bi None 的情况下，bars_ubi_ == bars（即不变）
         }
     }
 
-    bis
+    // 后处理：无论是否找到新笔，都检查最后一笔是否被破坏
+    // Python 的 __update_bi 中，后处理在 check_bi 之后无条件运行
+    if !bi_list.is_empty() && bars_ubi.len() >= 2 {
+        let last_bi = &bi_list[bi_list.len() - 1];
+        let last_ubi = &bars_ubi[bars_ubi.len() - 1];
+
+        let is_broken = (last_bi.bi.direction == "up" && last_ubi.high > last_bi.bi.end_price)
+            || (last_bi.bi.direction == "down" && last_ubi.low < last_bi.bi.end_price);
+
+        if is_broken {
+            // Python: self.bars_ubi = last_bi.bars[:-2] + [x for x in bars_ubi if x.dt >= last_bi.bars[-2].dt]
+            // Python: self.bi_list.pop(-1)
+            let broken_bex = bi_list.pop().unwrap();
+
+            // 严格对齐 Python：
+            // last_bi.bars[:-2] 表示去掉最后两根K线
+            // [x for x in bars_ubi if x.dt >= last_bi.bars[-2].dt] 取剩余部分
+            let broken_bars = &broken_bex.bars;
+            if broken_bars.len() >= 2 {
+                let rollback_dt = broken_bars[broken_bars.len() - 2].dt.clone();
+                
+                let mut new_bars_ubi: Vec<NewBar> = broken_bars
+                    .iter()
+                    .take(broken_bars.len() - 2)
+                    .cloned()
+                    .collect();
+                
+                let remaining: Vec<NewBar> = bars_ubi
+                    .iter()
+                    .filter(|b| b.dt >= rollback_dt)
+                    .cloned()
+                    .collect();
+                
+                // 去重：new_bars_ubi 末尾和 remaining 开头可能重叠
+                // 只添加 remaining 中时间不在 new_bars_ubi 中的
+                let last_dt = new_bars_ubi.last().map(|b| b.dt.clone()).unwrap_or_default();
+                for b in &remaining {
+                    if b.dt > last_dt {
+                        new_bars_ubi.push(b.clone());
+                    }
+                }
+                
+                *bars_ubi = new_bars_ubi;
+            } else {
+                // 不到2根bar，用 start_dt 回退
+                let rollback_dt = broken_bex.bi.start_dt.clone();
+                *bars_ubi = bars_ubi
+                    .iter()
+                    .filter(|b| b.dt >= rollback_dt)
+                    .cloned()
+                    .collect();
+            }
+        }
+    }
+    // 如果 check_bi 返回 None，bars_ubi 不变（等下一根K线）
 }
 
 #[cfg(test)]
@@ -317,8 +478,6 @@ mod tests {
 
     #[test]
     fn test_basic_bi_detection() {
-        // 构建一个有明确顶底形态的数据，确保去包含后足够的K线
-        // 核心走势：上升(8根) → 顶 → 下降(8根) → 底 → 上升(8根)
         let mut klines = Vec::new();
         let mut id: u64 = 0;
         // 上升段 10→18
@@ -352,23 +511,169 @@ mod tests {
             id += 1;
         }
 
-        let bars = remove_include(&klines);
-        let (bis, _) = build_bi_incremental(&bars, &[], None);
-        // 至少应该找到笔
-        assert!(!bis.is_empty(), "应该找到笔，去包含后{}根K线", bars.len());
+        let bis = build_bi(&klines, None);
+        assert!(!bis.is_empty(), "应该找到笔，去包含后{}根K线", remove_include(&klines).len());
     }
 
     #[test]
     fn test_min_bi_len() {
-        // 太短的序列不应该成笔
         let klines = vec![
             make_kline(0, "2024-01-01", 10.0, 11.0, 11.0, 10.0),
-            make_kline(1, "2024-01-02", 11.0, 13.0, 13.0, 11.0), // 顶
-            make_kline(2, "2024-01-03", 13.0, 10.0, 13.0, 10.0), // 底
+            make_kline(1, "2024-01-02", 11.0, 13.0, 13.0, 11.0),
+            make_kline(2, "2024-01-03", 13.0, 10.0, 13.0, 10.0),
         ];
-        let bars = remove_include(&klines);
+        let _bars = remove_include(&klines);
         // min_bi_len=7，只有3根K线，不够
-        let (bis, _) = build_bi_incremental(&bars, &[], Some(7));
+        let bis = build_bi(&klines, Some(7));
         assert!(bis.is_empty(), "K线不足 min_bi_len，不应成笔");
+    }
+
+    #[test]
+    fn test_bi_direction_constraint() {
+        // 构建一个场景：底分型后，存在顶分型但 fx_b.fx < fx_a.fx（不应成笔）
+        let klines = vec![
+            make_kline(0, "2024-01-01", 10.0, 9.0, 10.0, 9.0),
+            make_kline(1, "2024-01-02", 9.0, 8.0, 9.0, 8.0),    // 底
+            make_kline(2, "2024-01-03", 8.0, 8.5, 8.5, 8.0),     // 小反弹
+            make_kline(3, "2024-01-04", 8.5, 7.5, 8.5, 7.5),     // 再跌
+            make_kline(4, "2024-01-05", 7.5, 7.0, 7.5, 7.0),     // 继续跌
+            make_kline(5, "2024-01-06", 7.0, 6.0, 7.0, 6.0),     // 更低
+            make_kline(6, "2024-01-07", 6.0, 5.0, 6.0, 5.0),     // 最低
+            make_kline(7, "2024-01-08", 5.0, 6.0, 6.0, 5.0),     // 反弹
+        ];
+        let bis = build_bi(&klines, None);
+        for bi in &bis {
+            if bi.direction == "up" {
+                assert!(bi.end_price > bi.start_price, "上笔终价应高于起价");
+            } else {
+                assert!(bi.end_price < bi.start_price, "下笔终价应低于起价");
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod compare_test {
+    use super::*;
+    use crate::include::remove_include;
+    use crate::fenxing::check_fxs;
+    use yifang_data::{KLine, TimeFrame};
+
+    /// 对比测试：与 Python czsc 0.9.9 的笔识别结果对比
+    #[test]
+    fn test_bi_compare_with_python_reference() {
+        let json_str = std::fs::read_to_string("/tmp/000001_daily.json").unwrap_or_default();
+        if json_str.is_empty() {
+            eprintln!("SKIP: /tmp/000001_daily.json not found");
+            return;
+        }
+        let records: Vec<serde_json::Value> = serde_json::from_str(&json_str).unwrap();
+        
+        let klines: Vec<KLine> = records.iter().enumerate().map(|(i, r)| {
+            KLine {
+                symbol: "000001".to_string(),
+                timeframe: TimeFrame::D,
+                dt: r["dt"].as_str().unwrap().to_string(),
+                id: i as u64,
+                open: r["open"].as_f64().unwrap(),
+                close: r["close"].as_f64().unwrap(),
+                high: r["high"].as_f64().unwrap(),
+                low: r["low"].as_f64().unwrap(),
+                vol: r["vol"].as_f64().unwrap(),
+                amount: 0.0,
+            }
+        }).collect();
+        
+        eprintln!("\n=== Rust bi analysis for 000001 daily ===");
+        eprintln!("Loaded {} klines", klines.len());
+        
+        let bars_ubi = remove_include(&klines);
+        eprintln!("After remove_include: {} bars", bars_ubi.len());
+        
+        let fxs = check_fxs(&bars_ubi);
+        eprintln!("FenXing count: {}", fxs.len());
+        
+        let bis = build_bi(&klines, None);
+        eprintln!("\nRust bi count: {} (Python reference: 44)", bis.len());
+        for (i, bi) in bis.iter().enumerate() {
+            eprintln!("  Bi[{}]: {} {} → {}, start_price={:.2}, end_price={:.2}", 
+                i, bi.direction, bi.start_dt, bi.end_dt, bi.start_price, bi.end_price);
+        }
+        
+        // Python reference results (from czsc 0.9.9)
+        let python_bis = vec![
+            ("down", "2024-01-17", "2024-01-23", 9.39, 8.96),
+            ("up", "2024-01-23", "2024-01-29", 8.96, 9.88),
+            ("down", "2024-01-29", "2024-02-02", 9.88, 9.07),
+            ("up", "2024-02-02", "2024-02-23", 9.07, 11.24),
+            ("down", "2024-02-23", "2024-04-12", 11.24, 10.04),
+            ("up", "2024-04-12", "2024-05-22", 10.04, 11.74),
+            ("down", "2024-05-22", "2024-06-24", 11.74, 9.88),
+            ("up", "2024-06-24", "2024-07-02", 9.88, 10.48),
+            ("down", "2024-07-02", "2024-07-08", 10.48, 9.85),
+            ("up", "2024-07-08", "2024-07-18", 9.85, 10.43),
+            ("down", "2024-07-18", "2024-07-29", 10.43, 9.97),
+            ("up", "2024-07-29", "2024-08-01", 9.97, 10.32),
+            ("down", "2024-08-01", "2024-08-15", 10.32, 9.87),
+            ("up", "2024-08-15", "2024-08-26", 9.87, 10.55),
+            ("down", "2024-08-26", "2024-09-12", 10.55, 9.61),
+            ("up", "2024-09-12", "2024-10-08", 9.61, 13.43),
+            ("down", "2024-10-08", "2024-10-31", 13.43, 11.24),
+            ("up", "2024-10-31", "2024-11-08", 11.24, 12.01),
+            ("down", "2024-11-08", "2024-11-26", 12.01, 11.14),
+            ("up", "2024-11-26", "2024-12-10", 11.14, 11.95),
+            ("down", "2024-12-10", "2024-12-17", 11.95, 11.52),
+            ("up", "2024-12-17", "2024-12-25", 11.52, 12.02),
+            ("down", "2024-12-25", "2025-01-13", 12.02, 11.08),
+            ("up", "2025-01-13", "2025-01-16", 11.08, 11.59),
+            ("down", "2025-01-16", "2025-01-22", 11.59, 11.08),
+            ("up", "2025-01-22", "2025-02-18", 11.08, 11.96),
+            ("down", "2025-02-18", "2025-03-04", 11.96, 11.44),
+            ("up", "2025-03-04", "2025-03-14", 11.44, 12.00),
+            ("down", "2025-03-14", "2025-04-07", 12.00, 10.48),
+            ("up", "2025-04-07", "2025-04-18", 10.48, 11.19),
+            ("down", "2025-04-18", "2025-05-06", 11.19, 10.89),
+            ("up", "2025-05-06", "2025-07-10", 10.89, 13.33),
+            ("down", "2025-07-10", "2025-07-22", 13.33, 12.32),
+            ("up", "2025-07-22", "2025-07-30", 12.32, 12.64),
+            ("down", "2025-07-30", "2025-08-15", 12.64, 11.94),
+            ("up", "2025-08-15", "2025-08-25", 11.94, 12.53),
+            ("down", "2025-08-25", "2025-10-09", 12.53, 11.27),
+            ("up", "2025-10-09", "2025-10-23", 11.27, 11.71),
+            ("down", "2025-10-23", "2025-11-03", 11.71, 11.30),
+            ("up", "2025-11-03", "2025-11-20", 11.30, 11.99),
+            ("down", "2025-11-20", "2025-12-10", 11.99, 11.29),
+            ("up", "2025-12-10", "2025-12-19", 11.29, 11.65),
+            ("down", "2025-12-19", "2025-12-31", 11.65, 11.40),
+            ("up", "2025-12-31", "2026-01-07", 11.40, 11.82),
+        ];
+        
+        eprintln!("\n=== Comparison ===");
+        eprintln!("Rust: {} bis, Python: {} bis", bis.len(), python_bis.len());
+        
+        let min_len = bis.len().min(python_bis.len());
+        let mut mismatches = 0;
+        for i in 0..min_len {
+            let rb = &bis[i];
+            let (dir, sdt, edt, sp, ep) = &python_bis[i];
+            let dir_match = rb.direction == *dir;
+            let sdt_match = rb.start_dt == *sdt;
+            let edt_match = rb.end_dt == *edt;
+            let sp_match = (rb.start_price - sp).abs() < 0.05;
+            let ep_match = (rb.end_price - ep).abs() < 0.05;
+            
+            if !dir_match || !sdt_match || !edt_match || !sp_match || !ep_match {
+                mismatches += 1;
+                eprintln!("  MISMATCH Bi[{}]: Rust({} {} → {} {:.2}→{:.2}) vs Python({} {} → {} {:.2}→{:.2})", 
+                    i, rb.direction, rb.start_dt, rb.end_dt, rb.start_price, rb.end_price,
+                    dir, sdt, edt, sp, ep);
+            }
+        }
+        if mismatches == 0 && bis.len() == python_bis.len() {
+            eprintln!("✅ All {} bis match Python reference!", bis.len());
+        }
+        
+        assert_eq!(bis.len(), python_bis.len(), 
+            "Rust bi count ({}) should match Python ({})", bis.len(), python_bis.len());
     }
 }

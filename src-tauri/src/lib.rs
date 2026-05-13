@@ -20,6 +20,7 @@ pub fn run() {
             commands::get_data_status,
             commands::sync_stock,
             commands::sync_stocks_batch,
+            commands::sync_board,
             commands::get_all_stock_codes,
             commands::validate_stock,
             commands::validate_stock_level,
@@ -28,6 +29,7 @@ pub fn run() {
             commands::set_data_dir,
             commands::move_data_dir,
             commands::get_board_stats,
+            commands::get_board_online_info,
             commands::get_stock_codes_by_board,
         ])
         .run(tauri::generate_context!())

@@ -218,7 +218,9 @@ pub struct BoardStats {
 
 /// 根据股票代码判断板块
 pub fn classify_board(code: &str) -> &'static str {
-    if code.starts_with("688") || code.starts_with("689") {
+    if code.len() == 6 && (code.starts_with('4') || code.starts_with('8')) {
+        "bse" // 北交所
+    } else if code.starts_with("688") || code.starts_with("689") {
         "star" // 科创板
     } else if code.starts_with("300") || code.starts_with("301") {
         "gem" // 创业板
@@ -241,6 +243,7 @@ pub fn get_board_stats(data_dir: &Path) -> Vec<BoardStats> {
     let mut sz_main = 0usize;
     let mut gem = 0usize;
     let mut star = 0usize;
+    let mut bse = 0usize;
 
     for code in &codes {
         match classify_board(code) {
@@ -248,6 +251,7 @@ pub fn get_board_stats(data_dir: &Path) -> Vec<BoardStats> {
             "sz_main" => sz_main += 1,
             "gem" => gem += 1,
             "star" => star += 1,
+            "bse" => bse += 1,
             _ => {}
         }
     }
@@ -257,17 +261,108 @@ pub fn get_board_stats(data_dir: &Path) -> Vec<BoardStats> {
         BoardStats { id: "sz_main".into(), name: "深证主板".into(), count: sz_main },
         BoardStats { id: "gem".into(), name: "创业板".into(), count: gem },
         BoardStats { id: "star".into(), name: "科创板".into(), count: star },
+        BoardStats { id: "bse".into(), name: "北交所".into(), count: bse },
         BoardStats { id: "all_a".into(), name: "全 A 股".into(), count: codes.len() },
     ]
 }
 
-/// 获取指定板块的股票代码列表
-pub fn get_stock_codes_by_board(data_dir: &Path, board: &str) -> Vec<String> {
-    let codes = get_all_stock_codes(data_dir);
-    if board == "all_a" {
-        return codes;
+/// 从东方财富在线 API 获取指定板块的股票代码列表
+pub fn fetch_board_stock_codes(board: &str) -> Result<Vec<String>> {
+    let fs = match board {
+        "sh_main" => "m:1+t:2",           // 上证主板
+        "sz_main" => "m:0+t:6",           // 深证主板
+        "gem" => "m:0+t:80",              // 创业板
+        "star" => "m:1+t:23",             // 科创板
+        "bse" => "m:0+t:81",              // 北交所
+        "all_a" => "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23,m:0+t:81", // 全部 A 股
+        _ => return Err(anyhow::anyhow!("未知板块: {}", board)),
+    };
+
+    let url = format!(
+        "https://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=10000&po=1&np=1&ut=bd1d9ddb04089700cf9c27f6f7426281&fltt=2&invt=2&fid=f3&fs={}&fields=f12",
+        fs
+    );
+
+    let client = build_http_client()?;
+    let resp = client.get(&url)
+        .header("Referer", "https://quote.eastmoney.com/")
+        .send()?;
+    let body = resp.text()?;
+
+    if body.is_empty() {
+        return Ok(Vec::new());
     }
-    codes.into_iter().filter(|c| classify_board(c) == board).collect()
+
+    let json: serde_json::Value = serde_json::from_str(&body)
+        .context("解析东方财富股票列表失败")?;
+
+    let diff = json.get("data")
+        .and_then(|d| d.get("diff"))
+        .and_then(|v| v.as_array());
+
+    let Some(diff) = diff else {
+        return Ok(Vec::new());
+    };
+
+    let codes: Vec<String> = diff.iter()
+        .filter_map(|item| item.get("f12").and_then(|v| v.as_str()).map(|s| s.to_string()))
+        .filter(|c| !c.is_empty())
+        .collect();
+
+    Ok(codes)
+}
+
+/// 板块在线信息（从东方财富 API 获取）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BoardOnlineInfo {
+    pub id: String,
+    pub name: String,
+    pub total_count: usize,   // 在线总股票数
+    pub local_count: usize,   // 本地已有股票数
+}
+
+/// 获取板块在线信息（各板块有多少只股票）
+pub fn get_board_online_info(data_dir: &Path) -> Vec<BoardOnlineInfo> {
+    let local_codes = get_all_stock_codes(data_dir);
+
+    let sub_boards = [
+        ("sh_main", "上证主板"),
+        ("sz_main", "深证主板"),
+        ("gem", "创业板"),
+        ("star", "科创板"),
+        ("bse", "北交所"),
+    ];
+
+    let mut results: Vec<BoardOnlineInfo> = Vec::new();
+    let mut all_online_count = 0usize;
+
+    for (id, name) in &sub_boards {
+        let online_codes = fetch_board_stock_codes(id).unwrap_or_default();
+        let online_count = online_codes.len();
+        all_online_count += online_count;
+        let local_count = local_codes.iter().filter(|c| classify_board(c) == *id).count();
+        results.push(BoardOnlineInfo {
+            id: id.to_string(),
+            name: name.to_string(),
+            total_count: online_count,
+            local_count,
+        });
+    }
+
+    // 全 A 股 = 各子板块在线数之和，无需再额外请求 API
+    results.push(BoardOnlineInfo {
+        id: "all_a".to_string(),
+        name: "全 A 股".to_string(),
+        total_count: all_online_count,
+        local_count: local_codes.len(),
+    });
+
+    results
+}
+
+/// 获取指定板块的股票代码列表（优先从在线 API 获取）
+pub fn get_stock_codes_by_board(_data_dir: &Path, board: &str) -> Vec<String> {
+    fetch_board_stock_codes(board).unwrap_or_else(|_| Vec::new())
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -385,7 +480,8 @@ fn build_http_client() -> Result<reqwest::blocking::Client> {
 }
 
 /// 从新浪获取 K 线数据
-fn fetch_sina_kline(sina_symbol: &str, scale: u32, datalen: u32) -> Result<Vec<KlineRecord>> {
+/// since: 可选的增量起始日期 (格式 "2024-01-01")，新浪 API 不支持日期过滤，客户端侧裁剪
+fn fetch_sina_kline(sina_symbol: &str, scale: u32, datalen: u32, since: Option<&str>) -> Result<Vec<KlineRecord>> {
     let url = format!(
         "https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData?symbol={}&scale={}&ma=no&datalen={}",
         sina_symbol, scale, datalen
@@ -402,14 +498,21 @@ fn fetch_sina_kline(sina_symbol: &str, scale: u32, datalen: u32) -> Result<Vec<K
     let data: Vec<SinaKlineItem> = serde_json::from_str(&body)
         .context("解析新浪 K 线数据失败")?;
 
-    Ok(data.iter().map(|item| KlineRecord {
+    let records: Vec<KlineRecord> = data.iter().map(|item| KlineRecord {
         datetime: item.day.clone(),
         open: item.open.parse().unwrap_or(0.0),
         high: item.high.parse().unwrap_or(0.0),
         low: item.low.parse().unwrap_or(0.0),
         close: item.close.parse().unwrap_or(0.0),
         volume: item.volume.parse().unwrap_or(0),
-    }).collect())
+    }).collect();
+
+    // 新浪 API 不支持日期过滤，客户端侧裁剪增量数据
+    Ok(if let Some(since_dt) = since {
+        records.into_iter().filter(|r| r.datetime.as_str() >= since_dt).collect()
+    } else {
+        records
+    })
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -419,8 +522,10 @@ fn fetch_sina_kline(sina_symbol: &str, scale: u32, datalen: u32) -> Result<Vec<K
 /// 从腾讯获取 K 线数据
 /// API: https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?
 ///      param=sh600000,day,2023-01-01,2025-12-31,2000,qfq
-fn fetch_tencent_kline(tencent_symbol: &str, klt: &str) -> Result<Vec<KlineRecord>> {
-    let param = format!("{},{},2020-01-01,,2000,qfq", tencent_symbol, klt);
+/// since: 可选的增量起始日期 (格式 "2024-01-01")，通过 API 参数传递
+fn fetch_tencent_kline(tencent_symbol: &str, klt: &str, since: Option<&str>) -> Result<Vec<KlineRecord>> {
+    let start = since.unwrap_or("2020-01-01");
+    let param = format!("{},{},{},,2000,qfq", tencent_symbol, klt, start);
     let url = format!(
         "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={}",
         param
@@ -483,10 +588,12 @@ fn fetch_tencent_kline(tencent_symbol: &str, klt: &str) -> Result<Vec<KlineRecor
 
 /// 从网易获取 K 线数据
 /// API: http://quotes.money.163.com/service/chddata.html?code=0600000&start=20230101&end=20251231&fields=TCLOSE;HIGH;LOW;TOPEN;VOTURNOVER
-fn fetch_netease_kline(netease_code: &str, klt: &str) -> Result<Vec<KlineRecord>> {
+/// since: 可选的增量起始日期 (格式 "20240101"，无连字符)，通过 API start 参数传递
+fn fetch_netease_kline(netease_code: &str, klt: &str, since: Option<&str>) -> Result<Vec<KlineRecord>> {
+    let start = since.unwrap_or("20200101");
     let url = format!(
-        "http://quotes.money.163.com/service/chddata.html?code={}&start=20200101&end=20991231&fields=TCLOSE;HIGH;LOW;TOPEN;VOTURNOVER&klt={}",
-        netease_code, klt
+        "http://quotes.money.163.com/service/chddata.html?code={}&start={}&end=20991231&fields=TCLOSE;HIGH;LOW;TOPEN;VOTURNOVER&klt={}",
+        netease_code, start, klt
     );
 
     let client = build_http_client()?;
@@ -546,11 +653,13 @@ fn fetch_netease_kline(netease_code: &str, klt: &str) -> Result<Vec<KlineRecord>
 /// 从东方财富获取 K 线数据
 /// API: http://push2his.eastmoney.com/api/qt/stock/kline/get
 /// klt: 101=日线, 60=60分钟, 30=30分钟, 15=15分钟, 5=5分钟, 1=1分钟
-fn fetch_eastmoney_kline(secid: &str, klt: &str, lmt: u32) -> Result<Vec<KlineRecord>> {
+/// beg: 可选的增量起始日期 (格式 "20240101"，无连字符)，通过 API beg 参数传递
+fn fetch_eastmoney_kline(secid: &str, klt: &str, lmt: u32, beg: Option<&str>) -> Result<Vec<KlineRecord>> {
+    let beg_param = beg.unwrap_or("19900101");
     let url = "http://push2his.eastmoney.com/api/qt/stock/kline/get";
     let params = format!(
-        "secid={}&ut=fa5fd1943c7b386f172d6893dbfba10b&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61&klt={}&fqt=1&end=20500101&lmt={}",
-        secid, klt, lmt
+        "secid={}&ut=fa5fd1943c7b386f172d6893dbfba10b&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61&klt={}&fqt=1&beg={}&end=20500101&lmt={}",
+        secid, klt, beg_param, lmt
     );
     let full_url = format!("{}?{}", url, params);
 
@@ -608,7 +717,8 @@ fn fetch_eastmoney_kline(secid: &str, klt: &str, lmt: u32) -> Result<Vec<KlineRe
 /// 从 Tushare 获取 K 线数据
 /// API: https://api.tushare.pro
 /// 支持日线/周线/月线，分钟线需要更高积分
-fn fetch_tushare_kline(ts_code: &str, freq: &str) -> Result<Vec<KlineRecord>> {
+/// since: 可选的增量起始日期 (格式 "20240101"，无连字符)，通过 API start_date 参数传递
+fn fetch_tushare_kline(ts_code: &str, freq: &str, since: Option<&str>) -> Result<Vec<KlineRecord>> {
     // 选择 Tushare 接口名称
     let api_name = match freq {
         "D" => "daily",
@@ -617,13 +727,12 @@ fn fetch_tushare_kline(ts_code: &str, freq: &str) -> Result<Vec<KlineRecord>> {
         _ => "stk_mins", // 分钟线
     };
 
-    // 日期范围：最近 5 年
     let end_date = chrono::Local::now().format("%Y%m%d").to_string();
-    let start_date = {
-        let now = chrono::Local::now();
-        let five_years_ago = now - chrono::Duration::try_days(365 * 5).unwrap_or_default();
+    let default_start = {
+        let five_years_ago = chrono::Local::now() - chrono::Duration::try_days(365 * 5).unwrap_or_default();
         five_years_ago.format("%Y%m%d").to_string()
     };
+    let start_date = since.unwrap_or(&default_start);
 
     // 构造请求体
     let params = if freq == "D" || freq == "W" || freq == "M" {
@@ -675,7 +784,7 @@ fn fetch_tushare_kline(ts_code: &str, freq: &str) -> Result<Vec<KlineRecord>> {
     if code != 0 {
         // 分钟线可能积分不足，尝试降级为日线
         if freq != "D" && freq != "W" && freq != "M" {
-            return fetch_tushare_kline(ts_code, "D");
+            return fetch_tushare_kline(ts_code, "D", since);
         }
         let msg = json.get("msg").and_then(|m| m.as_str()).unwrap_or("unknown error");
         anyhow::bail!("Tushare error: {}", msg);
@@ -776,15 +885,27 @@ struct FetchResult {
 /// 按级别动态调整数据源优先级：
 /// - 日线/周线/月线: 新浪 → 腾讯 → Tushare → 网易 → 东方财富(日线)
 /// - 分钟级: 东方财富(最优) → 新浪 → 腾讯 → Tushare
+/// since: 可选的增量起始日期 (格式 "2024-01-01"，有连字符)，各数据源内部按需转换格式
 fn fetch_kline_multi_source(
     code: &str,
     tf: TimeFrame,
+    since: Option<&str>,
 ) -> Result<FetchResult> {
     let sina_symbol = code_to_sina(code);
     let tencent_symbol = code_to_tencent(code);
     let netease_code = code_to_netease(code);
     let em_secid = code_to_eastmoney(code);
     let ts_code = code_to_tushare(code);
+
+    // 各数据源需要的日期格式不同，提前转换
+    // since 格式: "2024-01-01"（有连字符）
+    // 东财/网易/Tushare: "20240101"（无连字符）
+    let since_nohyphen = since.map(|s| s.replace("-", ""));
+    let since_sina = since;                       // "2024-01-01"
+    let since_tencent = since;                    // "2024-01-01"
+    let since_netease = since_nohyphen.as_deref();// "20240101"
+    let since_eastmoney = since_nohyphen.as_deref(); // "20240101"
+    let since_tushare = since_nohyphen.as_deref();   // "20240101"
 
     let cfg = match tf.source_config() {
         Some(c) => c,
@@ -799,7 +920,7 @@ fn fetch_kline_multi_source(
 
         // ─── 1. 东方财富 (分钟级最优) ───
         if let Some(klt) = cfg.eastmoney_klt {
-            match fetch_eastmoney_kline(&em_secid, klt, cfg.eastmoney_lmt) {
+            match fetch_eastmoney_kline(&em_secid, klt, cfg.eastmoney_lmt, since_eastmoney) {
                 Ok(data) if !data.is_empty() => {
                     return Ok(FetchResult { records: data, source: "eastmoney".into() });
                 }
@@ -808,7 +929,7 @@ fn fetch_kline_multi_source(
         }
 
         // ─── 2. 新浪 ───
-        match fetch_sina_kline(&sina_symbol, cfg.sina_scale, cfg.sina_datalen) {
+        match fetch_sina_kline(&sina_symbol, cfg.sina_scale, cfg.sina_datalen, since_sina) {
             Ok(data) if !data.is_empty() => {
                 return Ok(FetchResult { records: data, source: "sina".into() });
             }
@@ -817,7 +938,7 @@ fn fetch_kline_multi_source(
 
         // ─── 3. 腾讯 ───
         if let Some(klt) = cfg.tencent_klt {
-            match fetch_tencent_kline(&tencent_symbol, klt) {
+            match fetch_tencent_kline(&tencent_symbol, klt, since_tencent) {
                 Ok(data) if !data.is_empty() => {
                     return Ok(FetchResult { records: data, source: "tencent".into() });
                 }
@@ -827,7 +948,7 @@ fn fetch_kline_multi_source(
 
         // ─── 4. Tushare (分钟线可能积分不足，内部自动降级日线) ───
         if let Some(freq) = cfg.tushare_freq {
-            match fetch_tushare_kline(&ts_code, freq) {
+            match fetch_tushare_kline(&ts_code, freq, since_tushare) {
                 Ok(data) if !data.is_empty() => {
                     return Ok(FetchResult { records: data, source: "tushare".into() });
                 }
@@ -836,7 +957,7 @@ fn fetch_kline_multi_source(
         }
 
         // ─── 5. 新浪兜底(增大请求量) ───
-        match fetch_sina_kline(&sina_symbol, cfg.sina_scale, 1000) {
+        match fetch_sina_kline(&sina_symbol, cfg.sina_scale, 1000, since_sina) {
             Ok(data) if !data.is_empty() => {
                 return Ok(FetchResult { records: data, source: "sina_retry".into() });
             }
@@ -848,7 +969,7 @@ fn fetch_kline_multi_source(
 
         // ─── 1. 新浪 (月线不支持,需日线重采样) ───
         if tf != TimeFrame::M {
-            match fetch_sina_kline(&sina_symbol, cfg.sina_scale, cfg.sina_datalen) {
+            match fetch_sina_kline(&sina_symbol, cfg.sina_scale, cfg.sina_datalen, since_sina) {
                 Ok(data) if !data.is_empty() => {
                     return Ok(FetchResult { records: data, source: "sina".into() });
                 }
@@ -858,7 +979,7 @@ fn fetch_kline_multi_source(
 
         // ─── 2. 腾讯 ───
         if let Some(klt) = cfg.tencent_klt {
-            match fetch_tencent_kline(&tencent_symbol, klt) {
+            match fetch_tencent_kline(&tencent_symbol, klt, since_tencent) {
                 Ok(data) if !data.is_empty() => {
                     return Ok(FetchResult { records: data, source: "tencent".into() });
                 }
@@ -868,7 +989,7 @@ fn fetch_kline_multi_source(
 
         // ─── 3. Tushare (全级别，数据质量最高) ───
         if let Some(freq) = cfg.tushare_freq {
-            match fetch_tushare_kline(&ts_code, freq) {
+            match fetch_tushare_kline(&ts_code, freq, since_tushare) {
                 Ok(data) if !data.is_empty() => {
                     return Ok(FetchResult { records: data, source: "tushare".into() });
                 }
@@ -879,7 +1000,7 @@ fn fetch_kline_multi_source(
         // ─── 4. 网易 (仅日线/周线/月线) ───
         if is_daily_or_above {
             if let Some(klt) = cfg.netease_klt {
-                match fetch_netease_kline(&netease_code, klt) {
+                match fetch_netease_kline(&netease_code, klt, since_netease) {
                     Ok(data) if !data.is_empty() => {
                         return Ok(FetchResult { records: data, source: "netease".into() });
                     }
@@ -890,7 +1011,7 @@ fn fetch_kline_multi_source(
 
         // ─── 5. 东方财富 (仅日线) ───
         if let Some(klt) = cfg.eastmoney_klt {
-            match fetch_eastmoney_kline(&em_secid, klt, cfg.eastmoney_lmt) {
+            match fetch_eastmoney_kline(&em_secid, klt, cfg.eastmoney_lmt, since_eastmoney) {
                 Ok(data) if !data.is_empty() => {
                     return Ok(FetchResult { records: data, source: "eastmoney".into() });
                 }
@@ -900,19 +1021,19 @@ fn fetch_kline_multi_source(
 
         // ─── 6. 日线兜底 (周线失败时从日线重采样) ───
         if tf == TimeFrame::D || tf == TimeFrame::W {
-            match fetch_sina_kline(&sina_symbol, 240, 2000) {
+            match fetch_sina_kline(&sina_symbol, 240, 2000, None) {
                 Ok(data) if !data.is_empty() => {
                     return Ok(FetchResult { records: data, source: "sina_daily_fallback".into() });
                 }
                 _ => {}
             }
-            match fetch_tencent_kline(&tencent_symbol, "day") {
+            match fetch_tencent_kline(&tencent_symbol, "day", None) {
                 Ok(data) if !data.is_empty() => {
                     return Ok(FetchResult { records: data, source: "tencent_daily_fallback".into() });
                 }
                 _ => {}
             }
-            match fetch_netease_kline(&netease_code, "day") {
+            match fetch_netease_kline(&netease_code, "day", None) {
                 Ok(data) if !data.is_empty() => {
                     return Ok(FetchResult { records: data, source: "netease_daily_fallback".into() });
                 }
@@ -934,6 +1055,16 @@ fn filter_by_start(records: &[KlineRecord], start_date: &str) -> Vec<KlineRecord
         .filter(|r| r.datetime.as_str() >= start_date)
         .cloned()
         .collect()
+}
+
+/// 将日期字符串减去一天 (格式 "2024-01-15" → "2024-01-14")
+fn subtract_one_day(date_str: &str) -> String {
+    let s = if date_str.len() > 10 { &date_str[..10] } else { date_str };
+    NaiveDate::parse_from_str(s, "%Y-%m-%d")
+        .ok()
+        .and_then(|d: NaiveDate| d.checked_sub_signed(chrono::Duration::try_days(1).unwrap_or_default()))
+        .map(|d| d.format("%Y-%m-%d").to_string())
+        .unwrap_or_else(|| date_str.to_string())
 }
 
 /// 从日线重采样为周线
@@ -1454,14 +1585,14 @@ pub fn cross_validate_stock(
 
     // 从新浪获取
     let sina_records = if tf != TimeFrame::M {
-        fetch_sina_kline(&sina_symbol, cfg.sina_scale, cfg.sina_datalen).unwrap_or_default()
+        fetch_sina_kline(&sina_symbol, cfg.sina_scale, cfg.sina_datalen, None).unwrap_or_default()
     } else {
         Vec::new()
     };
 
     // 从腾讯获取
     let tencent_records = if let Some(klt) = cfg.tencent_klt {
-        fetch_tencent_kline(&tencent_symbol, klt).unwrap_or_default()
+        fetch_tencent_kline(&tencent_symbol, klt, None).unwrap_or_default()
     } else {
         Vec::new()
     };
@@ -1607,7 +1738,7 @@ fn tf_dir_name(tf: TimeFrame) -> &'static str {
     }
 }
 
-/// 同步单只股票 K 线数据（多数据源协同）
+/// 同步单只股票 K 线数据（多数据源协同，增量更新）
 pub fn sync_stock(
     data_dir: &Path,
     symbol: &str,
@@ -1626,11 +1757,28 @@ pub fn sync_stock(
         let filepath = cache_dir.join(dir_name).join(format!("{}.parquet", symbol));
         let level_str = dir_name.to_string();
 
+        // ─── 增量逻辑: 非 force 时, 以本地最后日期的前一天作为增量起始点 ───
+        let inc_since: Option<String> = if !force {
+            get_parquet_last_date(&filepath).map(|last_dt| {
+                // 从最后日期前一天开始请求, 确保覆盖修正
+                subtract_one_day(&last_dt)
+            })
+        } else {
+            None
+        };
+
         let result = match tf {
             TimeFrame::M => {
                 // 月线从日线重采样
+                // 日线的增量起始点
+                let daily_since = if !force {
+                    let daily_path = cache_dir.join("1d").join(format!("{}.parquet", symbol));
+                    get_parquet_last_date(&daily_path).map(|last_dt| subtract_one_day(&last_dt))
+                } else {
+                    None
+                };
                 if daily_records.is_none() {
-                    let fetch = fetch_kline_multi_source(symbol, TimeFrame::D)
+                    let fetch = fetch_kline_multi_source(symbol, TimeFrame::D, daily_since.as_deref())
                         .unwrap_or(FetchResult { records: Vec::new(), source: "none".into() });
                     if !fetch.records.is_empty() {
                         daily_records = Some(filter_by_start(&fetch.records, start_date));
@@ -1640,6 +1788,17 @@ pub fn sync_stock(
                     Some(mut recs) => {
                         if !force {
                             if let Ok(old) = load_existing_parquet(&filepath) {
+                                // 如果新数据没有新增（与旧数据最后日期相同），则跳过
+                                let old_last = old.last().map(|r| r.datetime.as_str()).unwrap_or("");
+                                let new_last = recs.last().map(|r| r.datetime.as_str()).unwrap_or("");
+                                if old_last == new_last && !old.is_empty() {
+                                    results.push(SyncLevelResult {
+                                        level: level_str, status: "skip".into(),
+                                        count: old.len(), source: "resample_from_daily".into(),
+                                        msg: "already up to date".into(),
+                                    });
+                                    continue;
+                                }
                                 recs = merge_records(&old, &recs);
                             }
                         }
@@ -1663,14 +1822,20 @@ pub fn sync_stock(
             }
             TimeFrame::W => {
                 // 周线：优先直接获取，失败则从日线重采样
-                let fetch = fetch_kline_multi_source(symbol, tf)
+                let fetch = fetch_kline_multi_source(symbol, tf, inc_since.as_deref())
                     .unwrap_or(FetchResult { records: Vec::new(), source: "none".into() });
                 let records = if !fetch.records.is_empty() {
                     Some(filter_by_start(&fetch.records, start_date))
                 } else {
-                    // 从日线重采样
+                    // 从日线重采样 — 需要获取日线增量
+                    let daily_since = if !force {
+                        let daily_path = cache_dir.join("1d").join(format!("{}.parquet", symbol));
+                        get_parquet_last_date(&daily_path).map(|last_dt| subtract_one_day(&last_dt))
+                    } else {
+                        None
+                    };
                     if daily_records.is_none() {
-                        let daily_fetch = fetch_kline_multi_source(symbol, TimeFrame::D)
+                        let daily_fetch = fetch_kline_multi_source(symbol, TimeFrame::D, daily_since.as_deref())
                             .unwrap_or(FetchResult { records: Vec::new(), source: "none".into() });
                         if !daily_fetch.records.is_empty() {
                             daily_records = Some(filter_by_start(&daily_fetch.records, start_date));
@@ -1683,6 +1848,16 @@ pub fn sync_stock(
                     Some(mut recs) => {
                         if !force {
                             if let Ok(old) = load_existing_parquet(&filepath) {
+                                let old_last = old.last().map(|r| r.datetime.as_str()).unwrap_or("");
+                                let new_last = recs.last().map(|r| r.datetime.as_str()).unwrap_or("");
+                                if old_last == new_last && !old.is_empty() {
+                                    results.push(SyncLevelResult {
+                                        level: level_str, status: "skip".into(),
+                                        count: old.len(), source: fetch.source.clone(),
+                                        msg: "already up to date".into(),
+                                    });
+                                    continue;
+                                }
                                 recs = merge_records(&old, &recs);
                             }
                         }
@@ -1707,9 +1882,22 @@ pub fn sync_stock(
             }
             // 日线 & 分钟级别
             _ => {
-                let fetch = fetch_kline_multi_source(symbol, tf)
+                let fetch = fetch_kline_multi_source(symbol, tf, inc_since.as_deref())
                     .unwrap_or(FetchResult { records: Vec::new(), source: "none".into() });
                 if fetch.records.is_empty() {
+                    // 如果本地已有数据且无新数据，跳过
+                    if !force && filepath.exists() {
+                        if let Ok(old) = load_existing_parquet(&filepath) {
+                            if !old.is_empty() {
+                                results.push(SyncLevelResult {
+                                    level: level_str, status: "skip".into(),
+                                    count: old.len(), source: "local".into(),
+                                    msg: "already up to date".into(),
+                                });
+                                continue;
+                            }
+                        }
+                    }
                     SyncLevelResult {
                         level: level_str, status: "fail".into(), count: 0,
                         source: String::new(), msg: "no data (all sources failed)".into(),
@@ -1722,6 +1910,16 @@ pub fn sync_stock(
                     }
                     if !force {
                         if let Ok(old) = load_existing_parquet(&filepath) {
+                            let old_last = old.last().map(|r| r.datetime.as_str()).unwrap_or("");
+                            let new_last = records.last().map(|r| r.datetime.as_str()).unwrap_or("");
+                            if old_last == new_last && !old.is_empty() {
+                                results.push(SyncLevelResult {
+                                    level: level_str, status: "skip".into(),
+                                    count: old.len(), source: fetch.source.clone(),
+                                    msg: "already up to date".into(),
+                                });
+                                continue;
+                            }
                             records = merge_records(&old, &records);
                         }
                     }
@@ -1841,6 +2039,15 @@ fn get_parquet_date_range(path: &Path) -> (Option<String>, Option<String>) {
     )
 }
 
+/// 获取本地 parquet 文件的最后日期，用于增量同步起始点
+fn get_parquet_last_date(filepath: &Path) -> Option<String> {
+    if !filepath.exists() {
+        return None;
+    }
+    let (_, end) = get_parquet_date_range(filepath);
+    end
+}
+
 /// 获取所有股票代码列表
 pub fn get_all_stock_codes(data_dir: &Path) -> Vec<String> {
     let cache_dir = data_dir.join("kline_cache");
@@ -1872,4 +2079,23 @@ fn extract_codes_from_dir(dir: &Path) -> Vec<String> {
     }
     codes.sort();
     codes
+}
+
+/// 同步指定板块的全部股票
+/// 从东方财富在线 API 获取板块股票列表，然后逐只同步
+pub fn sync_board(
+    data_dir: &Path,
+    board: &str,
+    levels: &[TimeFrame],
+    start_date: &str,
+    force: bool,
+) -> Vec<SyncStockResult> {
+    let codes = fetch_board_stock_codes(board).unwrap_or_else(|e| {
+        eprintln!("获取板块 {} 股票列表失败: {}, 尝试本地扫描", board, e);
+        get_stock_codes_by_board(data_dir, board)
+    });
+
+    codes.iter()
+        .map(|sym| sync_stock(data_dir, sym, levels, start_date, force))
+        .collect()
 }

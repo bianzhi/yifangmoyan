@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use tauri::State;
 
 use crate::state::AppState;
-use yifang_data::{ChartData, DataSource, KLine, StockInfo, TimeFrame, SyncStockResult, DataStatus, BoardStats, ValidateStockResult, ValidateLevelResult, MoveDataResult};
+use yifang_data::{ChartData, DataSource, KLine, StockInfo, TimeFrame, SyncStockResult, DataStatus, BoardStats, BoardOnlineInfo, ValidateStockResult, ValidateLevelResult, MoveDataResult};
 use yifang_czsc::CzscAnalyzer;
 use yifang_wyckoff::WyckoffAnalyzer;
 use yifang_indicator::calc_macd;
@@ -325,10 +325,35 @@ pub fn get_board_stats(state: State<'_, AppState>) -> Result<Vec<BoardStats>, St
     Ok(yifang_data::get_board_stats(data_dir))
 }
 
-/// 获取指定板块的股票代码列表
+/// 获取板块在线信息（各板块在线股票数 + 本地已有数）
 #[tauri::command]
-pub fn get_stock_codes_by_board(state: State<'_, AppState>, board: String) -> Result<Vec<String>, String> {
+pub fn get_board_online_info(state: State<'_, AppState>) -> Result<Vec<BoardOnlineInfo>, String> {
     let manager = state.manager.lock().map_err(|e| e.to_string())?;
     let data_dir = manager.data_dir();
-    Ok(yifang_data::get_stock_codes_by_board(data_dir, &board))
+    Ok(yifang_data::get_board_online_info(data_dir))
+}
+
+/// 获取指定板块的股票代码列表（从在线 API 获取）
+#[tauri::command]
+pub fn get_stock_codes_by_board(board: String) -> Result<Vec<String>, String> {
+    yifang_data::fetch_board_stock_codes(&board).map_err(|e| e.to_string())
+}
+
+/// 同步指定板块全部股票
+#[tauri::command]
+pub fn sync_board(
+    state: State<'_, AppState>,
+    board: String,
+    levels: Vec<String>,
+    start_date: Option<String>,
+    force: bool,
+) -> Result<Vec<SyncStockResult>, String> {
+    let tfs: Vec<TimeFrame> = levels.iter().filter_map(|s| parse_timeframe(s)).collect();
+    if tfs.is_empty() {
+        return Err("未指定有效的 K 线级别".into());
+    }
+    let manager = state.manager.lock().map_err(|e| e.to_string())?;
+    let data_dir = manager.data_dir();
+    let start = start_date.unwrap_or_default();
+    Ok(yifang_data::sync_board(data_dir, &board, &tfs, &start, force))
 }

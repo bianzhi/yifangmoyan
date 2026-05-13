@@ -1,26 +1,28 @@
-//! 威科夫标注生成 — 趋势线、冰线、支撑阻力
+//! 威科夫标注生成
+//!
+//! 整合所有分析结果，生成完整的 WyckoffResult。
+//!
+//! 包含：
+//! - 趋势线（兼容旧接口）
+//! - 供需线
+//! - 事件标注
+//! - 交易区间
+//! - 阶段标注
+//! - 努力与结果分析
 
-use yifang_data::{KLine, TrendLine, WyckoffEvent, TradingRange, WyckoffResult};
+use yifang_data::{
+    KLine, WyckoffEvent, TrendLine, WyckoffResult,
+};
 
-/// 从事件和交易区间生成威科夫分析结果
-pub fn generate_annotations(
-    klines: &[KLine],
-    events: Vec<WyckoffEvent>,
-    trading_ranges: Vec<TradingRange>,
-) -> WyckoffResult {
-    let trend_lines = generate_trend_lines(klines, &events);
+use crate::effort::analyze_effort_result;
+use crate::phase::identify_phases;
+use crate::pattern::detect_events;
+use crate::trading_range::detect_trading_ranges_structured;
+use crate::supply_demand::draw_supply_demand_lines;
 
-    WyckoffResult {
-        trend_lines,
-        events,
-        trading_ranges,
-    }
-}
-
-/// 从 K 线数据生成趋势线
+/// 从事件和交易区间生成趋势线（兼容）
 fn generate_trend_lines(klines: &[KLine], _events: &[WyckoffEvent]) -> Vec<TrendLine> {
     let mut lines = Vec::new();
-
     if klines.len() < 20 {
         return lines;
     }
@@ -39,7 +41,7 @@ fn generate_trend_lines(klines: &[KLine], _events: &[WyckoffEvent]) -> Vec<Trend
         });
     }
 
-    // 阻力趋势线：连接最近的两个显著高点
+    // 阻力趋势线
     let highs = find_significant_points(klines, false);
     if highs.len() >= 2 {
         let (i1, p1) = highs[highs.len() - 2];
@@ -56,12 +58,42 @@ fn generate_trend_lines(klines: &[KLine], _events: &[WyckoffEvent]) -> Vec<Trend
     lines
 }
 
+/// 生成完整威科夫分析结果
+pub fn generate_wyckoff_result(klines: &[KLine]) -> WyckoffResult {
+    // 1. 努力与结果分析
+    let effort_results = analyze_effort_result(klines);
+
+    // 2. 事件识别
+    let events = detect_events(klines);
+
+    // 3. 交易区间识别
+    let trading_ranges = detect_trading_ranges_structured(klines, &events);
+
+    // 4. 阶段识别
+    let phase_labels = identify_phases(klines);
+
+    // 5. 供需线绘制
+    let supply_demand_lines = draw_supply_demand_lines(klines, &trading_ranges);
+
+    // 6. 趋势线（兼容旧接口）
+    let trend_lines = generate_trend_lines(klines, &events);
+
+    WyckoffResult {
+        phase_labels,
+        events,
+        trading_ranges,
+        trend_lines,
+        supply_demand_lines,
+        effort_results,
+    }
+}
+
 /// 找出显著的高点或低点
 fn find_significant_points(klines: &[KLine], find_lows: bool) -> Vec<(usize, f64)> {
     let window = 5;
     let mut points = Vec::new();
 
-    for i in window..klines.len() - window {
+    for i in window..klines.len().saturating_sub(window) {
         let slice = &klines[i - window..=i + window];
         let val = if find_lows {
             slice.iter().map(|k| k.low).fold(f64::MAX, f64::min)

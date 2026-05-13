@@ -387,15 +387,67 @@ pub struct QuJianTaoSignal {
     pub strength: String,
 }
 
-/// 威科夫分析结果
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct WyckoffResult {
-    /// 趋势线
-    pub trend_lines: Vec<TrendLine>,
-    /// 威科夫事件标注
-    pub events: Vec<WyckoffEvent>,
-    /// 交易区间
-    pub trading_ranges: Vec<TradingRange>,
+/// 威科夫事件
+///
+/// 威科夫理论中的关键市场事件标注，严格对齐原著定义：
+///
+/// **吸筹阶段事件：**
+/// - PS (Preliminary Support): 初步支撑 — 下跌趋势中的第一次显著买盘
+/// - SC (Selling Climax): 卖出高潮 — 恐慌性抛售的顶峰，宽幅+巨量
+/// - AR (Automatic Rally): 自动反弹 — SC 后的技术性反弹，确立区间上沿
+/// - ST (Secondary Test): 二次测试 — 回测 SC 低点，确认供给耗尽（量缩价窄）
+/// - Spring: 弹簧效应 — 价格跌破 SC 低点后迅速收回，空头陷阱
+/// - Shakeout: 震荡洗盘 — 类似 Spring 但幅度更大
+/// - SOS (Sign of Strength): 强势出现 — 放量上涨突破交易区间上沿
+/// - LPS (Last Point of Support): 最后支撑点 — SOS 后回踩支撑确认
+/// - JOC (Jump Over Creek): 跳过小溪 — 价格越过阻力区（"小溪"= AR 形成的供给区）
+///
+/// **派发阶段事件：**
+/// - PSY (Preliminary Supply): 初步供给 — 上涨趋势中的第一次显著卖盘
+/// - BC (Buying Climax): 买入高潮 — 贪婪性买入的顶峰，宽幅+巨量
+/// - AR (Automatic Reaction): 自动回落 — BC 后的技术性回落，确立区间下沿
+/// - ST (Secondary Test): 二次测试 — 回测 BC 高点，确认需求耗尽（量缩价窄）
+/// - UTAD (Upthrust After Distribution): 派发后冲高 — 突破 BC 高点后迅速回落，多头陷阱
+/// - SOW (Sign of Weakness): 弱势出现 — 放量下跌跌破交易区间下沿
+/// - LPSY (Last Point of Supply): 最后供给点 — SOW 后反弹确认
+/// - ICE (Ice Line Break): 冰线突破 — 价格跌破关键支撑线
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WyckoffEvent {
+    /// 事件类型
+    pub event_type: String,
+    /// K 线索引
+    pub index: u64,
+    /// 时间
+    pub dt: String,
+    /// 价格
+    pub price: f64,
+    /// 描述
+    pub description: String,
+}
+
+/// 交易区间 (Trading Range)
+///
+/// 威科夫理论中吸筹/派发的横盘区间。
+/// - 吸筹区间：由 SC 的低点和 AR 的高点界定
+/// - 派发区间：由 BC 的高点和 AR 的低点界定
+///
+/// 关键价格水平：
+/// - upper / lower: 区间上下沿
+/// - ice_line: 冰线 — 吸筹区间中 AR 低点连线形成的供给线，
+///   跌破冰线意味着供给压倒需求
+/// - midpoint: 区间中点 — 判断价格在区间内的相对位置
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TradingRange {
+    /// 起始 K 线索引
+    pub start_index: u64,
+    /// 结束 K 线索引
+    pub end_index: u64,
+    /// 上沿
+    pub upper: f64,
+    /// 下沿
+    pub lower: f64,
+    /// 冰线价格
+    pub ice_line: f64,
 }
 
 /// 趋势线
@@ -413,43 +465,161 @@ pub struct TrendLine {
     pub end_price: f64,
 }
 
-/// 威科夫事件
+/// 威科夫市场阶段（粗粒度）
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum WyckoffPhase {
+    /// 吸筹 (Accumulation)
+    Accumulation,
+    /// 拉升 (Markup)
+    Markup,
+    /// 派发 (Distribution)
+    Distribution,
+    /// 下跌 (Markdown)
+    Markdown,
+}
+
+impl Default for WyckoffPhase {
+    fn default() -> Self {
+        WyckoffPhase::Accumulation
+    }
+}
+
+impl std::fmt::Display for WyckoffPhase {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            WyckoffPhase::Accumulation => write!(f, "吸筹"),
+            WyckoffPhase::Markup => write!(f, "拉升"),
+            WyckoffPhase::Distribution => write!(f, "派发"),
+            WyckoffPhase::Markdown => write!(f, "下跌"),
+        }
+    }
+}
+
+/// 威科夫吸筹子阶段
+///
+/// 对应 Wyckoff 原著的吸筹示意图：
+/// Phase A: 止跌 (SC, AR, ST)
+/// Phase B: 横盘蓄力 (多次测试 + Spring)
+/// Phase C: 主力测试 (Spring/ Shakeout)
+/// Phase D: 启动 (SOS, LPS, JOC)
+/// Phase E: 离开交易区间
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum AccumulationSubPhase {
+    /// A 阶段: 止跌
+    PhaseA,
+    /// B 阶段: 横盘蓄力
+    PhaseB,
+    /// C 阶段: 主力测试
+    PhaseC,
+    /// D 阶段: 启动
+    PhaseD,
+    /// E 阶段: 离开
+    PhaseE,
+}
+
+/// 威科夫派发子阶段
+///
+/// Phase A: 停止上涨 (PSY, BC, AR, ST)
+/// Phase B: 横盘派发 (多次测试 + UTAD)
+/// Phase C: 主力出货 (UTAD)
+/// Phase D: 破位 (SOW, LPSY, ICE)
+/// Phase E: 离开交易区间下跌
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum DistributionSubPhase {
+    /// A 阶段: 停涨
+    PhaseA,
+    /// B 阶段: 横盘派发
+    PhaseB,
+    /// C 阶段: 主力出货
+    PhaseC,
+    /// D 阶段: 破位
+    PhaseD,
+    /// E 阶段: 离开
+    PhaseE,
+}
+
+/// 阶段标注——标记 K 线序列中每个位置的威科夫阶段
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WyckoffEvent {
-    /// 事件类型:
-    /// - "TR" (交易区间)
-    /// - "SC" (卖出高潮)
-    /// - "AR" (自动反弹)
-    /// - "ST" (二次测试)
-    /// - "Spring" (弹簧效应)
-    /// - "UTAD" (向上冲浪后的下跌)
-    /// - "JOC" (跳过小溪)
-    /// - "LPS" (最后支撑点)
-    /// - "ICE" (冰线)
-    /// - "SOS" (强势出现)
-    /// - "SOW" (弱势出现)
-    pub event_type: String,
+pub struct PhaseLabel {
     /// K 线索引
     pub index: u64,
     /// 时间
     pub dt: String,
-    /// 价格
-    pub price: f64,
-    /// 描述
-    pub description: String,
+    /// 威科夫主要阶段
+    pub phase: WyckoffPhase,
+    /// 子阶段（吸筹/派发内细分）
+    pub sub_phase: String,
 }
 
-/// 交易区间
+/// 努力与结果（Effort vs Result）分析
+///
+/// 威科夫核心法则：努力与结果的关系
+/// - 上涨时：大量努力（高成交量）+ 小结果（小涨幅）→ 供给出现，看跌
+/// - 上涨时：小努力（低成交量）+ 大结果（大涨幅）→ 需求主导，看涨
+/// - 下跌时：大量努力（高成交量）+ 小结果（小跌幅）→ 需求出现，看涨
+/// - 下跌时：小努力（低成交量）+ 大结果（大跌幅）→ 供给主导，看跌
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TradingRange {
+pub struct EffortResult {
+    /// K 线索引
+    pub index: u64,
+    /// 时间
+    pub dt: String,
+    /// 努力（成交量相对均值的倍数）
+    pub effort: f64,
+    /// 结果（价格变动幅度占价格的比例）
+    pub result: f64,
+    /// 量价协调性: "harmonious" / "divergent"
+    pub harmony: String,
+    /// 解读: "demand_dominant" / "supply_dominant" / "neutral"
+    pub interpretation: String,
+}
+
+/// 威科夫供需线
+///
+/// 供给线 (Supply Line): 连接反弹高点，等同传统下降趋势线
+/// 需求线 (Demand Line): 连接回调低点，等同传统上升趋势线
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SupplyDemandLine {
+    /// 线类型: "supply" / "demand"
+    pub line_type: String,
     /// 起始 K 线索引
     pub start_index: u64,
     /// 结束 K 线索引
     pub end_index: u64,
-    /// 上沿
-    pub upper: f64,
-    /// 下沿
-    pub lower: f64,
-    /// 冰线价格
-    pub ice_line: f64,
+    /// 起始价格
+    pub start_price: f64,
+    /// 结束价格
+    pub end_price: f64,
+    /// 斜率
+    pub slope: f64,
+}
+
+/// 威科夫分析结果
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WyckoffResult {
+    /// 阶段标注序列
+    pub phase_labels: Vec<PhaseLabel>,
+    /// 威科夫事件标注
+    pub events: Vec<WyckoffEvent>,
+    /// 交易区间
+    pub trading_ranges: Vec<TradingRange>,
+    /// 趋势线（兼容旧字段）
+    pub trend_lines: Vec<TrendLine>,
+    /// 供需线
+    pub supply_demand_lines: Vec<SupplyDemandLine>,
+    /// 努力与结果分析
+    pub effort_results: Vec<EffortResult>,
+}
+
+impl Default for WyckoffResult {
+    fn default() -> Self {
+        WyckoffResult {
+            phase_labels: Vec::new(),
+            events: Vec::new(),
+            trading_ranges: Vec::new(),
+            trend_lines: Vec::new(),
+            supply_demand_lines: Vec::new(),
+            effort_results: Vec::new(),
+        }
+    }
 }

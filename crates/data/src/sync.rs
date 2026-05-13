@@ -391,22 +391,87 @@ fn fetch_board_codes_sina(board: &str) -> Result<Vec<String>> {
 /// 从东方财富在线 API 获取指定板块的股票代码列表
 /// 支持多数据源回退：东方财富 → 新浪 → 网易
 /// 支持分页，确保获取全部股票
-pub fn fetch_board_stock_codes(board: &str) -> Result<Vec<String>> {
-    // ── 1. 先尝试东方财富 ──
-    let fs = match board {
-        "sh_main" => "m:1+t:2",           // 上证主板
-        "sz_main" => "m:0+t:6",           // 深证主板
-        "gem" => "m:0+t:80",              // 创业板
-        "star" => "m:1+t:23",             // 科创板
-        "bse" => "m:0+t:81",              // 北交所
-        "all_a" => "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23,m:0+t:81", // 全部 A 股
-        _ => return Err(anyhow::anyhow!("未知板块: {}", board)),
-    };
+/// 东方财富板块查询策略（参考 moyan-project 实测可用配置）
+struct EastMoneyBoardStrategy {
+    name: &'static str,
+    fs: &'static str,
+    fid: &'static str,
+    max_pages: usize,
+    /// 过滤函数：返回 true 表示该代码属于此板块
+    filter: fn(&str) -> bool,
+}
 
-    match fetch_board_codes_eastmoney(fs) {
-        Ok(codes) if !codes.is_empty() => return Ok(codes),
-        result => {
-            eprintln!("东方财富获取 {} 股票列表失败: {:?}, 尝试备用数据源", board, result.err());
+fn get_eastmoney_strategies(board: &str) -> Vec<EastMoneyBoardStrategy> {
+    match board {
+        "sh_main" => vec![
+            EastMoneyBoardStrategy {
+                name: "沪A主板",
+                fs: "m:1+t:2,m:1+t:23",
+                fid: "f3",
+                max_pages: 25,
+                filter: |code| code.starts_with("60") && !code.starts_with("688"),
+            },
+        ],
+        "sz_main" => vec![
+            EastMoneyBoardStrategy {
+                name: "深A主板",
+                fs: "m:0+t:6,m:0+t:80",
+                fid: "f3",
+                max_pages: 20,
+                filter: |code| code.starts_with("00"),
+            },
+        ],
+        "gem" => vec![
+            EastMoneyBoardStrategy {
+                name: "创业板",
+                fs: "m:0+t:6,m:0+t:80",
+                fid: "f3",
+                max_pages: 20,
+                filter: |code| code.starts_with("30"),
+            },
+        ],
+        // 科创板：m:1+t:23 包含沪深主板+科创板，需过滤 688
+        "star" => vec![
+            EastMoneyBoardStrategy {
+                name: "科创板",
+                fs: "m:1+t:23",
+                fid: "f3",
+                max_pages: 25,
+                filter: |code| code.starts_with("68"),
+            },
+        ],
+        // 北交所：用 m:0+t:81 但北交所股票以 8/4 开头
+        "bse" => vec![
+            EastMoneyBoardStrategy {
+                name: "北交所",
+                fs: "m:0+t:81",
+                fid: "f3",
+                max_pages: 5,
+                filter: |code| code.starts_with("8") || code.starts_with("4"),
+            },
+        ],
+        "all_a" => vec![
+            EastMoneyBoardStrategy {
+                name: "全A股",
+                fs: "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23,m:0+t:81",
+                fid: "f3",
+                max_pages: 60,
+                filter: |_code| true, // 不过滤
+            },
+        ],
+        _ => Vec::new(),
+    }
+}
+
+pub fn fetch_board_stock_codes(board: &str) -> Result<Vec<String>> {
+    // ── 1. 尝试东方财富（分策略分页获取） ──
+    let strategies = get_eastmoney_strategies(board);
+    if !strategies.is_empty() {
+        match fetch_board_codes_eastmoney_v2(&strategies) {
+            Ok(codes) if !codes.is_empty() => return Ok(codes),
+            result => {
+                eprintln!("东方财富获取 {} 股票列表失败: {:?}, 尝试新浪", board, result.err());
+            }
         }
     }
 
@@ -432,7 +497,7 @@ pub fn fetch_board_stock_codes(board: &str) -> Result<Vec<String>> {
         let mut codes_set = std::collections::HashSet::new();
         for sub_board in &["sh_main", "sz_main", "gem", "star", "bse"] {
             // 先新浪再网易
-            for fetcher in &[fetch_board_codes_sina, fetch_board_codes_netease] {
+            for fetcher in &[fetch_board_codes_sina as fn(&str) -> Result<Vec<String>>, fetch_board_codes_netease as fn(&str) -> Result<Vec<String>>] {
                 match fetcher(sub_board) {
                     Ok(codes) if !codes.is_empty() => {
                         for c in codes {
@@ -454,57 +519,73 @@ pub fn fetch_board_stock_codes(board: &str) -> Result<Vec<String>> {
     Err(anyhow::anyhow!("所有数据源均无法获取 {} 的股票列表", board))
 }
 
-/// 东方财富分页获取股票列表（内部函数）
-fn fetch_board_codes_eastmoney(fs: &str) -> Result<Vec<String>> {
+/// 东方财富分策略分页获取（参考 moyan-project 实测方案）
+/// 对每个 strategy 分别分页请求，然后去重合并
+fn fetch_board_codes_eastmoney_v2(strategies: &[EastMoneyBoardStrategy]) -> Result<Vec<String>> {
     let client = build_eastmoney_client()?;
+    let mut all_codes = std::collections::HashSet::new();
 
-    let mut all_codes = Vec::new();
-    let mut page = 1;
-    let page_size = 5000u64;
+    for strategy in strategies {
+        let mut page = 1u64;
+        let page_size = 100u64; // 每页100条，多次请求更稳健
 
-    loop {
-        let url = format!(
-            "https://push2.eastmoney.com/api/qt/clist/get?pn={}&pz={}&po=1&np=1&ut=bd1d9ddb04089700cf9c27f6f7426281&fltt=2&invt=2&fid=f3&fs={}&fields=f12",
-            page, page_size, fs
-        );
+        loop {
+            let url = format!(
+                "https://push2.eastmoney.com/api/qt/clist/get?pn={}&pz={}&po=1&np=1&ut=bd1d9ddb04089700cf9c27f6f7426281&fltt=2&invt=2&fid={}&fs={}&fields=f12,f14",
+                page, page_size, strategy.fid, strategy.fs
+            );
 
-        let mut last_err = None;
-        let mut codes = Vec::new();
-        let mut total = 0usize;
+            let mut last_err = None;
+            let mut codes = Vec::new();
+            let mut total = 0usize;
 
-        // 每页最多重试 3 次
-        for attempt in 0..3 {
-            match try_fetch_board_codes_with_total(&client, &url) {
-                Ok((c, t)) => {
-                    codes = c;
-                    total = t;
-                    break;
-                }
-                Err(e) => {
-                    last_err = Some(e);
-                    if attempt < 2 {
-                        std::thread::sleep(std::time::Duration::from_millis(500 * (attempt as u64 + 1)));
+            // 每页最多重试 3 次
+            for attempt in 0..3 {
+                match try_fetch_board_codes_with_total(&client, &url) {
+                    Ok((c, t)) => {
+                        codes = c;
+                        total = t;
+                        break;
+                    }
+                    Err(e) => {
+                        last_err = Some(e);
+                        if attempt < 2 {
+                            std::thread::sleep(std::time::Duration::from_millis(500 * (attempt as u64 + 1)));
+                        }
                     }
                 }
             }
+
+            if let Some(e) = last_err {
+                eprintln!("东方财富 {} 第{}页获取失败: {}", strategy.name, page, e);
+                break; // 本策略失败，跳到下一个策略
+            }
+
+            // 用 filter 过滤出属于此板块的代码
+            let page_count = codes.len();
+            for code in codes {
+                if (strategy.filter)(&code) {
+                    all_codes.insert(code);
+                }
+            }
+
+            // 如果已获取到全部数据或本页无数据，退出
+            let fetched = (page * page_size) as usize;
+            if fetched >= total || page_count == 0 || page as usize >= strategy.max_pages {
+                break;
+            }
+
+            page += 1;
+            // 请求间加短延迟，避免被限流
+            std::thread::sleep(std::time::Duration::from_millis(50));
         }
-
-        if let Some(e) = last_err {
-            return Err(e);
-        }
-
-        let page_count = codes.len();
-        all_codes.extend(codes);
-
-        // 如果已获取全部或本页无数据，退出循环
-        if all_codes.len() >= total || page_count == 0 {
-            break;
-        }
-
-        page += 1;
     }
 
-    Ok(all_codes)
+    if all_codes.is_empty() {
+        return Err(anyhow::anyhow!("东方财富未获取到任何股票代码"));
+    }
+
+    Ok(all_codes.into_iter().collect())
 }
 
 fn try_fetch_board_codes_with_total(client: &reqwest::blocking::Client, url: &str) -> Result<(Vec<String>, usize)> {
@@ -553,51 +634,66 @@ pub struct BoardOnlineInfo {
 }
 
 /// 从在线 API 获取指定板块的股票总数
-/// 优先东方财富，失败后回退到获取完整列表取长度
+/// 采用与 fetch_board_stock_codes 相同的策略，确保一致性
 pub fn fetch_board_online_count(board: &str) -> Result<usize> {
-    let fs = match board {
-        "sh_main" => "m:1+t:2",
-        "sz_main" => "m:0+t:6",
-        "gem" => "m:0+t:80",
-        "star" => "m:1+t:23",
-        "bse" => "m:0+t:81",
-        _ => return Err(anyhow::anyhow!("未知板块: {}", board)),
-    };
+    // ── 1. 先尝试东方财富（与 fetch_board_stock_codes 使用相同策略） ──
+    let strategies = get_eastmoney_strategies(board);
+    if !strategies.is_empty() {
+        // 对每个策略，仅获取第一页含 total 字段来统计
+        let client = build_eastmoney_client()?;
+        let mut total_filtered = 0usize;
 
-    // ── 1. 先尝试东方财富轻量级获取总数 ──
-    let url = format!(
-        "https://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=1&np=1&ut=bd1d9ddb04089700cf9c27f6f7426281&fltt=2&invt=2&fid=f3&fs={}&fields=f12",
-        fs
-    );
+        for strategy in &strategies {
+            let url = format!(
+                "https://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=1&np=1&ut=bd1d9ddb04089700cf9c27f6f7426281&fltt=2&invt=2&fid={}&fs={}&fields=f12",
+                strategy.fid, strategy.fs
+            );
 
-    let client = build_eastmoney_client()?;
-
-    // 最多重试 3 次
-    let mut last_err = None;
-    for attempt in 0..3 {
-        match try_fetch_online_count(&client, &url) {
-            Ok(total) if total > 0 => return Ok(total),
-            Err(e) => {
-                last_err = Some(e);
-                if attempt < 2 {
-                    std::thread::sleep(std::time::Duration::from_millis(500 * (attempt as u64 + 1)));
-                }
-            }
-            Ok(_) => {
-                // total 为 0，可能是空板块或接口返回异常，继续重试
-                if attempt < 2 {
-                    std::thread::sleep(std::time::Duration::from_millis(500));
+            // 最多重试 3 次
+            for attempt in 0..3 {
+                match try_fetch_online_count(&client, &url) {
+                    Ok(total) if total > 0 => {
+                        total_filtered += total;
+                        break;
+                    }
+                    Err(e) => {
+                        if attempt == 2 {
+                            eprintln!("东方财富获取 {} 在线总数第{}次失败: {}", strategy.name, attempt + 1, e);
+                        } else {
+                            std::thread::sleep(std::time::Duration::from_millis(500 * (attempt as u64 + 1)));
+                        }
+                    }
+                    Ok(_) => {
+                        if attempt < 2 {
+                            std::thread::sleep(std::time::Duration::from_millis(500));
+                        }
+                    }
                 }
             }
         }
+
+        // 注意：合并策略的 total 可能包含了不属于此板块的股票
+        // 例如：m:0+t:6,m:0+t:80 的 total 包含深市主板+创业板
+        // 但是对于 sh_main 只有一个策略且 fs="m:1+t:2,m:1+t:23"，total 包含沪主板+科创板
+        // 所以如果用单一策略获取到更大的 total，可能是不精确的
+        // 为精确，回退到获取完整列表取长度的方法
+        if total_filtered > 0 {
+            // 如果只有一个策略且 fs 没有混合板块，直接返回 total
+            // 否则需要进一步确认
+            if strategies.len() == 1 && !strategies[0].fs.contains(",") {
+                // 单一 fs 参数，total 直接就是此板块的股票数
+                return Ok(total_filtered);
+            }
+            // 多个策略或混合 fs 参数，total 不精确
+            // 尝试用获取完整列表取长度
+        }
     }
 
-    eprintln!("东方财富获取 {} 在线总数失败: {:?}, 尝试备用方式", board, last_err);
-
-    // ── 2. 回退：获取完整股票列表取长度 ──
+    // ── 2. 回退：获取完整股票列表取长度（最精确） ──
+    eprintln!("东方财富轻量级获取 {} 在线总数不精确，回退到获取完整列表", board);
     match fetch_board_stock_codes(board) {
         Ok(codes) => Ok(codes.len()),
-        Err(e) => Err(e.context(format!("获取 {} 在线总数失败（东方财富+备用均失败）", board))),
+        Err(e) => Err(e.context(format!("获取 {} 在线总数失败（所有数据源均失败）", board))),
     }
 }
 

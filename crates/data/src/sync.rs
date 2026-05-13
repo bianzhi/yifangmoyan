@@ -1589,43 +1589,6 @@ fn subtract_one_day(date_str: &str) -> String {
         .unwrap_or_else(|| date_str.to_string())
 }
 
-/// 从日线重采样为周线
-fn resample_to_weekly(daily: &[KlineRecord]) -> Vec<KlineRecord> {
-    let mut weekly: std::collections::BTreeMap<String, KlineRecord> = std::collections::BTreeMap::new();
-    for r in daily {
-        let dt_str = &r.datetime;
-        let week_key = if dt_str.len() >= 10 {
-            match NaiveDate::parse_from_str(&dt_str[..10], "%Y-%m-%d") {
-                Ok(dt) => {
-                    use chrono::Datelike;
-                    let weekday = dt.weekday().num_days_from_monday() as i64;
-                    let monday = dt - chrono::Duration::try_days(weekday).unwrap_or_default();
-                    monday.format("%Y-%m-%d").to_string()
-                }
-                Err(_) => dt_str[..7].to_string(),
-            }
-        } else {
-            dt_str.clone()
-        };
-
-        weekly.entry(week_key).and_modify(|w| {
-            w.high = w.high.max(r.high);
-            w.low = w.low.min(r.low);
-            w.close = r.close;
-            w.volume += r.volume;
-            w.datetime = r.datetime.clone();
-        }).or_insert_with(|| KlineRecord {
-            datetime: r.datetime.clone(),
-            open: r.open,
-            high: r.high,
-            low: r.low,
-            close: r.close,
-            volume: r.volume,
-        });
-    }
-    weekly.into_values().collect()
-}
-
 /// 从日线重采样为月线
 fn resample_to_monthly(daily: &[KlineRecord]) -> Vec<KlineRecord> {
     let mut monthly: std::collections::BTreeMap<String, KlineRecord> = std::collections::BTreeMap::new();
@@ -2343,27 +2306,13 @@ pub fn sync_stock(
                 }
             }
             TimeFrame::W => {
-                // 周线：优先直接获取，失败则从日线重采样
+                // 周线：直接从数据源获取，不本地重采样
                 let fetch = fetch_kline_multi_source(symbol, tf, inc_since.as_deref())
                     .unwrap_or(FetchResult { records: Vec::new(), source: "none".into() });
                 let records = if !fetch.records.is_empty() {
                     Some(filter_by_start(&fetch.records, start_date))
                 } else {
-                    // 从日线重采样 — 需要获取日线增量
-                    let daily_since = if !force {
-                        let daily_path = cache_dir.join("1d").join(format!("{}.parquet", symbol));
-                        get_parquet_last_date(&daily_path).map(|last_dt| subtract_one_day(&last_dt))
-                    } else {
-                        None
-                    };
-                    if daily_records.is_none() {
-                        let daily_fetch = fetch_kline_multi_source(symbol, TimeFrame::D, daily_since.as_deref())
-                            .unwrap_or(FetchResult { records: Vec::new(), source: "none".into() });
-                        if !daily_fetch.records.is_empty() {
-                            daily_records = Some(filter_by_start(&daily_fetch.records, start_date));
-                        }
-                    }
-                    daily_records.as_ref().map(|d| resample_to_weekly(d))
+                    None
                 };
 
                 match records {
@@ -2384,11 +2333,10 @@ pub fn sync_stock(
                             }
                         }
                         let count = recs.len();
-                        let source_used = if fetch.records.is_empty() { "resample".into() } else { fetch.source.clone() };
                         match save_parquet(&recs, &filepath) {
                             Ok(()) => SyncLevelResult {
                                 level: level_str, status: "ok".into(), count,
-                                source: source_used, msg: String::new(),
+                                source: fetch.source, msg: String::new(),
                             },
                             Err(e) => SyncLevelResult {
                                 level: level_str, status: "error".into(), count: 0,
@@ -2398,7 +2346,7 @@ pub fn sync_stock(
                     }
                     None => SyncLevelResult {
                         level: level_str, status: "fail".into(), count: 0,
-                        source: String::new(), msg: "no data (all sources failed)".into(),
+                        source: String::new(), msg: "no data (all sources failed, refusing local resample)".into(),
                     },
                 }
             }

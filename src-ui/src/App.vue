@@ -15,6 +15,7 @@ import type { SyncProgress } from "./composables/useApi";
 import {
   type ChartData,
   type AnalysisSettings,
+  type KLine,
   type TimeFrame,
   type ViewMode,
   DEFAULT_SETTINGS,
@@ -76,6 +77,9 @@ const tooltipInfo = ref<{
   y: number;
 } | null>(null);
 
+// ===== 光标位置 K 线信息 =====
+const crosshairKline = ref<KLine | null>(null);
+
 // ===== 次级别走势面板 =====
 const subLevelPanel = ref<{
   xd: any;
@@ -86,19 +90,28 @@ const subLevelPanel = ref<{
 // ===== 计算属性 =====
 const currentPrice = computed(() => {
   if (!chartData.value || chartData.value.klines.length === 0) return null;
-  const last = chartData.value.klines[chartData.value.klines.length - 1];
-  return last;
+  // 光标悬停时显示光标所在K线，否则显示最后一根
+  return crosshairKline.value || chartData.value.klines[chartData.value.klines.length - 1];
 });
 
 const priceChange = computed(() => {
-  if (!currentPrice.value) return null;
-  const klines = chartData.value!.klines;
-  if (klines.length < 2) return null;
-  const prev = klines[klines.length - 2];
-  const curr = currentPrice.value!;
+  if (!chartData.value || chartData.value.klines.length === 0) return null;
+  const klines = chartData.value.klines;
+  const curr = currentPrice.value;
+  if (!curr) return null;
+  // 找到当前K线的index
+  const idx = klines.findIndex((k) => k.dt === curr.dt);
+  if (idx < 1) return null;
+  const prev = klines[idx - 1];
   return {
     change: curr.close - prev.close,
     changePct: ((curr.close - prev.close) / prev.close) * 100,
+    open: curr.open,
+    high: curr.high,
+    low: curr.low,
+    close: curr.close,
+    vol: curr.vol,
+    dt: curr.dt,
   };
 });
 
@@ -303,14 +316,19 @@ function renderChart() {
   mainChart.subscribeCrosshairMove((param) => {
     if (!param.time || !param.point) {
       tooltipInfo.value = null;
+      crosshairKline.value = null;
       return;
     }
-    // 查找该位置的缠论/威科夫数据
+    // 查找该位置的 K 线 & 缠论/威科夫数据
     const idx = data.klines.findIndex((k) => toTime(k.dt) === param.time);
     if (idx < 0) {
       tooltipInfo.value = null;
+      crosshairKline.value = null;
       return;
     }
+
+    // 更新光标位置 K 线信息（用于 header 显示涨跌幅）
+    crosshairKline.value = data.klines[idx];
 
     let info: any = null;
 
@@ -639,8 +657,8 @@ function renderWyckoffOverlays(data: ChartData) {
     }
   }
 
-  // 趋势线（兼容旧字段）
-  if (wyckoff.trend_lines.length > 0) {
+  // 趋势线 — 仅在供需线开关开启时显示
+  if (settings.value.wyckoff.showSupplyDemand && wyckoff.trend_lines.length > 0) {
     for (const tl of wyckoff.trend_lines) {
       const startK = data.klines[tl.start_index];
       const endK = data.klines[Math.min(tl.end_index, data.klines.length - 1)];
@@ -1082,15 +1100,27 @@ watch(timeframe, () => loadData());
         />
       </div>
 
-      <div v-if="currentView === 'chart' && currentPrice" class="flex items-center gap-4 text-sm">
-        <span class="font-mono text-lg" :class="currentPrice.close >= currentPrice.open ? 'text-[#ef5350]' : 'text-[#26a69a]'">
+      <div v-if="currentView === 'chart' && currentPrice" class="flex items-center gap-3 text-sm font-mono">
+        <!-- 日期 -->
+        <span class="text-gray-400 text-xs">{{ priceChange?.dt?.slice(0, 10) }}</span>
+        <!-- 收盘价 -->
+        <span class="text-lg" :class="currentPrice.close >= currentPrice.open ? 'text-[#ef5350]' : 'text-[#26a69a]'">
           {{ currentPrice.close.toFixed(2) }}
         </span>
+        <!-- 涨跌幅 -->
         <span v-if="priceChange" :class="priceChange.change >= 0 ? 'text-[#ef5350]' : 'text-[#26a69a]'">
           {{ priceChange.change >= 0 ? '+' : '' }}{{ priceChange.change.toFixed(2) }}
           ({{ priceChange.change >= 0 ? '+' : '' }}{{ priceChange.changePct.toFixed(2) }}%)
         </span>
-        <span class="text-gray-400 font-mono">{{ symbol }}</span>
+        <!-- OHLC -->
+        <span class="text-gray-400 text-xs">O <span :class="priceChange && priceChange.open >= priceChange.close ? 'text-[#26a69a]' : 'text-[#ef5350]'">{{ priceChange?.open?.toFixed(2) ?? currentPrice.open.toFixed(2) }}</span></span>
+        <span class="text-gray-400 text-xs">H <span class="text-[#ef5350]">{{ priceChange?.high?.toFixed(2) ?? currentPrice.high.toFixed(2) }}</span></span>
+        <span class="text-gray-400 text-xs">L <span class="text-[#26a69a]">{{ priceChange?.low?.toFixed(2) ?? currentPrice.low.toFixed(2) }}</span></span>
+        <span class="text-gray-400 text-xs">C <span :class="priceChange && priceChange.close >= priceChange.open ? 'text-[#ef5350]' : 'text-[#26a69a]'">{{ priceChange?.close?.toFixed(2) ?? currentPrice.close.toFixed(2) }}</span></span>
+        <!-- 成交量 -->
+        <span class="text-gray-400 text-xs">V {{ (priceChange?.vol ?? currentPrice.vol) >= 10000 ? ((priceChange?.vol ?? currentPrice.vol) / 10000).toFixed(0) + '万' : (priceChange?.vol ?? currentPrice.vol).toFixed(0) }}</span>
+        <!-- 代码 & 名称 -->
+        <span class="text-gray-400">{{ symbol }}</span>
         <span v-if="chartData?.name" class="text-gray-300">{{ chartData.name }}</span>
 
         <!-- 自选股按钮 -->

@@ -11,8 +11,6 @@ interface LevelStats { level: string; dir_name: string; file_count: number; samp
 interface BoardStats { id: string; name: string; count: number; }
 interface BoardOnlineInfo { id: string; name: string; total_count: number; local_count: number; }
 interface DataStatus { data_dir: string; total_stocks: number; levels: LevelStats[]; boards: BoardStats[]; }
-interface SyncLevelResult { level: string; status: string; count: number; source: string; msg: string; }
-interface SyncStockResult { symbol: string; levels: SyncLevelResult[]; }
 interface ValidationIssue { severity: string; category: string; row_index: number | null; datetime: string | null; message: string; }
 interface ValidateLevelResult { level: string; total_rows: number; issues: ValidationIssue[]; score: number; }
 interface ValidateStockResult { symbol: string; levels: ValidateLevelResult[]; overall_score: number; }
@@ -258,60 +256,64 @@ async function startSync() {
   startSyncTimer();
 
   try {
-    const codes = await invoke<string[]>("get_stock_codes_by_board", { board: boardId });
-    if (codes.length === 0) {
-      error.value = `${selectedBoardLabel()} 没有可同步的股票`;
-      syncing.value = false;
-      syncingBoard.value = null;
-      stopSyncTimer();
-      return;
-    }
+    // 使用非阻塞后台同步，不阻塞 UI
+    await invoke("start_sync_board", {
+      board: boardId,
+      levels: selectedLevels.value,
+      startDate: startDate.value || null,
+      force: forceSync.value,
+    });
 
-    syncTotal.value = codes.length;
-
-    const batchSize = 20;
-    for (let i = 0; i < codes.length; i += batchSize) {
-      if (!syncing.value) break;
-
-      const batch = codes.slice(i, i + batchSize);
+    // 轮询后台同步进度
+    const pollTimer = setInterval(async () => {
       try {
-        const results = await invoke<SyncStockResult[]>("sync_stocks_batch", {
-          symbols: batch,
-          levels: selectedLevels.value,
-          startDate: startDate.value || null,
-          force: forceSync.value,
-        });
-        for (const r of results) {
-          for (const lv of r.levels) {
-            if (lv.status !== "ok") {
-              syncFailedDetails.value.push({ symbol: r.symbol, level: lv.level, msg: lv.msg || lv.status });
-            }
-          }
+        const status = await invoke<{
+          running: boolean;
+          board: string;
+          levels: string[];
+          total: number;
+          completed: number;
+          success: number;
+          failures: [string, string, string][];
+          retrying: boolean;
+          retry_round: number;
+          cancelled: boolean;
+        }>("get_sync_status");
+
+        syncTotal.value = status.total;
+        syncCompleted.value = status.completed;
+        syncFailedDetails.value = status.failures.map(f => ({
+          symbol: f[0],
+          level: f[1],
+          msg: f[2],
+        }));
+
+        if (!status.running) {
+          clearInterval(pollTimer);
+          lastSyncSuccess.value = status.success;
+          lastSyncFailed.value = status.failures.length;
+          lastSyncElapsed.value = syncElapsed.value;
+          syncing.value = false;
+          syncingBoard.value = null;
+          stopSyncTimer();
+          showSyncResult.value = true;
+          refreshStatus();
+          loadBoardOnlineInfo();
         }
-      } catch (e: any) {
-        error.value = e.toString();
+      } catch {
+        // 轮询失败不中断
       }
-
-      syncCompleted.value = Math.min(syncCompleted.value + batchSize, codes.length);
-      if (i + batchSize < codes.length) await new Promise(r => setTimeout(r, 100));
-    }
+    }, 1000);
   } catch (e: any) {
-    error.value = `获取 ${selectedBoardLabel()} 股票列表失败: ${e}`;
+    error.value = `启动同步失败: ${e}`;
+    syncing.value = false;
+    syncingBoard.value = null;
+    stopSyncTimer();
   }
-
-  lastSyncSuccess.value = syncCompleted.value - syncFailedDetails.value.length;
-  lastSyncFailed.value = syncFailedDetails.value.length;
-  lastSyncElapsed.value = syncElapsed.value;
-
-  syncing.value = false;
-  syncingBoard.value = null;
-  stopSyncTimer();
-  showSyncResult.value = true;
-  refreshStatus();
-  loadBoardOnlineInfo();
 }
 
 function cancelSync() {
+  invoke("cancel_sync").catch(() => {});
   syncing.value = false;
   syncingBoard.value = null;
   stopSyncTimer();

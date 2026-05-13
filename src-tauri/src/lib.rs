@@ -25,6 +25,7 @@ pub fn run() {
             commands::start_sync_board,
             commands::get_sync_status,
             commands::cancel_sync,
+            commands::auto_sync_on_startup,
             commands::get_all_stock_codes,
             commands::validate_stock,
             commands::validate_stock_level,

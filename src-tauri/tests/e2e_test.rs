@@ -44,6 +44,7 @@ fn test_e2e_chart_data_serialization() {
         macd,
         czsc: Some(czsc_result),
         wyckoff: None,
+        fusion: None,
     };
     
     // Test serde JSON serialization (Tauri IPC uses serde_json)

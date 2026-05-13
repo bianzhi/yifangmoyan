@@ -10,7 +10,8 @@ import {
   type LineData,
   type Time,
 } from "lightweight-charts";
-import { getChartData, searchStocks, getAllStockCodes, getSubLevelData } from "./composables/useApi";
+import { getChartData, searchStocks, getAllStockCodes, getSubLevelData, autoSyncOnStartup, getSyncStatus } from "./composables/useApi";
+import type { SyncProgress } from "./composables/useApi";
 import {
   type ChartData,
   type AnalysisSettings,
@@ -42,6 +43,10 @@ const viewMode = ref<ViewMode>("czsc");
 const searchKeyword = ref("");
 const searchResults = ref<any[]>([]);
 const showSearch = ref(false);
+
+// ===== 后台同步状态 =====
+const bgSyncProgress = ref<SyncProgress | null>(null);
+let bgSyncTimer: ReturnType<typeof setInterval> | null = null;
 
 // ===== 自选股 & 持久化 =====
 const { addToWatchlist, isInWatchlist } = useWatchlist();
@@ -735,12 +740,39 @@ async function onSearch() {
   }
 }
 
-function selectStock(sym: string) {
+function selectStock(sym: string, name?: string) {
   symbol.value = sym;
   persistedSymbol.value = sym;
   showSearch.value = false;
-  searchKeyword.value = "";
+  // 保留搜索框中显示的股票名称
+  if (name) {
+    searchKeyword.value = name;
+  } else {
+    // 从搜索结果中查找名称
+    const found = searchResults.value.find((s: any) => s.symbol === sym);
+    searchKeyword.value = found ? found.name : sym;
+  }
   loadData();
+}
+
+// ===== 后台同步轮询 =====
+function startBgSyncPolling() {
+  if (bgSyncTimer) return;
+  bgSyncTimer = setInterval(async () => {
+    try {
+      const status = await getSyncStatus();
+      bgSyncProgress.value = status;
+      // 同步完成后停止轮询
+      if (!status.running) {
+        if (bgSyncTimer) {
+          clearInterval(bgSyncTimer);
+          bgSyncTimer = null;
+        }
+      }
+    } catch {
+      // 轮询失败不影响主流程
+    }
+  }, 2000);
 }
 
 // ===== 事件处理 =====
@@ -848,6 +880,15 @@ onMounted(async () => {
 
   nextTick(() => loadData());
 
+  // 启动后台自动增量同步（非阻塞，失败自动重试直到0失败）
+  try {
+    await autoSyncOnStartup(["m", "w", "d", "f60", "f30", "f15", "f5", "f1"]);
+    // 开始轮询同步状态
+    startBgSyncPolling();
+  } catch {
+    // 自动同步启动失败不影响主流程
+  }
+
   // 响应窗口大小变化
   const resizeObserver = new ResizeObserver(() => {
     if (mainChart && chartContainer.value) {
@@ -900,10 +941,11 @@ watch(timeframe, () => loadData());
         <!-- 数据同步入口 -->
         <button
           @click="currentView = currentView === 'sync' ? 'chart' : 'sync'"
-          class="px-2.5 py-1 text-xs rounded transition-all"
+          class="px-2.5 py-1 text-xs rounded transition-all flex items-center gap-1"
           :class="currentView === 'sync' ? 'bg-[#e94560] text-white' : 'text-[#9e9e9e] hover:bg-[#0f3460] hover:text-white'"
         >
           数据同步
+          <span v-if="bgSyncProgress?.running" class="inline-block w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse"></span>
         </button>
 
         <StockSearch
@@ -925,7 +967,8 @@ watch(timeframe, () => loadData());
           {{ priceChange.change >= 0 ? '+' : '' }}{{ priceChange.change.toFixed(2) }}
           ({{ priceChange.change >= 0 ? '+' : '' }}{{ priceChange.changePct.toFixed(2) }}%)
         </span>
-        <span class="text-gray-400">{{ chartData?.name || symbol }}</span>
+        <span class="text-gray-400 font-mono">{{ symbol }}</span>
+        <span v-if="chartData?.name" class="text-gray-300">{{ chartData.name }}</span>
 
         <!-- 自选股按钮 -->
         <button

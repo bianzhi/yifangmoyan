@@ -12,7 +12,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: "update:modelValue", val: string): void;
   (e: "search"): void;
-  (e: "select", symbol: string): void;
+  (e: "select", symbol: string, name: string): void;
   (e: "close"): void;
 }>();
 
@@ -46,7 +46,13 @@ function onInput(event: Event) {
 
 function onKeyup(event: KeyboardEvent) {
   if (event.key === "Enter") {
-    emit("search");
+    // 如果有下拉结果，自动选择第一个
+    if (localResults.value.length > 0) {
+      const first = localResults.value[0];
+      onSelect(first.symbol, first.name);
+    } else {
+      emit("search");
+    }
   }
   if (event.key === "Escape") {
     localShow.value = false;
@@ -54,9 +60,9 @@ function onKeyup(event: KeyboardEvent) {
   }
 }
 
-function onSelect(sym: string) {
+function onSelect(sym: string, name: string) {
   localShow.value = false;
-  emit("select", sym);
+  emit("select", sym, name);
 }
 
 function onBlur() {
@@ -80,8 +86,8 @@ function onBlur() {
           @input="onInput"
           @keyup="onKeyup"
           @blur="onBlur"
-          placeholder="输入股票代码/拼音"
-          class="bg-transparent text-sm text-white ml-2 w-36 outline-none placeholder-[#666]"
+          placeholder="输入代码/拼音"
+          class="bg-transparent text-sm text-white ml-2 w-44 outline-none placeholder-[#666]"
         />
       </div>
     </div>
@@ -94,7 +100,7 @@ function onBlur() {
       <div
         v-for="stock in localResults"
         :key="stock.symbol"
-        @mousedown.prevent="onSelect(stock.symbol)"
+        @mousedown.prevent="onSelect(stock.symbol, stock.name)"
         class="flex items-center justify-between px-3 py-2 hover:bg-[#0f3460] cursor-pointer text-sm"
       >
         <div class="flex items-center gap-2">

@@ -104,3 +104,24 @@ export async function syncStocksBatch(
 export async function getAllStockCodes(): Promise<string[]> {
   return invoke<string[]>("get_all_stock_codes");
 }
+
+export async function autoSyncOnStartup(levels: string[]): Promise<void> {
+  return invoke("auto_sync_on_startup", { levels });
+}
+
+export async function getSyncStatus(): Promise<SyncProgress> {
+  return invoke<SyncProgress>("get_sync_status");
+}
+
+export interface SyncProgress {
+  running: boolean;
+  board: string;
+  levels: string[];
+  total: number;
+  completed: number;
+  success: number;
+  failures: [string, string, string][];
+  retrying: boolean;
+  retry_round: number;
+  cancelled: boolean;
+}

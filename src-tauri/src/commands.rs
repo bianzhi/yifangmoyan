@@ -18,11 +18,13 @@ pub fn get_klines(
     timeframe: String,
 ) -> Result<Vec<KLine>, String> {
     let tf = parse_timeframe(&timeframe).ok_or_else(|| format!("无效的时间周期: {}", timeframe))?;
-    let manager = state.manager.lock().map_err(|e| e.to_string())?;
+    let manager = state.manager.read().map_err(|e| e.to_string())?;
     manager.get_klines(&symbol, tf, None, None).map_err(|e| e.to_string())
 }
 
 /// 获取完整图表数据（K线 + MACD + 缠论 + 威科夫）
+/// 关键优化：只在读取数据时持有读锁，分析计算时释放锁，
+/// 这样同步不会阻塞图表切换
 #[tauri::command]
 pub fn get_chart_data(
     state: State<'_, AppState>,
@@ -33,11 +35,14 @@ pub fn get_chart_data(
 ) -> Result<ChartData, String> {
     let tf = parse_timeframe(&timeframe).ok_or_else(|| format!("无效的时间周期: {}", timeframe))?;
 
-    let manager = state.manager.lock().map_err(|e| e.to_string())?;
-
-    // 1. 获取 K 线数据
-    let klines = manager.get_klines(&symbol, tf, None, None).map_err(|e| e.to_string())?;
-    let name = manager.get_stock_info(&symbol).map(|i| i.name).unwrap_or_default();
+    // ── 阶段1：只持有读锁，获取数据后立即释放 ──
+    let (klines, name) = {
+        let manager = state.manager.read().map_err(|e| e.to_string())?;
+        let klines = manager.get_klines(&symbol, tf, None, None).map_err(|e| e.to_string())?;
+        let name = manager.get_stock_info(&symbol).map(|i| i.name).unwrap_or_default();
+        (klines, name)
+    };
+    // ── 读锁已释放，后续分析不持有任何锁 ──
 
     // 2. 计算 MACD
     let macd = calc_macd(&klines, 12, 26, 9);
@@ -80,7 +85,7 @@ pub fn search_stocks(
     state: State<'_, AppState>,
     keyword: String,
 ) -> Result<Vec<StockInfo>, String> {
-    let manager = state.manager.lock().map_err(|e| e.to_string())?;
+    let manager = state.manager.read().map_err(|e| e.to_string())?;
     manager.search_stocks(&keyword).map_err(|e| e.to_string())
 }
 
@@ -90,11 +95,11 @@ pub fn get_stock_info(
     state: State<'_, AppState>,
     symbol: String,
 ) -> Result<StockInfo, String> {
-    let manager = state.manager.lock().map_err(|e| e.to_string())?;
+    let manager = state.manager.read().map_err(|e| e.to_string())?;
     manager.get_stock_info(&symbol).map_err(|e| e.to_string())
 }
 
-/// 获取线段对应的次级别走势数据（架构预留）
+/// 获取线段对应的次级别走势数据
 #[tauri::command]
 pub fn get_sub_level_data(
     state: State<'_, AppState>,
@@ -109,13 +114,14 @@ pub fn get_sub_level_data(
     // 获取次级别周期
     let sub_tf = tf.sub_level().ok_or_else(|| format!("{:?} 无次级别周期", tf))?;
 
-    let manager = state.manager.lock().map_err(|e| e.to_string())?;
-
-    // 获取次级别 K 线
-    let all_klines = manager.get_klines(&symbol, sub_tf, Some(&start_dt), Some(&end_dt))
-        .map_err(|e| e.to_string())?;
-
-    let name = manager.get_stock_info(&symbol).map(|i| i.name).unwrap_or_default();
+    // 阶段1：只持有读锁
+    let (all_klines, name) = {
+        let manager = state.manager.read().map_err(|e| e.to_string())?;
+        let klines = manager.get_klines(&symbol, sub_tf, Some(&start_dt), Some(&end_dt))
+            .map_err(|e| e.to_string())?;
+        let name = manager.get_stock_info(&symbol).map(|i| i.name).unwrap_or_default();
+        (klines, name)
+    };
 
     // 计算 MACD
     let macd = calc_macd(&all_klines, 12, 26, 9);
@@ -159,7 +165,7 @@ fn parse_timeframe(s: &str) -> Option<TimeFrame> {
 /// 获取数据目录整体状态
 #[tauri::command]
 pub fn get_data_status(state: State<'_, AppState>) -> Result<DataStatus, String> {
-    let manager = state.manager.lock().map_err(|e| e.to_string())?;
+    let manager = state.manager.read().map_err(|e| e.to_string())?;
     let data_dir = manager.data_dir();
     Ok(yifang_data::get_data_status(data_dir))
 }
@@ -174,9 +180,9 @@ pub fn sync_stock(
     force: bool,
 ) -> Result<SyncStockResult, String> {
     let data_dir = {
-            let manager = state.manager.lock().map_err(|e| e.to_string())?;
-            manager.data_dir().to_path_buf()
-        };
+        let manager = state.manager.read().map_err(|e| e.to_string())?;
+        manager.data_dir().to_path_buf()
+    };
 
     let tf_list: Vec<TimeFrame> = levels
         .iter()
@@ -202,9 +208,9 @@ pub fn sync_stocks_batch(
     force: bool,
 ) -> Result<Vec<SyncStockResult>, String> {
     let data_dir = {
-            let manager = state.manager.lock().map_err(|e| e.to_string())?;
-            manager.data_dir().to_path_buf()
-        };
+        let manager = state.manager.read().map_err(|e| e.to_string())?;
+        manager.data_dir().to_path_buf()
+    };
 
     let tf_list: Vec<TimeFrame> = levels
         .iter()
@@ -228,7 +234,7 @@ pub fn sync_stocks_batch(
 /// 获取所有股票代码列表
 #[tauri::command]
 pub fn get_all_stock_codes(state: State<'_, AppState>) -> Result<Vec<String>, String> {
-    let manager = state.manager.lock().map_err(|e| e.to_string())?;
+    let manager = state.manager.read().map_err(|e| e.to_string())?;
     let data_dir = manager.data_dir();
     Ok(yifang_data::get_all_stock_codes(data_dir))
 }
@@ -242,8 +248,10 @@ pub fn validate_stock(
     symbol: String,
     levels: Vec<String>,
 ) -> Result<ValidateStockResult, String> {
-    let manager = state.manager.lock().map_err(|e| e.to_string())?;
-    let data_dir = manager.data_dir();
+    let data_dir = {
+        let manager = state.manager.read().map_err(|e| e.to_string())?;
+        manager.data_dir().to_path_buf()
+    };
 
     let tf_list: Vec<TimeFrame> = levels
         .iter()
@@ -254,7 +262,7 @@ pub fn validate_stock(
         return Err("未指定有效的 K 线级别".into());
     }
 
-    Ok(yifang_data::validate_stock(data_dir, &symbol, &tf_list))
+    Ok(yifang_data::validate_stock(&data_dir, &symbol, &tf_list))
 }
 
 /// 校验单只股票单级别数据
@@ -264,12 +272,14 @@ pub fn validate_stock_level(
     symbol: String,
     level: String,
 ) -> Result<ValidateLevelResult, String> {
-    let manager = state.manager.lock().map_err(|e| e.to_string())?;
-    let data_dir = manager.data_dir();
+    let data_dir = {
+        let manager = state.manager.read().map_err(|e| e.to_string())?;
+        manager.data_dir().to_path_buf()
+    };
 
     let tf = parse_timeframe(&level).ok_or_else(|| format!("无效的时间周期: {}", level))?;
 
-    Ok(yifang_data::validate_stock_level(data_dir, &symbol, tf))
+    Ok(yifang_data::validate_stock_level(&data_dir, &symbol, tf))
 }
 
 /// 跨数据源交叉校验
@@ -286,7 +296,7 @@ pub fn cross_validate_stock(
 /// 获取当前数据目录
 #[tauri::command]
 pub fn get_data_dir(state: State<'_, AppState>) -> Result<String, String> {
-    let manager = state.manager.lock().map_err(|e| e.to_string())?;
+    let manager = state.manager.read().map_err(|e| e.to_string())?;
     Ok(manager.data_dir().to_string_lossy().to_string())
 }
 
@@ -299,7 +309,7 @@ pub fn set_data_dir(state: State<'_, AppState>, path: String) -> Result<String, 
             .map_err(|e| format!("创建目录失败: {}", e))?;
     }
 
-    let mut manager = state.manager.lock().map_err(|e| e.to_string())?;
+    let mut manager = state.manager.write().map_err(|e| e.to_string())?;
     manager.set_data_dir(&path);
     Ok(manager.data_dir().to_string_lossy().to_string())
 }
@@ -308,7 +318,7 @@ pub fn set_data_dir(state: State<'_, AppState>, path: String) -> Result<String, 
 #[tauri::command]
 pub fn move_data_dir(state: State<'_, AppState>, new_path: String) -> Result<MoveDataResult, String> {
     let old_path = {
-        let manager = state.manager.lock().map_err(|e| e.to_string())?;
+        let manager = state.manager.read().map_err(|e| e.to_string())?;
         manager.data_dir().to_path_buf()
     };
 
@@ -323,7 +333,7 @@ pub fn move_data_dir(state: State<'_, AppState>, new_path: String) -> Result<Mov
 
     // 切换到新目录
     {
-        let mut manager = state.manager.lock().map_err(|e| e.to_string())?;
+        let mut manager = state.manager.write().map_err(|e| e.to_string())?;
         manager.set_data_dir(&new_path);
     }
 
@@ -333,7 +343,7 @@ pub fn move_data_dir(state: State<'_, AppState>, new_path: String) -> Result<Mov
 /// 获取各板块统计
 #[tauri::command]
 pub fn get_board_stats(state: State<'_, AppState>) -> Result<Vec<BoardStats>, String> {
-    let manager = state.manager.lock().map_err(|e| e.to_string())?;
+    let manager = state.manager.read().map_err(|e| e.to_string())?;
     let data_dir = manager.data_dir();
     Ok(yifang_data::get_board_stats(data_dir))
 }
@@ -341,7 +351,7 @@ pub fn get_board_stats(state: State<'_, AppState>) -> Result<Vec<BoardStats>, St
 /// 获取板块在线信息（各板块在线股票数 + 本地已有数）
 #[tauri::command]
 pub fn get_board_online_info(state: State<'_, AppState>) -> Result<Vec<BoardOnlineInfo>, String> {
-    let manager = state.manager.lock().map_err(|e| e.to_string())?;
+    let manager = state.manager.read().map_err(|e| e.to_string())?;
     let data_dir = manager.data_dir();
     Ok(yifang_data::get_board_online_info(data_dir))
 }
@@ -366,9 +376,9 @@ pub fn sync_board(
         return Err("未指定有效的 K 线级别".into());
     }
     let data_dir = {
-            let manager = state.manager.lock().map_err(|e| e.to_string())?;
-            manager.data_dir().to_path_buf()
-        };
+        let manager = state.manager.read().map_err(|e| e.to_string())?;
+        manager.data_dir().to_path_buf()
+    };
     let start = start_date.unwrap_or_default();
     Ok(yifang_data::sync_board(&data_dir, &board, &tfs, &start, force))
 }
@@ -403,7 +413,7 @@ pub fn start_sync_board(
     }
 
     let data_dir = {
-        let manager = state.manager.lock().map_err(|e| e.to_string())?;
+        let manager = state.manager.read().map_err(|e| e.to_string())?;
         manager.data_dir().to_path_buf()
     };
     let start = start_date.unwrap_or_else(|| "2023-01-01".into());
@@ -553,11 +563,220 @@ pub fn get_sync_status(state: State<'_, AppState>) -> Result<SyncProgress, Strin
     Ok(progress.clone())
 }
 
+/// 启动时自动同步 — 对所有板块做增量同步，失败自动重试
+/// 与 start_sync_board 类似，但会按板块依次同步
+#[tauri::command]
+pub fn auto_sync_on_startup(
+    state: State<'_, AppState>,
+    levels: Vec<String>,
+) -> Result<(), String> {
+    // 检查是否已在同步
+    {
+        let progress = state.sync_progress.lock().map_err(|e| e.to_string())?;
+        if progress.running {
+            return Ok(()); // 已在同步，不重复启动
+        }
+    }
+
+    let tfs: Vec<TimeFrame> = levels.iter().filter_map(|s| parse_timeframe(s)).collect();
+    if tfs.is_empty() {
+        return Ok(());
+    }
+
+    let data_dir = {
+        let manager = state.manager.read().map_err(|e| e.to_string())?;
+        manager.data_dir().to_path_buf()
+    };
+    let start = "2023-01-01".to_string();
+
+    // 获取所有已有股票代码（增量同步：只为本地已有数据的股票更新）
+    let local_codes: Vec<String> = {
+        let manager = state.manager.read().map_err(|e| e.to_string())?;
+        yifang_data::get_all_stock_codes(manager.data_dir())
+    };
+
+    if local_codes.is_empty() {
+        // 本地没数据，从沪主板同步前100只作为引导
+        eprintln!("[启动同步] 本地无数据，从沪主板同步引导数据...");
+        let codes = yifang_data::fetch_board_stock_codes("sh_main").unwrap_or_default();
+        let initial: Vec<String> = codes.into_iter().take(100).collect();
+        if initial.is_empty() {
+            return Ok(());
+        }
+
+        // 初始化进度
+        {
+            let mut progress = state.sync_progress.lock().map_err(|e| e.to_string())?;
+            *progress = SyncProgress {
+                running: true,
+                board: "sh_main(引导)".into(),
+                levels: levels.clone(),
+                total: initial.len(),
+                completed: 0,
+                success: 0,
+                failures: Vec::new(),
+                retrying: false,
+                retry_round: 0,
+                cancelled: false,
+            };
+        }
+
+        let progress_state = state.sync_progress.clone();
+        let tf_list = tfs.clone();
+        let force = false;
+        std::thread::spawn(move || {
+            run_sync_with_retry(&progress_state, &data_dir, &initial, &tf_list, &start, force);
+            eprintln!("[启动同步] 引导数据同步完成");
+        });
+        return Ok(());
+    }
+
+    // 本地有数据，增量更新
+    eprintln!("[启动同步] 增量同步 {} 只股票...", local_codes.len());
+    {
+        let mut progress = state.sync_progress.lock().map_err(|e| e.to_string())?;
+        *progress = SyncProgress {
+            running: true,
+            board: "全部(增量)".into(),
+            levels: levels.clone(),
+            total: local_codes.len(),
+            completed: 0,
+            success: 0,
+            failures: Vec::new(),
+            retrying: false,
+            retry_round: 0,
+            cancelled: false,
+        };
+    }
+
+    let progress_state = state.sync_progress.clone();
+    let tf_list = tfs;
+    let force = false;
+    std::thread::spawn(move || {
+        run_sync_with_retry(&progress_state, &data_dir, &local_codes, &tf_list, &start, force);
+        eprintln!("[启动同步] 增量同步完成");
+
+        // 同步完成后重新加载 manager 的本地索引
+        // （数据文件可能已更新）
+    });
+
+    Ok(())
+}
+
+/// 内部函数：执行同步并自动重试失败项
+fn run_sync_with_retry(
+    progress_state: &std::sync::Arc<std::sync::Mutex<SyncProgress>>,
+    data_dir: &std::path::Path,
+    codes: &[String],
+    tf_list: &[TimeFrame],
+    start: &str,
+    force: bool,
+) {
+    let force = force;
+
+    // ── 第一轮：全量同步 ──
+    for (i, symbol) in codes.iter().enumerate() {
+        {
+            let p = progress_state.lock().unwrap();
+            if p.cancelled {
+                let mut p = progress_state.lock().unwrap();
+                p.running = false;
+                return;
+            }
+        }
+
+        let result = yifang_data::sync_stock(data_dir, symbol, tf_list, start, force);
+
+        {
+            let mut p = progress_state.lock().unwrap();
+            p.completed = i + 1;
+            let mut has_failure = false;
+            for lv in &result.levels {
+                if lv.status != "ok" && lv.status != "skip" {
+                    has_failure = true;
+                    p.failures.push((result.symbol.clone(), lv.level.clone(), lv.msg.clone()));
+                }
+            }
+            if !has_failure {
+                p.success += 1;
+            }
+        }
+    }
+
+    // ── 自动重试失败项（最多5轮，直到0失败） ──
+    let max_retry_rounds = 5u32;
+    for round in 1..=max_retry_rounds {
+        let failed_symbols: Vec<String> = {
+            let p = progress_state.lock().unwrap();
+            p.failures.iter().map(|(sym, _lv, _msg)| sym.clone()).collect()
+        };
+        let mut unique: Vec<String> = failed_symbols.into_iter().collect::<std::collections::HashSet<_>>().into_iter().collect();
+        unique.sort();
+
+        if unique.is_empty() {
+            eprintln!("[自动重试] 第 {} 轮：0 失败，重试结束", round);
+            break;
+        }
+
+        {
+            let mut p = progress_state.lock().unwrap();
+            if p.cancelled {
+                p.running = false;
+                return;
+            }
+            p.retrying = true;
+            p.retry_round = round as usize;
+            p.total = unique.len();
+            p.completed = 0;
+            p.success = 0;
+            p.failures.clear();
+        }
+
+        eprintln!("[自动重试] 第 {} 轮：{} 只股票需重试", round, unique.len());
+
+        for (i, symbol) in unique.iter().enumerate() {
+            {
+                let p = progress_state.lock().unwrap();
+                if p.cancelled {
+                    let mut p = progress_state.lock().unwrap();
+                    p.running = false;
+                    return;
+                }
+            }
+
+            let result = yifang_data::sync_stock(data_dir, symbol, tf_list, start, true);
+
+            {
+                let mut p = progress_state.lock().unwrap();
+                p.completed = i + 1;
+                let mut has_failure = false;
+                for lv in &result.levels {
+                    if lv.status != "ok" && lv.status != "skip" {
+                        has_failure = true;
+                        p.failures.push((result.symbol.clone(), lv.level.clone(), lv.msg.clone()));
+                    }
+                }
+                if !has_failure {
+                    p.success += 1;
+                }
+            }
+
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+    }
+
+    {
+        let mut p = progress_state.lock().unwrap();
+        p.retrying = false;
+        p.running = false;
+    }
+}
+
 /// 在系统文件管理器中打开数据存储目录
 #[tauri::command]
 pub async fn open_data_dir(state: State<'_, AppState>) -> Result<(), String> {
     let dir = {
-        let manager = state.manager.lock().map_err(|e| e.to_string())?;
+        let manager = state.manager.read().map_err(|e| e.to_string())?;
         manager.data_dir().to_path_buf()
     };
 

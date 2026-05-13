@@ -34,6 +34,7 @@ pub fn run() {
             commands::get_board_stats,
             commands::get_board_online_info,
             commands::get_stock_codes_by_board,
+            commands::open_data_dir,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

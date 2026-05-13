@@ -431,6 +431,14 @@ async function moveDataToFolder() {
   }
 }
 
+async function openDataDir() {
+  try {
+    await invoke("open_data_dir");
+  } catch (e: any) {
+    error.value = `打开目录失败: ${e}`;
+  }
+}
+
 // ═══════════════════════════════════════════════════════════════
 //  辅助
 // ═══════════════════════════════════════════════════════════════
@@ -604,14 +612,14 @@ onMounted(async () => {
         </div>
 
         <!-- ──── 各板块迷你进度 ──── -->
-        <div class="flex gap-1">
+        <div class="flex gap-1.5">
           <div v-for="bd in BOARDS" :key="bd.id" class="flex-1 bg-[#16213e] rounded-lg p-2 text-center space-y-1">
-            <div class="text-[9px] font-bold" :style="{ color: bd.color }">{{ bd.icon }}</div>
-            <div class="w-full h-1 bg-[#0f3460] rounded-full overflow-hidden">
+            <div class="text-[10px] font-bold" :style="{ color: bd.color }">{{ bd.icon }}</div>
+            <div class="w-full h-1.5 bg-[#0f3460] rounded-full overflow-hidden">
               <div class="h-full rounded-full transition-all duration-500"
                 :style="{ width: `${boardPercent(bd.id)}%`, backgroundColor: bd.color }"></div>
             </div>
-            <div class="text-[8px] text-[#666] font-mono">{{ boardPercent(bd.id) }}%</div>
+            <div class="text-[9px] text-[#aaa] font-mono">{{ boardLocalCount(bd.id) }}<span class="text-[#555]">/{{ boardOnlineTotal(bd.id) ?? '—' }}</span></div>
           </div>
         </div>
 
@@ -841,6 +849,13 @@ onMounted(async () => {
           <div v-if="activeTab === 'manage'" class="p-4 space-y-3">
             <div class="text-xs text-[#9e9e9e] font-mono break-all leading-relaxed bg-[#0f3460]/30 rounded-lg p-3">{{ currentDataDir }}</div>
             <div class="flex gap-2">
+              <button @click="openDataDir"
+                class="px-3 py-2 text-[11px] rounded-lg bg-[#0f3460] text-white border border-[#2a2a4a] hover:bg-[#1a4a7a] transition flex items-center gap-1.5">
+                <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/>
+                </svg>
+                打开目录
+              </button>
               <button @click="selectFolder"
                 class="px-3 py-2 text-[11px] rounded-lg bg-[#0f3460] text-[#26a69a] border border-[#26a69a]/20 hover:bg-[#1a4a7a] transition">
                 切换目录

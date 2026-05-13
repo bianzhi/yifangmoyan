@@ -544,6 +544,24 @@ pub fn get_sync_status(state: State<'_, AppState>) -> Result<SyncProgress, Strin
     Ok(progress.clone())
 }
 
+/// 在系统文件管理器中打开数据存储目录
+#[tauri::command]
+pub async fn open_data_dir(state: State<'_, AppState>) -> Result<(), String> {
+    let dir = {
+        let manager = state.manager.lock().map_err(|e| e.to_string())?;
+        manager.data_dir().to_path_buf()
+    };
+
+    if !dir.exists() {
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| format!("创建目录失败: {}", e))?;
+    }
+
+    // 使用 tauri-plugin-opener 的 open_path 命令
+    tauri_plugin_opener::open_path(dir, None::<&str>)
+        .map_err(|e| format!("打开目录失败: {}", e))
+}
+
 /// 取消后台同步
 #[tauri::command]
 pub fn cancel_sync(state: State<'_, AppState>) -> Result<(), String> {

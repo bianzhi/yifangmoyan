@@ -274,9 +274,125 @@ fn build_eastmoney_client() -> Result<reqwest::blocking::Client> {
         .build()?)
 }
 
+/// 尝试从网易财经获取股票列表（备案用）
+fn fetch_board_codes_netease(board: &str) -> Result<Vec<String>> {
+    // 网易股票列表 API
+    let prefix = match board {
+        "sh_main" => "0",        // 沪市以 60/68 开头
+        "sz_main" => "1",        // 深市以 00 开头
+        "gem"     => "1",        // 创业板以 30 开头
+        "star"    => "0",        // 科创板以 68 开头
+        "bse"     => "0",        // 北交所以 8 开头（北交所需特殊处理）
+        _ => return Err(anyhow::anyhow!("网易不支持板块: {}", board)),
+    };
+
+    let url = format!(
+        "http://api.money.126.net/data/service/{}.html?T=2&ME=0&NP=1&ST=2&CP=0&PN=1&PS=10000",
+        prefix
+    );
+
+    let client = build_http_client()?;
+    let resp = client.get(&url).send()?;
+    let body = resp.text()?;
+
+    // 网易返回 JSONP 格式，需要提取 JSON
+    let json_str = if body.starts_with("/*<div") || body.starts_with("callback") {
+        // 提取括号内的 JSON
+        if let Some(start) = body.find('(') {
+            if let Some(end) = body.rfind(')') {
+                body[start + 1..end].to_string()
+            } else {
+                body[start + 1..].to_string()
+            }
+        } else {
+            body.clone()
+        }
+    } else {
+        body
+    };
+
+    let json: serde_json::Value = serde_json::from_str(&json_str)
+        .context("解析网易股票列表失败")?;
+
+    let list = json.get("list")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| anyhow::anyhow!("网易返回数据格式异常"))?;
+
+    // 根据板块过滤
+    let codes: Vec<String> = list.iter()
+        .filter_map(|item| {
+            let code = item.get("CODE").and_then(|v| v.as_str()).unwrap_or("");
+            let code = code.trim_start_matches('0').trim_start_matches('1');
+            if code.is_empty() { return None; }
+
+            let is_match = match board {
+                "sh_main" => code.starts_with('6') && !code.starts_with("68"),
+                "sz_main" => code.starts_with("00"),
+                "gem"     => code.starts_with("30"),
+                "star"    => code.starts_with("68"),
+                "bse"     => code.starts_with('8') || code.starts_with('4'),
+                _ => false,
+            };
+
+            if is_match { Some(code.to_string()) } else { None }
+        })
+        .collect();
+
+    Ok(codes)
+}
+
+/// 尝试从新浪财经获取股票列表（第二备案）
+fn fetch_board_codes_sina(board: &str) -> Result<Vec<String>> {
+    // 新浪股票列表 API：按市场获取全部
+    let (market, prefix_filter) = match board {
+        "sh_main" => ("sh", vec!["60"]),
+        "sz_main" => ("sz", vec!["00"]),
+        "gem"     => ("sz", vec!["30"]),
+        "star"    => ("sh", vec!["68"]),
+        "bse"     => ("bj", vec!["8", "4"]),
+        _ => return Err(anyhow::anyhow!("新浪不支持板块: {}", board)),
+    };
+
+    let url = format!(
+        "https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/Market_Center.getHQNodeData?page=1&num=10000&sort=symbol&asc=1&node={}_a",
+        market
+    );
+
+    let client = build_http_client()?;
+    let resp = client.get(&url)
+        .header("Referer", "https://finance.sina.com.cn/")
+        .send()?;
+    let body = resp.text()?;
+
+    let list: Vec<serde_json::Value> = if body.starts_with('[') {
+        serde_json::from_str(&body).unwrap_or_default()
+    } else {
+        // 可能返回空或格式不同
+        Vec::new()
+    };
+
+    let codes: Vec<String> = list.iter()
+        .filter_map(|item| {
+            let symbol = item.get("symbol").and_then(|v| v.as_str()).unwrap_or("");
+            // symbol 格式: "sh600000", "sz000001"
+            let code = symbol.trim_start_matches("sh")
+                             .trim_start_matches("sz")
+                             .trim_start_matches("bj");
+            if code.is_empty() { return None; }
+
+            let is_match = prefix_filter.iter().any(|p| code.starts_with(p));
+            if is_match { Some(code.to_string()) } else { None }
+        })
+        .collect();
+
+    Ok(codes)
+}
+
 /// 从东方财富在线 API 获取指定板块的股票代码列表
+/// 支持多数据源回退：东方财富 → 新浪 → 网易
 /// 支持分页，确保获取全部股票
 pub fn fetch_board_stock_codes(board: &str) -> Result<Vec<String>> {
+    // ── 1. 先尝试东方财富 ──
     let fs = match board {
         "sh_main" => "m:1+t:2",           // 上证主板
         "sz_main" => "m:0+t:6",           // 深证主板
@@ -287,9 +403,61 @@ pub fn fetch_board_stock_codes(board: &str) -> Result<Vec<String>> {
         _ => return Err(anyhow::anyhow!("未知板块: {}", board)),
     };
 
+    match fetch_board_codes_eastmoney(fs) {
+        Ok(codes) if !codes.is_empty() => return Ok(codes),
+        result => {
+            eprintln!("东方财富获取 {} 股票列表失败: {:?}, 尝试备用数据源", board, result.err());
+        }
+    }
+
+    // ── 2. 尝试新浪 ──
+    if board != "all_a" {
+        match fetch_board_codes_sina(board) {
+            Ok(codes) if !codes.is_empty() => return Ok(codes),
+            result => {
+                eprintln!("新浪获取 {} 股票列表失败: {:?}, 尝试网易", board, result.err());
+            }
+        }
+
+        // ── 3. 尝试网易 ──
+        match fetch_board_codes_netease(board) {
+            Ok(codes) if !codes.is_empty() => return Ok(codes),
+            result => {
+                eprintln!("网易获取 {} 股票列表也失败: {:?}", board, result.err());
+            }
+        }
+    } else {
+        // all_a 需要合并各子板块
+        let mut all_codes = Vec::new();
+        let mut codes_set = std::collections::HashSet::new();
+        for sub_board in &["sh_main", "sz_main", "gem", "star", "bse"] {
+            // 先新浪再网易
+            for fetcher in &[fetch_board_codes_sina, fetch_board_codes_netease] {
+                match fetcher(sub_board) {
+                    Ok(codes) if !codes.is_empty() => {
+                        for c in codes {
+                            if codes_set.insert(c.clone()) {
+                                all_codes.push(c);
+                            }
+                        }
+                        break;
+                    }
+                    _ => continue,
+                }
+            }
+        }
+        if !all_codes.is_empty() {
+            return Ok(all_codes);
+        }
+    }
+
+    Err(anyhow::anyhow!("所有数据源均无法获取 {} 的股票列表", board))
+}
+
+/// 东方财富分页获取股票列表（内部函数）
+fn fetch_board_codes_eastmoney(fs: &str) -> Result<Vec<String>> {
     let client = build_eastmoney_client()?;
 
-    // 分页获取全部股票代码
     let mut all_codes = Vec::new();
     let mut page = 1;
     let page_size = 5000u64;
@@ -384,7 +552,8 @@ pub struct BoardOnlineInfo {
     pub level_counts: std::collections::HashMap<String, usize>,  // 每个级别的本地股票数
 }
 
-/// 从东方财富在线 API 获取指定板块的股票总数（轻量级，仅请求1条数据取 total）
+/// 从在线 API 获取指定板块的股票总数
+/// 优先东方财富，失败后回退到获取完整列表取长度
 pub fn fetch_board_online_count(board: &str) -> Result<usize> {
     let fs = match board {
         "sh_main" => "m:1+t:2",
@@ -395,7 +564,7 @@ pub fn fetch_board_online_count(board: &str) -> Result<usize> {
         _ => return Err(anyhow::anyhow!("未知板块: {}", board)),
     };
 
-    // 只请求1条数据，从 data.total 获取总数
+    // ── 1. 先尝试东方财富轻量级获取总数 ──
     let url = format!(
         "https://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=1&np=1&ut=bd1d9ddb04089700cf9c27f6f7426281&fltt=2&invt=2&fid=f3&fs={}&fields=f12",
         fs
@@ -403,20 +572,33 @@ pub fn fetch_board_online_count(board: &str) -> Result<usize> {
 
     let client = build_eastmoney_client()?;
 
-    // 最多重试 3 次，提升可靠性
+    // 最多重试 3 次
     let mut last_err = None;
     for attempt in 0..3 {
         match try_fetch_online_count(&client, &url) {
-            Ok(total) => return Ok(total),
+            Ok(total) if total > 0 => return Ok(total),
             Err(e) => {
                 last_err = Some(e);
                 if attempt < 2 {
                     std::thread::sleep(std::time::Duration::from_millis(500 * (attempt as u64 + 1)));
                 }
             }
+            Ok(_) => {
+                // total 为 0，可能是空板块或接口返回异常，继续重试
+                if attempt < 2 {
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                }
+            }
         }
     }
-    Err(last_err.unwrap())
+
+    eprintln!("东方财富获取 {} 在线总数失败: {:?}, 尝试备用方式", board, last_err);
+
+    // ── 2. 回退：获取完整股票列表取长度 ──
+    match fetch_board_stock_codes(board) {
+        Ok(codes) => Ok(codes.len()),
+        Err(e) => Err(e.context(format!("获取 {} 在线总数失败（东方财富+备用均失败）", board))),
+    }
 }
 
 fn try_fetch_online_count(client: &reqwest::blocking::Client, url: &str) -> Result<usize> {

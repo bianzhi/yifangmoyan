@@ -533,7 +533,7 @@ fn default_data_dir() -> PathBuf {
 }
 
 /// 递归尝试删除空目录
-fn try_remove_empty_dirs(dir: &Path) -> std::io::Result<()> {
+pub fn try_remove_empty_dirs(dir: &Path) -> std::io::Result<()> {
     if !dir.exists() {
         return Ok(());
     }

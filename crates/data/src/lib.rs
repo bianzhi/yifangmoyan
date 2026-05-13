@@ -16,6 +16,7 @@ pub use sync::{
     get_stock_codes_by_board, fetch_board_stock_codes, fetch_board_online_count, get_board_online_info,
     fetch_board_codes_sina, fetch_board_codes_tushare,
     validate_stock, validate_stock_level, cross_validate_stock,
+    clear_all_data, trim_old_data,
     SyncStockResult, SyncLevelResult, DataStatus, LevelStats, BoardStats, BoardOnlineInfo,
-    ValidateStockResult, ValidateLevelResult, ValidationIssue,
+    ValidateStockResult, ValidateLevelResult, ValidationIssue, TrimResult,
 };

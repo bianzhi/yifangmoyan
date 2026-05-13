@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from "vue";
+import { ref, onMounted, computed, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 
@@ -15,6 +15,22 @@ interface ValidationIssue { severity: string; category: string; row_index: numbe
 interface ValidateLevelResult { level: string; total_rows: number; issues: ValidationIssue[]; score: number; }
 interface ValidateStockResult { symbol: string; levels: ValidateLevelResult[]; overall_score: number; }
 interface MoveDataResult { moved: number; failed: number; errors: string[]; }
+interface TrimResult { trimmed_files: number; removed_files: number; rows_before: number; rows_after: number; }
+
+// 数据保留配置
+interface RetentionConfig {
+  f1_months: number;   // 1分线保留月数，默认3
+  f5_months: number;   // 5分线保留月数，默认3
+  f15_months: number;  // 15分线保留月数，默认6
+  f30_months: number;  // 30分线保留月数，默认6
+}
+
+const DEFAULT_RETENTION: RetentionConfig = {
+  f1_months: 3,
+  f5_months: 3,
+  f15_months: 6,
+  f30_months: 6,
+};
 
 // ═══════════════════════════════════════════════════════════════
 //  常量
@@ -60,7 +76,18 @@ let syncTimer: ReturnType<typeof setInterval> | null = null;
 
 // 同步选项
 const selectedLevels = ref<string[]>(["m", "w", "d", "f60", "f30", "f15", "f5", "f1"]);
-const startDate = ref("2023-01-01");
+const START_DATE_KEY = "moyan_start_date";
+function loadStartDate(): string {
+  try {
+    const raw = localStorage.getItem(START_DATE_KEY);
+    if (raw) return raw;
+  } catch { /* ignore */ }
+  return "2024-01-01";
+}
+const startDate = ref(loadStartDate());
+watch(startDate, (val) => {
+  localStorage.setItem(START_DATE_KEY, val);
+});
 const forceSync = ref(false);
 const selectedBoard = ref("all_a");
 
@@ -96,6 +123,26 @@ const fullValidateResults = ref<ValidateStockResult[]>([]);
 const currentDataDir = ref("");
 const movingData = ref(false);
 const moveResult = ref<MoveDataResult | null>(null);
+
+// 数据保留配置（持久化到 localStorage）
+const RETENTION_KEY = "moyan_retention_config";
+function loadRetention(): RetentionConfig {
+  try {
+    const raw = localStorage.getItem(RETENTION_KEY);
+    if (raw) return { ...DEFAULT_RETENTION, ...JSON.parse(raw) };
+  } catch { /* ignore */ }
+  return { ...DEFAULT_RETENTION };
+}
+const retentionConfig = ref<RetentionConfig>(loadRetention());
+watch(retentionConfig, (val) => {
+  localStorage.setItem(RETENTION_KEY, JSON.stringify(val));
+}, { deep: true });
+
+// 清空 / 清理状态
+const clearingData = ref(false);
+const trimmingData = ref(false);
+const trimResult = ref<TrimResult | null>(null);
+const showClearConfirm = ref(false);
 
 // UI
 const error = ref("");
@@ -438,6 +485,47 @@ async function openDataDir() {
     await invoke("open_data_dir");
   } catch (e: any) {
     error.value = `打开目录失败: ${e}`;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  数据清空与清理
+// ═══════════════════════════════════════════════════════════════
+
+async function doClearAllData() {
+  clearingData.value = true;
+  error.value = "";
+  showClearConfirm.value = false;
+  try {
+    const count = await invoke<number>("clear_all_data");
+    await refreshStatus();
+    loadBoardOnlineInfo();
+    error.value = `已清空 ${count} 个数据文件`;
+  } catch (e: any) {
+    error.value = `清空数据失败: ${e}`;
+  } finally {
+    clearingData.value = false;
+  }
+}
+
+async function doTrimOldData() {
+  trimmingData.value = true;
+  trimResult.value = null;
+  error.value = "";
+  try {
+    // 将 retentionConfig 映射为后端需要的 tf_dir_name -> months
+    const retention: Record<string, number> = {
+      "1m": retentionConfig.value.f1_months,
+      "5m": retentionConfig.value.f5_months,
+      "15m": retentionConfig.value.f15_months,
+      "30m": retentionConfig.value.f30_months,
+    };
+    trimResult.value = await invoke<TrimResult>("trim_old_data", { retention });
+    await refreshStatus();
+  } catch (e: any) {
+    error.value = `清理过期数据失败: ${e}`;
+  } finally {
+    trimmingData.value = false;
   }
 }
 
@@ -920,28 +1008,103 @@ onMounted(async () => {
           </div>
 
           <!-- 目录 -->
-          <div v-if="activeTab === 'manage'" class="p-4 space-y-3">
-            <div class="text-xs text-[#9e9e9e] font-mono break-all leading-relaxed bg-[#0f3460]/30 rounded-lg p-3">{{ currentDataDir }}</div>
-            <div class="flex gap-2">
-              <button @click="openDataDir"
-                class="px-3 py-2 text-[11px] rounded-lg bg-[#0f3460] text-white border border-[#2a2a4a] hover:bg-[#1a4a7a] transition flex items-center gap-1.5">
-                <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                  <path stroke-linecap="round" stroke-linejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/>
-                </svg>
-                打开目录
-              </button>
-              <button @click="selectFolder"
-                class="px-3 py-2 text-[11px] rounded-lg bg-[#0f3460] text-[#26a69a] border border-[#26a69a]/20 hover:bg-[#1a4a7a] transition">
-                切换目录
-              </button>
-              <button @click="moveDataToFolder" :disabled="movingData"
-                class="px-3 py-2 text-[11px] rounded-lg bg-[#0f3460] text-[#ff9800] border border-[#ff9800]/20 hover:bg-[#1a4a7a] transition disabled:opacity-50">
-                迁移数据
-              </button>
+          <div v-if="activeTab === 'manage'" class="p-4 space-y-4">
+            <!-- 数据目录 -->
+            <div>
+              <div class="text-[10px] text-[#9e9e9e] mb-1.5 uppercase tracking-wider">数据目录</div>
+              <div class="text-xs text-[#9e9e9e] font-mono break-all leading-relaxed bg-[#0f3460]/30 rounded-lg p-3">{{ currentDataDir }}</div>
+              <div class="flex gap-2 mt-2">
+                <button @click="openDataDir"
+                  class="px-3 py-2 text-[11px] rounded-lg bg-[#0f3460] text-white border border-[#2a2a4a] hover:bg-[#1a4a7a] transition flex items-center gap-1.5">
+                  <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/>
+                  </svg>
+                  打开
+                </button>
+                <button @click="selectFolder"
+                  class="px-3 py-2 text-[11px] rounded-lg bg-[#0f3460] text-[#26a69a] border border-[#26a69a]/20 hover:bg-[#1a4a7a] transition">
+                  切换
+                </button>
+                <button @click="moveDataToFolder" :disabled="movingData"
+                  class="px-3 py-2 text-[11px] rounded-lg bg-[#0f3460] text-[#ff9800] border border-[#ff9800]/20 hover:bg-[#1a4a7a] transition disabled:opacity-50">
+                  迁移
+                </button>
+              </div>
+              <div v-if="moveResult" class="text-[11px] mt-1">
+                <span class="text-[#26a69a]">✓ {{ moveResult.moved }} 个文件已迁移</span>
+                <span v-if="moveResult.failed > 0" class="text-[#ff5722]">，{{ moveResult.failed }} 个失败</span>
+              </div>
             </div>
-            <div v-if="moveResult" class="text-[11px]">
-              <span class="text-[#26a69a]">✓ {{ moveResult.moved }} 个文件已迁移</span>
-              <span v-if="moveResult.failed > 0" class="text-[#ff5722]">，{{ moveResult.failed }} 个失败</span>
+
+            <!-- 数据保留配置 -->
+            <div class="border-t border-[#2a2a4a]/30 pt-3">
+              <div class="text-[10px] text-[#9e9e9e] mb-2 uppercase tracking-wider">数据保留期限（月）</div>
+              <div class="grid grid-cols-4 gap-2">
+                <div class="bg-[#0f3460]/50 rounded-lg p-2 text-center">
+                  <div class="text-[10px] text-[#9e9e9e]">1分线</div>
+                  <input v-model.number="retentionConfig.f1_months" type="number" min="0" max="120"
+                    class="w-full text-center text-sm font-bold text-white bg-transparent outline-none mt-0.5" />
+                </div>
+                <div class="bg-[#0f3460]/50 rounded-lg p-2 text-center">
+                  <div class="text-[10px] text-[#9e9e9e]">5分线</div>
+                  <input v-model.number="retentionConfig.f5_months" type="number" min="0" max="120"
+                    class="w-full text-center text-sm font-bold text-white bg-transparent outline-none mt-0.5" />
+                </div>
+                <div class="bg-[#0f3460]/50 rounded-lg p-2 text-center">
+                  <div class="text-[10px] text-[#9e9e9e]">15分线</div>
+                  <input v-model.number="retentionConfig.f15_months" type="number" min="0" max="120"
+                    class="w-full text-center text-sm font-bold text-white bg-transparent outline-none mt-0.5" />
+                </div>
+                <div class="bg-[#0f3460]/50 rounded-lg p-2 text-center">
+                  <div class="text-[10px] text-[#9e9e9e]">30分线</div>
+                  <input v-model.number="retentionConfig.f30_months" type="number" min="0" max="120"
+                    class="w-full text-center text-sm font-bold text-white bg-transparent outline-none mt-0.5" />
+                </div>
+              </div>
+              <div class="text-[9px] text-[#666] mt-1">设为 0 表示不限制；日线及以上级别不自动清理</div>
+              <button @click="doTrimOldData" :disabled="trimmingData"
+                class="w-full mt-2 py-2 text-[11px] rounded-lg bg-[#0f3460] text-[#ff9800] border border-[#ff9800]/20 hover:bg-[#1a4a7a] transition disabled:opacity-50 flex items-center justify-center gap-1.5">
+                <svg v-if="trimmingData" class="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
+                  <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                  <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
+                <svg v-else class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+                </svg>
+                {{ trimmingData ? '清理中...' : '清理过期数据' }}
+              </button>
+              <div v-if="trimResult" class="text-[11px] mt-1.5 space-y-0.5">
+                <div class="text-[#26a69a]">✓ 裁剪 {{ trimResult.trimmed_files }} 个文件，删除 {{ trimResult.removed_files }} 个文件</div>
+                <div class="text-[#9e9e9e]">数据行: {{ trimResult.rows_before }} → {{ trimResult.rows_after }}（减少 {{ trimResult.rows_before - trimResult.rows_after }}）</div>
+              </div>
+            </div>
+
+            <!-- 清空数据 -->
+            <div class="border-t border-[#2a2a4a]/30 pt-3">
+              <div class="flex items-center justify-between">
+                <div>
+                  <div class="text-[10px] text-[#9e9e9e] uppercase tracking-wider">清空数据</div>
+                  <div class="text-[9px] text-[#666] mt-0.5">删除所有 K 线数据文件，不可恢复</div>
+                </div>
+                <button @click="showClearConfirm = true"
+                  class="px-3 py-1.5 text-[10px] rounded-lg bg-[#e94560]/10 text-[#e94560] border border-[#e94560]/20 hover:bg-[#e94560]/20 transition">
+                  清空全部
+                </button>
+              </div>
+              <!-- 确认对话框 -->
+              <div v-if="showClearConfirm" class="mt-2 bg-[#e94560]/5 border border-[#e94560]/20 rounded-lg p-3">
+                <div class="text-[11px] text-[#e94560] font-bold mb-2">⚠ 确定要清空所有数据吗？此操作不可恢复！</div>
+                <div class="flex gap-2">
+                  <button @click="doClearAllData" :disabled="clearingData"
+                    class="flex-1 py-1.5 text-[11px] rounded-lg bg-[#e94560] text-white font-bold hover:brightness-110 transition disabled:opacity-50">
+                    {{ clearingData ? '清空中...' : '确定清空' }}
+                  </button>
+                  <button @click="showClearConfirm = false"
+                    class="flex-1 py-1.5 text-[11px] rounded-lg bg-[#0f3460] text-[#9e9e9e] hover:text-white transition">
+                    取消
+                  </button>
+                </div>
+              </div>
             </div>
           </div>
         </div>

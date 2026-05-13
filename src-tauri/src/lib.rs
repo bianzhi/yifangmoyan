@@ -37,6 +37,8 @@ pub fn run() {
             commands::get_board_online_info,
             commands::get_stock_codes_by_board,
             commands::open_data_dir,
+            commands::clear_all_data,
+            commands::trim_old_data,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

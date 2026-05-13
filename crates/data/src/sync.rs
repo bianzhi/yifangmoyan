@@ -2560,8 +2560,115 @@ fn extract_codes_from_dir(dir: &Path) -> Vec<String> {
     codes
 }
 
-/// 同步指定板块的全部股票
-/// 从东方财富在线 API 获取板块股票列表，然后逐只同步
+/// 清空所有 K 线数据（删除 kline_cache 目录）
+pub fn clear_all_data(data_dir: &Path) -> Result<usize> {
+    let cache_dir = data_dir.join("kline_cache");
+    if !cache_dir.exists() {
+        return Ok(0);
+    }
+    let mut count = 0usize;
+    if let Ok(entries) = std::fs::read_dir(&cache_dir) {
+        for entry in entries.flatten() {
+            if let Ok(dir_entries) = std::fs::read_dir(entry.path()) {
+                for file in dir_entries.flatten() {
+                    if file.path().extension().map(|e| e == "parquet").unwrap_or(false) {
+                        count += 1;
+                    }
+                }
+            }
+        }
+    }
+    std::fs::remove_dir_all(&cache_dir)?;
+    Ok(count)
+}
+
+/// 数据裁剪结果
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrimResult {
+    pub trimmed_files: usize,
+    pub removed_files: usize,
+    pub rows_before: usize,
+    pub rows_after: usize,
+}
+
+/// 裁剪过期数据
+///
+/// retention_months: 各级别保留月数的配置，key 为 tf_dir_name（如 "1m", "5m"），value 为保留月数
+/// 保留月数为 0 表示不限制
+pub fn trim_old_data(data_dir: &Path, retention_months: &std::collections::HashMap<String, u32>) -> Result<TrimResult> {
+    let cache_dir = data_dir.join("kline_cache");
+    if !cache_dir.exists() {
+        return Ok(TrimResult {
+            trimmed_files: 0,
+            removed_files: 0,
+            rows_before: 0,
+            rows_after: 0,
+        });
+    }
+
+    let now = chrono::Local::now();
+    let mut trimmed_files = 0usize;
+    let mut removed_files = 0usize;
+    let mut rows_before = 0usize;
+    let mut rows_after = 0usize;
+
+    for (tf_dir, months) in retention_months {
+        if *months == 0 {
+            continue; // 0 表示不限制
+        }
+        let cutoff = now - chrono::Duration::days((*months as i64) * 30);
+        let cutoff_str = cutoff.format("%Y-%m-%d").to_string();
+
+        let tf_path = cache_dir.join(tf_dir);
+        if !tf_path.exists() {
+            continue;
+        }
+
+        if let Ok(entries) = std::fs::read_dir(&tf_path) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().map(|e| e == "parquet").unwrap_or(false) {
+                    match load_existing_parquet(&path) {
+                        Ok(records) => {
+                            let orig_len = records.len();
+                            rows_before += orig_len;
+                            let filtered: Vec<_> = records
+                                .into_iter()
+                                .filter(|r| r.datetime >= cutoff_str)
+                                .collect();
+                            rows_after += filtered.len();
+
+                            if filtered.is_empty() {
+                                // 全部过期，删除文件
+                                let _ = std::fs::remove_file(&path);
+                                removed_files += 1;
+                            } else if filtered.len() < orig_len {
+                                // 有数据被裁剪，保存剩余
+                                if save_parquet(&filtered, &path).is_ok() {
+                                    trimmed_files += 1;
+                                }
+                            }
+                        }
+                        Err(_) => {
+                            // 无法加载的文件跳过
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 清理空目录
+    let _ = crate::kline_manager::try_remove_empty_dirs(&cache_dir);
+
+    Ok(TrimResult {
+        trimmed_files,
+        removed_files,
+        rows_before,
+        rows_after,
+    })
+}
+
 pub fn sync_board(
     data_dir: &Path,
     board: &str,

@@ -797,3 +797,24 @@ pub fn cancel_sync(state: State<'_, AppState>) -> Result<(), String> {
     progress.cancelled = true;
     Ok(())
 }
+
+/// 清空所有 K 线数据
+#[tauri::command]
+pub fn clear_all_data(state: State<'_, AppState>) -> Result<usize, String> {
+    let data_dir = {
+        let manager = state.manager.read().map_err(|e| e.to_string())?;
+        manager.data_dir().to_path_buf()
+    };
+    yifang_data::clear_all_data(&data_dir).map_err(|e| e.to_string())
+}
+
+/// 清理过期数据
+/// retention: { tf_dir_name: months } 例如 { "1m": 3, "5m": 3, "15m": 6, "30m": 6 }
+#[tauri::command]
+pub fn trim_old_data(state: State<'_, AppState>, retention: std::collections::HashMap<String, u32>) -> Result<yifang_data::TrimResult, String> {
+    let data_dir = {
+        let manager = state.manager.read().map_err(|e| e.to_string())?;
+        manager.data_dir().to_path_buf()
+    };
+    yifang_data::trim_old_data(&data_dir, &retention).map_err(|e| e.to_string())
+}

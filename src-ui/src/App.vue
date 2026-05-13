@@ -15,12 +15,20 @@ import {
   type ChartData,
   type AnalysisSettings,
   type TimeFrame,
+  type ViewMode,
   DEFAULT_SETTINGS,
+  VIEW_MODE_SETTINGS,
+  CZSC_BS_COLORS,
+  WYCKOFF_EVENT_COLORS,
+  WYCKOFF_BULLISH_EVENTS,
 } from "./types";
 import ChartToolbar from "./components/ChartToolbar.vue";
 import StockSearch from "./components/StockSearch.vue";
 import SettingsPanel from "./components/SettingsPanel.vue";
 import DataSyncPanel from "./components/DataSyncPanel.vue";
+import SignalPanel from "./components/SignalPanel.vue";
+import WatchlistPanel from "./components/WatchlistPanel.vue";
+import { useWatchlist, usePersistedSettings } from "./composables/useStorage";
 
 // ===== 状态 =====
 const symbol = ref("000001");
@@ -30,15 +38,36 @@ const loading = ref(false);
 const error = ref("");
 const settings = ref<AnalysisSettings>({ ...DEFAULT_SETTINGS });
 const currentView = ref<"chart" | "sync">("chart");
+const viewMode = ref<ViewMode>("czsc");
 const searchKeyword = ref("");
 const searchResults = ref<any[]>([]);
 const showSearch = ref(false);
+
+// ===== 自选股 & 持久化 =====
+const { addToWatchlist, isInWatchlist } = useWatchlist();
+const persistedSettings = usePersistedSettings<AnalysisSettings>("analysis", DEFAULT_SETTINGS);
+// 初始化设置从持久化
+settings.value = JSON.parse(JSON.stringify(persistedSettings.value));
+const persistedViewMode = usePersistedSettings<ViewMode>("viewMode", "czsc");
+viewMode.value = persistedViewMode.value;
+const persistedTf = usePersistedSettings<TimeFrame>("timeframe", "d");
+timeframe.value = persistedTf.value;
+const persistedSymbol = usePersistedSettings<string>("symbol", "000001");
+symbol.value = persistedSymbol.value;
 
 // ===== 图表引用 =====
 const chartContainer = ref<HTMLDivElement>();
 let mainChart: IChartApi | null = null;
 let candleSeries: ISeriesApi<"Candlestick"> | null = null;
 let volumeSeries: ISeriesApi<"Histogram"> | null = null;
+
+// ===== 信息弹窗 =====
+const tooltipInfo = ref<{
+  type: string;
+  data: any;
+  x: number;
+  y: number;
+} | null>(null);
 
 // ===== 计算属性 =====
 const currentPrice = computed(() => {
@@ -71,7 +100,6 @@ async function loadData() {
       hasAnyWyckoffEnabled()
     );
     chartData.value = data;
-    // 确保在 DOM 更新后再渲染，避免容器尺寸为 0
     await nextTick();
     renderChart();
   } catch (e: any) {
@@ -90,16 +118,11 @@ function hasAnyWyckoffEnabled(): boolean {
 }
 
 // ===== 时间格式化 =====
-// lightweight-charts 要求 "YYYY-MM-DD" 或 UTCTimestamp
-// 日线/周线/月线的 dt 可能是 "2023-01-03 00:00:00"，需截取为 "2023-01-03"
 function toTime(dt: string): Time {
-  // 分钟级别带 "HH:MM"，需要 "YYYY-MM-DD HH:MM" 格式
-  // 日线及以上只取日期部分
   const match = dt.match(/^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2})/);
   if (match && match[2] !== "00:00") {
     return `${match[1]} ${match[2]}` as Time;
   }
-  // 只保留日期部分
   return dt.slice(0, 10) as Time;
 }
 
@@ -107,23 +130,19 @@ function toTime(dt: string): Time {
 function renderChart() {
   if (!chartData.value || !chartContainer.value) return;
   const data = chartData.value;
-  
-  // 确保容器有有效尺寸
+
   const containerWidth = chartContainer.value.clientWidth;
   const containerHeight = chartContainer.value.clientHeight;
   if (containerWidth === 0 || containerHeight === 0) {
-    // DOM 还没渲染完成，延迟重试
     requestAnimationFrame(() => renderChart());
     return;
   }
 
-  // 清除旧图表
   if (mainChart) {
     mainChart.remove();
     mainChart = null;
   }
 
-  // 创建主图
   mainChart = createChart(chartContainer.value, {
     layout: {
       background: { type: ColorType.Solid, color: "#1a1a2e" },
@@ -187,25 +206,97 @@ function renderChart() {
     scaleMargins: { top: 0.8, bottom: 0 },
   });
 
-  // 渲染缠论覆盖层
+  // 缠论覆盖层
   if (data.czsc) {
     renderCzscOverlays(data);
   }
 
-  // 渲染威科夫覆盖层
+  // 威科夫覆盖层
   if (data.wyckoff) {
     renderWyckoffOverlays(data);
   }
 
+  // 融合标记
+  if (data.fusion && settings.value.fusion.showFusion) {
+    renderFusionOverlays(data);
+  }
+
   mainChart.timeScale().fitContent();
+
+  // 悬停事件
+  mainChart.subscribeCrosshairMove((param) => {
+    if (!param.time || !param.point) {
+      tooltipInfo.value = null;
+      return;
+    }
+    // 查找该位置的缠论/威科夫数据
+    const idx = data.klines.findIndex((k) => toTime(k.dt) === param.time);
+    if (idx < 0) {
+      tooltipInfo.value = null;
+      return;
+    }
+
+    let info: any = null;
+
+    // 查找笔
+    if (data.czsc) {
+      const bi = data.czsc.bi.find(
+        (b) => idx >= b.start_index && idx <= b.end_index
+      );
+      if (bi) {
+        info = { type: "bi", data: bi, x: param.point.x, y: param.point.y };
+      }
+
+      // 查找中枢
+      const zs = [...data.czsc.bi_zs, ...data.czsc.xd_zs].find(
+        (z) => idx >= z.start_index && idx <= z.end_index
+      );
+      if (zs) {
+        info = info || { type: "zs", data: zs, x: param.point.x, y: param.point.y };
+      }
+
+      // 查找买卖点
+      const bs = data.czsc.buy_sell.find((b) => b.index === idx);
+      if (bs) {
+        info = info || { type: "bs", data: bs, x: param.point.x, y: param.point.y };
+      }
+    }
+
+    // 查找威科夫事件
+    if (data.wyckoff) {
+      const evt = data.wyckoff.events.find((e) => e.index === idx);
+      if (evt) {
+        info = info || { type: "wyckoff", data: evt, x: param.point.x, y: param.point.y };
+      }
+    }
+
+    tooltipInfo.value = info;
+  });
 }
 
+// ===== 缠论覆盖层 =====
 function renderCzscOverlays(data: ChartData) {
   const czsc = data.czsc!;
+  const allMarkers: any[] = [];
 
-  // 笔 — 蓝色(上) / 橙色(下) 折线
+  // 分型标记 — 小三角
+  if (settings.value.czsc.showFenxing && czsc.fenxing.length > 0) {
+    for (const fx of czsc.fenxing) {
+      const k = data.klines[fx.index];
+      if (!k) continue;
+      allMarkers.push({
+        time: toTime(k.dt),
+        position: fx.fx_type === "top" ? ("aboveBar" as const) : ("belowBar" as const),
+        color: fx.fx_type === "top" ? "#4caf50" : "#ffc107",
+        shape: fx.fx_type === "top" ? ("arrowUp" as const) : ("arrowDown" as const),
+        size: 0.5,
+        text: "",
+      });
+    }
+  }
+
+  // 笔 — 上升红/下降蓝 折线
   if (settings.value.czsc.showBi && czsc.bi.length > 0) {
-    // 每笔作为一条线段 (line series)
     const biSeries = mainChart!.addLineSeries({
       color: "#4a90d9",
       lineWidth: 2,
@@ -219,8 +310,9 @@ function renderCzscOverlays(data: ChartData) {
       const startK = data.klines[bi.start_index];
       const endK = data.klines[Math.min(bi.end_index, data.klines.length - 1)];
       if (startK && endK) {
-        if (biData.length === 0 || biData[biData.length - 1].time !== (toTime(startK.dt))) {
-          biData.push({ time: toTime(startK.dt), value: bi.start_price });
+        const startTime = toTime(startK.dt);
+        if (biData.length === 0 || biData[biData.length - 1].time !== startTime) {
+          biData.push({ time: startTime, value: bi.start_price });
         }
         biData.push({ time: toTime(endK.dt), value: bi.end_price });
       }
@@ -228,12 +320,12 @@ function renderCzscOverlays(data: ChartData) {
     biSeries.setData(biData);
   }
 
-  // 线段 — 紫色粗线
+  // 线段 — 3px 虚线
   if (settings.value.czsc.showXd && czsc.xd.length > 0) {
     const xdSeries = mainChart!.addLineSeries({
       color: "#b388ff",
       lineWidth: 3,
-      lineStyle: 2, // 虚线
+      lineStyle: 2,
       priceLineVisible: false,
       lastValueVisible: false,
       crosshairMarkerVisible: false,
@@ -244,8 +336,9 @@ function renderCzscOverlays(data: ChartData) {
       const startK = data.klines[xd.start_index];
       const endK = data.klines[Math.min(xd.end_index, data.klines.length - 1)];
       if (startK && endK) {
-        if (xdData.length === 0 || xdData[xdData.length - 1].time !== (toTime(startK.dt))) {
-          xdData.push({ time: toTime(startK.dt), value: xd.start_price });
+        const startTime = toTime(startK.dt);
+        if (xdData.length === 0 || xdData[xdData.length - 1].time !== startTime) {
+          xdData.push({ time: startTime, value: xd.start_price });
         }
         xdData.push({ time: toTime(endK.dt), value: xd.end_price });
       }
@@ -253,179 +346,272 @@ function renderCzscOverlays(data: ChartData) {
     xdSeries.setData(xdData);
   }
 
-  // 买卖点 — markers
+  // 买卖点标记 — 圆形图标+文字
   if (settings.value.czsc.showBuySell && czsc.buy_sell.length > 0) {
-    const markers = czsc.buy_sell.map((bs) => {
+    for (const bs of czsc.buy_sell) {
       const k = data.klines[bs.index];
+      if (!k) continue;
       const isBuy = bs.bs_type.includes("buy");
-      return {
-        time: toTime(k?.dt || bs.dt),
-        position: isBuy ? "belowBar" as const : "aboveBar" as const,
+      const bsConf = CZSC_BS_COLORS[bs.bs_type] || {
         color: isBuy ? "#00e676" : "#ff1744",
-        shape: isBuy ? ("arrowUp" as const) : ("arrowDown" as const),
         text: bs.bs_type,
       };
-    });
-    candleSeries!.setMarkers(markers.sort((a, b) => (a.time as string).localeCompare(b.time as string)));
+      allMarkers.push({
+        time: toTime(k.dt),
+        position: isBuy ? ("belowBar" as const) : ("aboveBar" as const),
+        color: bsConf.color,
+        shape: "circle" as const,
+        size: 2,
+        text: bsConf.text,
+      });
+    }
   }
 
-  // 中枢 — 用面积图模拟 (简化版用矩形标识)
-  // 笔中枢
+  // 笔中枢 — 半透明矩形用上下沿线模拟
   if (settings.value.czsc.showBiZs && czsc.bi_zs.length > 0) {
-    for (const zs of czsc.bi_zs) {
-      const startK = data.klines[zs.start_index];
-      const endK = data.klines[Math.min(zs.end_index, data.klines.length - 1)];
-      if (startK && endK) {
-        // 用上下沿线表示
-        const upperLine = mainChart!.addLineSeries({
-          color: "rgba(179,136,255,0.5)",
-          lineWidth: 1,
-          lineStyle: 1,
-          priceLineVisible: false,
-          lastValueVisible: false,
-          crosshairMarkerVisible: false,
-        });
-        upperLine.setData([
-          { time: toTime(startK.dt), value: zs.zg },
-          { time: toTime(endK.dt), value: zs.zg },
-        ]);
+    renderZhongShu(czsc.bi_zs, data, "rgba(179,136,255,0.5)");
+  }
 
-        const lowerLine = mainChart!.addLineSeries({
-          color: "rgba(179,136,255,0.5)",
-          lineWidth: 1,
-          lineStyle: 1,
-          priceLineVisible: false,
-          lastValueVisible: false,
-          crosshairMarkerVisible: false,
-        });
-        lowerLine.setData([
-          { time: toTime(startK.dt), value: zs.zd },
-          { time: toTime(endK.dt), value: zs.zd },
-        ]);
-      }
-    }
+  // 线段中枢 — 半透明橙色
+  if (settings.value.czsc.showXdZs && czsc.xd_zs.length > 0) {
+    renderZhongShu(czsc.xd_zs, data, "rgba(255,152,0,0.5)");
   }
 
   // 背驰标记
   if (settings.value.czsc.showBeichi && czsc.beichi.length > 0) {
-    const beichiMarkers = czsc.beichi.map((bc) => {
+    for (const bc of czsc.beichi) {
       const k = data.klines[bc.index];
-      return {
-        time: toTime(k?.dt || bc.dt),
-        position: bc.direction === "up" ? ("aboveBar" as const) : ("belowBar" as const),
+      if (!k) continue;
+      const isUp = bc.direction === "up";
+      let text = "⚡";
+      if (bc.bc_sub_type === "panzheng") text = "⚡盘整";
+      else if (bc.bc_type === "xd_beichi") text = "⚡线段";
+      else text = "⚡笔";
+      allMarkers.push({
+        time: toTime(k.dt),
+        position: isUp ? ("aboveBar" as const) : ("belowBar" as const),
         color: "#ff9800",
         shape: "circle" as const,
-        text: "⚠背驰",
-      };
-    });
-    // 合并到现有 markers
-    const existingMarkers = candleSeries!.markers() || [];
+        size: 1,
+        text,
+      });
+    }
+  }
+
+  // 设置所有 markers（按时间排序）
+  if (allMarkers.length > 0) {
     candleSeries!.setMarkers(
-      [...existingMarkers, ...beichiMarkers].sort((a, b) =>
-        (a.time as string).localeCompare(b.time as string)
-      )
+      allMarkers.sort((a, b) => (a.time as string).localeCompare(b.time as string))
     );
   }
 }
 
+// 渲染中枢
+function renderZhongShu(zsList: any[], data: ChartData, color: string) {
+  for (const zs of zsList) {
+    const startK = data.klines[zs.start_index];
+    const endK = data.klines[Math.min(zs.end_index, data.klines.length - 1)];
+    if (!startK || !endK) continue;
+
+    // zg 上沿线
+    const upperLine = mainChart!.addLineSeries({
+      color,
+      lineWidth: 1,
+      lineStyle: 1,
+      priceLineVisible: false,
+      lastValueVisible: false,
+      crosshairMarkerVisible: false,
+    });
+    upperLine.setData([
+      { time: toTime(startK.dt), value: zs.zg },
+      { time: toTime(endK.dt), value: zs.zg },
+    ]);
+
+    // zd 下沿线
+    const lowerLine = mainChart!.addLineSeries({
+      color,
+      lineWidth: 1,
+      lineStyle: 1,
+      priceLineVisible: false,
+      lastValueVisible: false,
+      crosshairMarkerVisible: false,
+    });
+    lowerLine.setData([
+      { time: toTime(startK.dt), value: zs.zd },
+      { time: toTime(endK.dt), value: zs.zd },
+    ]);
+  }
+}
+
+// ===== 威科夫覆盖层 =====
 function renderWyckoffOverlays(data: ChartData) {
   const wyckoff = data.wyckoff!;
+  const eventMarkers: any[] = [];
 
-  // 趋势线
-  if (settings.value.wyckoff.showTrendLines && wyckoff.trend_lines.length > 0) {
-    for (const tl of wyckoff.trend_lines) {
-      const startK = data.klines[tl.start_index];
-      const endK = data.klines[Math.min(tl.end_index, data.klines.length - 1)];
-      if (startK && endK) {
-        const series = mainChart!.addLineSeries({
-          color: tl.line_type === "support" ? "rgba(0,230,118,0.6)" : "rgba(255,23,68,0.6)",
-          lineWidth: 1,
-          lineStyle: 0,
-          priceLineVisible: false,
-          lastValueVisible: false,
-          crosshairMarkerVisible: false,
-        });
-        series.setData([
-          { time: toTime(startK.dt), value: tl.start_price },
-          { time: toTime(endK.dt), value: tl.end_price },
-        ]);
+  // 阶段色带 — 用 priceLine 模拟
+  if (settings.value.wyckoff.showPhase && wyckoff.phase_labels.length > 0) {
+    // 渲染阶段色带：用分段不同颜色的折线表示
+    // 为每个阶段绘制一条短线段
+    let prevPhase = "";
+    let segStart = -1;
+    const phaseColorMap: Record<string, string> = {
+      Accumulation: "rgba(0,188,212,0.3)",
+      Markup: "rgba(76,175,80,0.3)",
+      Distribution: "rgba(156,39,176,0.3)",
+      Markdown: "rgba(120,144,156,0.3)",
+      Unknown: "rgba(66,66,66,0.1)",
+    };
+
+    // 找 K 线的最高价，作为色带位置
+    const maxHigh = Math.max(...data.klines.map((k) => k.high));
+
+    for (let i = 0; i < wyckoff.phase_labels.length; i++) {
+      const lbl = wyckoff.phase_labels[i];
+      if (lbl.phase !== prevPhase) {
+        if (prevPhase && segStart >= 0) {
+          // 画之前的段
+          drawPhaseLine(segStart, i - 1, prevPhase, maxHigh, data, phaseColorMap);
+        }
+        prevPhase = lbl.phase;
+        segStart = i;
       }
+    }
+    if (prevPhase && segStart >= 0) {
+      drawPhaseLine(segStart, wyckoff.phase_labels.length - 1, prevPhase, maxHigh, data, phaseColorMap);
     }
   }
 
-  // 交易区间 (TR) + 冰线
+  // 供需线
+  if (settings.value.wyckoff.showSupplyDemand && wyckoff.supply_demand_lines.length > 0) {
+    for (const sl of wyckoff.supply_demand_lines) {
+      const startK = data.klines[sl.start_index];
+      const endK = data.klines[Math.min(sl.end_index, data.klines.length - 1)];
+      if (!startK || !endK) continue;
+      const series = mainChart!.addLineSeries({
+        color: sl.line_type === "supply" ? "rgba(255,23,68,0.7)" : "rgba(0,230,118,0.7)",
+        lineWidth: 2,
+        lineStyle: 0,
+        priceLineVisible: false,
+        lastValueVisible: false,
+        crosshairMarkerVisible: false,
+      });
+      series.setData([
+        { time: toTime(startK.dt), value: sl.start_price },
+        { time: toTime(endK.dt), value: sl.end_price },
+      ]);
+    }
+  }
+
+  // 交易区间 + 冰线
   if (settings.value.wyckoff.showTR && wyckoff.trading_ranges.length > 0) {
     for (const tr of wyckoff.trading_ranges) {
       const startK = data.klines[tr.start_index];
       const endK = data.klines[Math.min(tr.end_index, data.klines.length - 1)];
-      if (startK && endK) {
-        const upperLine = mainChart!.addLineSeries({
-          color: "rgba(255,152,0,0.4)",
+      if (!startK || !endK) continue;
+
+      // 上沿
+      const upperLine = mainChart!.addLineSeries({
+        color: "rgba(0,188,212,0.4)",
+        lineWidth: 1,
+        lineStyle: 0,
+        priceLineVisible: false,
+        lastValueVisible: false,
+        crosshairMarkerVisible: false,
+      });
+      upperLine.setData([
+        { time: toTime(startK.dt), value: tr.upper },
+        { time: toTime(endK.dt), value: tr.upper },
+      ]);
+
+      // 下沿
+      const lowerLine = mainChart!.addLineSeries({
+        color: "rgba(0,188,212,0.4)",
+        lineWidth: 1,
+        lineStyle: 0,
+        priceLineVisible: false,
+        lastValueVisible: false,
+        crosshairMarkerVisible: false,
+      });
+      lowerLine.setData([
+        { time: toTime(startK.dt), value: tr.lower },
+        { time: toTime(endK.dt), value: tr.lower },
+      ]);
+
+      // 冰线 — 虚线
+      if (settings.value.wyckoff.showIceLine) {
+        const iceLine = mainChart!.addLineSeries({
+          color: "rgba(3,169,244,0.6)",
           lineWidth: 1,
           lineStyle: 2,
           priceLineVisible: false,
           lastValueVisible: false,
           crosshairMarkerVisible: false,
         });
-        upperLine.setData([
-          { time: toTime(startK.dt), value: tr.upper },
-          { time: toTime(endK.dt), value: tr.upper },
+        iceLine.setData([
+          { time: toTime(startK.dt), value: tr.ice_line },
+          { time: toTime(endK.dt), value: tr.ice_line },
         ]);
-
-        const lowerLine = mainChart!.addLineSeries({
-          color: "rgba(255,152,0,0.4)",
-          lineWidth: 1,
-          lineStyle: 2,
-          priceLineVisible: false,
-          lastValueVisible: false,
-          crosshairMarkerVisible: false,
-        });
-        lowerLine.setData([
-          { time: toTime(startK.dt), value: tr.lower },
-          { time: toTime(endK.dt), value: tr.lower },
-        ]);
-
-        // 冰线
-        if (settings.value.wyckoff.showIceLine) {
-          const iceLine = mainChart!.addLineSeries({
-            color: "rgba(3,169,244,0.6)",
-            lineWidth: 1,
-            lineStyle: 1,
-            priceLineVisible: false,
-            lastValueVisible: false,
-            crosshairMarkerVisible: false,
-          });
-          iceLine.setData([
-            { time: toTime(startK.dt), value: tr.ice_line },
-            { time: toTime(endK.dt), value: tr.ice_line },
-          ]);
-        }
       }
     }
   }
 
-  // 威科夫事件 markers
-  const eventMarkers = wyckoff.events
-    .filter((e) => {
-      switch (e.event_type) {
-        case "LPS": return settings.value.wyckoff.showLPS;
-        case "JOC": return settings.value.wyckoff.showJOC;
-        case "Spring": return settings.value.wyckoff.showSpring;
-        case "UTAD": return settings.value.wyckoff.showUTAD;
-        default: return true;
-      }
-    })
-    .map((e) => {
-      const k = data.klines[e.index];
-      const isBullish = ["SC", "AR", "Spring", "LPS", "SOS", "JOC"].includes(e.event_type);
-      return {
-        time: toTime(k?.dt || e.dt),
-        position: isBullish ? ("belowBar" as const) : ("aboveBar" as const),
-        color: isBullish ? "#00bcd4" : "#ff5722",
-        shape: "square" as const,
-        text: e.event_type,
-      };
+  // 趋势线（兼容旧字段）
+  if (wyckoff.trend_lines.length > 0) {
+    for (const tl of wyckoff.trend_lines) {
+      const startK = data.klines[tl.start_index];
+      const endK = data.klines[Math.min(tl.end_index, data.klines.length - 1)];
+      if (!startK || !endK) continue;
+      const series = mainChart!.addLineSeries({
+        color: tl.line_type === "support" ? "rgba(0,230,118,0.4)" : "rgba(255,23,68,0.4)",
+        lineWidth: 1,
+        lineStyle: 0,
+        priceLineVisible: false,
+        lastValueVisible: false,
+        crosshairMarkerVisible: false,
+      });
+      series.setData([
+        { time: toTime(startK.dt), value: tl.start_price },
+        { time: toTime(endK.dt), value: tl.end_price },
+      ]);
+    }
+  }
+
+  // 威科夫事件 markers — 每种事件独立勾选
+  const eventTypeSettingMap: Record<string, keyof AnalysisSettings["wyckoff"]> = {
+    SC: "showSC",
+    AR: "showAR",
+    ST: "showST",
+    Spring: "showSpring",
+    SOS: "showSOS",
+    LPS: "showLPS",
+    JOC: "showJOC",
+    PSY: "showPSY",
+    BC: "showBC",
+    UTAD: "showUTAD",
+    SOW: "showSOW",
+    LPSY: "showLPSY",
+    Shakeout: "showSpring",
+  };
+
+  for (const e of wyckoff.events) {
+    const settingKey = eventTypeSettingMap[e.event_type];
+    if (!settingKey || !settings.value.wyckoff[settingKey]) continue;
+
+    const k = data.klines[e.index];
+    if (!k) continue;
+
+    const isBullish = WYCKOFF_BULLISH_EVENTS.includes(e.event_type);
+    const evtColor = WYCKOFF_EVENT_COLORS[e.event_type] || (isBullish ? "#00bcd4" : "#ff5722");
+
+    eventMarkers.push({
+      time: toTime(k.dt),
+      position: isBullish ? ("belowBar" as const) : ("aboveBar" as const),
+      color: evtColor,
+      shape: "square" as const,
+      size: 1,
+      text: e.event_type,
     });
+  }
 
   if (eventMarkers.length > 0) {
     const existingMarkers = candleSeries!.markers() || [];
@@ -435,6 +621,62 @@ function renderWyckoffOverlays(data: ChartData) {
       )
     );
   }
+}
+
+// 画阶段色带辅助
+function drawPhaseLine(
+  startIdx: number,
+  endIdx: number,
+  phase: string,
+  maxHigh: number,
+  data: ChartData,
+  colorMap: Record<string, string>
+) {
+  const startLabel = data.wyckoff!.phase_labels[startIdx];
+  const endLabel = data.wyckoff!.phase_labels[endIdx];
+  const startK = data.klines[startLabel.index];
+  const endK = data.klines[endLabel.index];
+  if (!startK || !endK) return;
+
+  const series = mainChart!.addLineSeries({
+    color: colorMap[phase] || "rgba(100,100,100,0.2)",
+    lineWidth: 4,
+    lineStyle: 0,
+    priceLineVisible: false,
+    lastValueVisible: false,
+    crosshairMarkerVisible: false,
+  });
+  series.setData([
+    { time: toTime(startK.dt), value: maxHigh * 1.02 },
+    { time: toTime(endK.dt), value: maxHigh * 1.02 },
+  ]);
+}
+
+// ===== 融合覆盖层 =====
+function renderFusionOverlays(data: ChartData) {
+  if (!data.fusion || data.fusion.signals.length === 0) return;
+
+  const fusionMarkers = data.fusion.signals.map((sig) => {
+    const k = data.klines[sig.index];
+    const isBullish = sig.direction === "bullish";
+    // 用特殊图标和文字
+    const stars = "★".repeat(sig.strength);
+    return {
+      time: toTime(k?.dt || sig.dt),
+      position: isBullish ? ("belowBar" as const) : ("aboveBar" as const),
+      color: isBullish ? "#ffd700" : "#ff6d00",
+      shape: "circle" as const,
+      size: 3,
+      text: `${stars} 融合`,
+    };
+  });
+
+  const existingMarkers = candleSeries!.markers() || [];
+  candleSeries!.setMarkers(
+    [...existingMarkers, ...fusionMarkers].sort((a, b) =>
+      (a.time as string).localeCompare(b.time as string)
+    )
+  );
 }
 
 // ===== 搜索股票 =====
@@ -450,6 +692,7 @@ async function onSearch() {
 
 function selectStock(sym: string) {
   symbol.value = sym;
+  persistedSymbol.value = sym;
   showSearch.value = false;
   searchKeyword.value = "";
   loadData();
@@ -458,17 +701,97 @@ function selectStock(sym: string) {
 // ===== 事件处理 =====
 function onTimeframeChange(tf: TimeFrame) {
   timeframe.value = tf;
+  persistedTf.value = tf;
   loadData();
 }
 
 function onSettingsChange(newSettings: AnalysisSettings) {
   settings.value = newSettings;
-  loadData(); // 重新加载并渲染
+  persistedSettings.value = JSON.parse(JSON.stringify(newSettings)) as any;
+  loadData();
+}
+
+function onViewModeChange(mode: ViewMode) {
+  viewMode.value = mode;
+  persistedViewMode.value = mode;
+  settings.value = JSON.parse(JSON.stringify(VIEW_MODE_SETTINGS[mode]));
+  persistedSettings.value = JSON.parse(JSON.stringify(settings.value)) as any;
+  loadData();
+}
+
+// ===== 键盘快捷键 =====
+function handleKeydown(e: KeyboardEvent) {
+  // 不在输入框时才响应
+  const target = e.target as HTMLElement;
+  if (target.tagName === "INPUT" || target.tagName === "TEXTAREA") return;
+
+  // 1-8 切换周期
+  const tfKeys: TimeFrame[] = ["m", "w", "d", "f60", "f30", "f15", "f5", "f1"];
+  const num = parseInt(e.key);
+  if (num >= 1 && num <= 8) {
+    e.preventDefault();
+    timeframe.value = tfKeys[num - 1];
+    loadData();
+    return;
+  }
+
+  // / 或 Cmd+F 聚焦搜索
+  if (e.key === "/" || ((e.metaKey || e.ctrlKey) && e.key === "f")) {
+    e.preventDefault();
+    const input = document.querySelector<HTMLInputElement>("#stock-search-input");
+    input?.focus();
+    return;
+  }
+
+  // B 只看笔
+  if (e.key === "b" || e.key === "B") {
+    e.preventDefault();
+    onViewModeChange("czsc");
+    return;
+  }
+
+  // W 切换威科夫
+  if (e.key === "w" || e.key === "W") {
+    e.preventDefault();
+    onViewModeChange("wyckoff");
+    return;
+  }
+
+  // F 切换融合
+  if (e.key === "f" || e.key === "F") {
+    e.preventDefault();
+    onViewModeChange("fusion");
+    return;
+  }
+
+  // 0 纯K线
+  if (e.key === "0") {
+    e.preventDefault();
+    onViewModeChange("pure");
+    return;
+  }
+
+  // ← / → 平移
+  if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+    // lightweight-charts 自带，无需处理
+  }
+
+  // +/- 缩放
+  if (e.key === "+" || e.key === "=") {
+    mainChart?.timeScale().scrollToRealTime();
+  }
+
+  // Cmd+S 添加到自选股
+  if ((e.metaKey || e.ctrlKey) && e.key === "s") {
+    e.preventDefault();
+    if (!isInWatchlist(symbol.value)) {
+      addToWatchlist(symbol.value);
+    }
+  }
 }
 
 // ===== 生命周期 =====
 onMounted(async () => {
-  // 自动选择本地第一个有效股票代码作为默认值
   try {
     const codes = await getAllStockCodes();
     if (codes.length > 0) {
@@ -492,6 +815,9 @@ onMounted(async () => {
   if (chartContainer.value) {
     resizeObserver.observe(chartContainer.value);
   }
+
+  // 键盘快捷键
+  document.addEventListener("keydown", handleKeydown);
 });
 
 // 监听 timeframe 变化
@@ -499,90 +825,169 @@ watch(timeframe, () => loadData());
 </script>
 
 <template>
-  <!-- 顶部栏 -->
-  <header class="flex items-center justify-between px-4 h-12 bg-[#16213e] border-b border-[#2a2a4a] shrink-0">
-    <div class="flex items-center gap-4">
-      <h1 class="text-lg font-bold text-[#e94560]">墨岩K线</h1>
-      <!-- 视图切换 -->
-      <div class="flex items-center gap-1">
+  <div class="flex flex-col h-screen bg-[#1a1a2e] text-white">
+    <!-- 顶部栏 -->
+    <header class="flex items-center justify-between px-4 h-12 bg-[#16213e] border-b border-[#2a2a4a] shrink-0">
+      <div class="flex items-center gap-4">
+        <h1 class="text-lg font-bold text-[#e94560]">墨岩K线</h1>
+        <!-- 视图切换 -->
+        <div class="flex items-center gap-1">
+          <button
+            v-for="mode in ([
+              { key: 'pure', label: '纯K线' },
+              { key: 'czsc', label: '缠论' },
+              { key: 'wyckoff', label: '威科夫' },
+              { key: 'fusion', label: '融合' },
+            ] as const)"
+            :key="mode.key"
+            @click="onViewModeChange(mode.key as any)"
+            class="px-2.5 py-1 text-xs rounded transition-all duration-150"
+            :class="viewMode === mode.key
+              ? 'bg-[#e94560] text-white font-semibold'
+              : 'text-[#9e9e9e] hover:bg-[#0f3460] hover:text-white'"
+          >
+            {{ mode.label }}
+          </button>
+        </div>
+
+        <div class="w-px h-5 bg-[#2a2a4a]"></div>
+
+        <!-- 数据同步入口 -->
         <button
-          @click="currentView = 'chart'"
-          class="px-3 py-1 text-xs rounded transition-all"
-          :class="currentView === 'chart' ? 'bg-[#e94560] text-white' : 'text-[#9e9e9e] hover:bg-[#0f3460] hover:text-white'"
-        >
-          K 线图
-        </button>
-        <button
-          @click="currentView = 'sync'"
-          class="px-3 py-1 text-xs rounded transition-all"
+          @click="currentView = currentView === 'sync' ? 'chart' : 'sync'"
+          class="px-2.5 py-1 text-xs rounded transition-all"
           :class="currentView === 'sync' ? 'bg-[#e94560] text-white' : 'text-[#9e9e9e] hover:bg-[#0f3460] hover:text-white'"
         >
           数据同步
         </button>
-      </div>
-      <StockSearch
-        v-if="currentView === 'chart'"
-        v-model="searchKeyword"
-        :results="searchResults"
-        :show="showSearch"
-        @search="onSearch"
-        @select="selectStock"
-        @close="showSearch = false"
-      />
-    </div>
 
-    <div v-if="currentView === 'chart' && currentPrice" class="flex items-center gap-4 text-sm">
-      <span class="font-mono text-lg" :class="currentPrice.close >= currentPrice.open ? 'text-[#ef5350]' : 'text-[#26a69a]'">
-        {{ currentPrice.close.toFixed(2) }}
-      </span>
-      <span v-if="priceChange" :class="priceChange.change >= 0 ? 'text-[#ef5350]' : 'text-[#26a69a]'">
-        {{ priceChange.change >= 0 ? '+' : '' }}{{ priceChange.change.toFixed(2) }}
-        ({{ priceChange.change >= 0 ? '+' : '' }}{{ priceChange.changePct.toFixed(2) }}%)
-      </span>
-      <span class="text-gray-400">{{ chartData?.name || symbol }}</span>
-    </div>
-  </header>
-
-  <!-- 数据同步视图 -->
-  <template v-if="currentView === 'sync'">
-    <main class="flex-1 flex overflow-hidden">
-      <DataSyncPanel class="flex-1" />
-    </main>
-  </template>
-
-  <!-- K 线图视图 -->
-  <template v-else>
-    <!-- 工具栏 -->
-    <ChartToolbar
-      :timeframe="timeframe"
-      :settings="settings"
-      @timeframe-change="onTimeframeChange"
-      @settings-change="onSettingsChange"
-    />
-
-    <!-- 主内容区 -->
-    <main class="flex-1 flex overflow-hidden">
-      <!-- K 线图区域 -->
-      <div class="flex-1 flex flex-col relative">
-        <!-- 主图 + 成交量 — 始终存在，避免 v-if 销毁容器 -->
-        <div ref="chartContainer" class="flex-1 min-h-0"></div>
-        <!-- 加载/错误/空数据提示 — 覆盖在图表上方 -->
-        <div v-if="loading" class="absolute inset-0 flex items-center justify-center bg-[#1a1a2e]/80 z-10">
-          <div class="text-[#9e9e9e] animate-pulse">加载中...</div>
-        </div>
-        <div v-else-if="error" class="absolute inset-0 flex items-center justify-center bg-[#1a1a2e]/80 z-10">
-          <div class="text-[#ff5722]">{{ error }}</div>
-        </div>
-        <div v-else-if="chartData && chartData.klines.length === 0" class="absolute inset-0 flex items-center justify-center bg-[#1a1a2e]/80 z-10">
-          <div class="text-[#9e9e9e]">暂无数据 — 请先同步该股票的 K 线数据</div>
-        </div>
+        <StockSearch
+          v-if="currentView === 'chart'"
+          v-model="searchKeyword"
+          :results="searchResults"
+          :show="showSearch"
+          @search="onSearch"
+          @select="selectStock"
+          @close="showSearch = false"
+        />
       </div>
 
-      <!-- 右侧设置面板 -->
-      <SettingsPanel
+      <div v-if="currentView === 'chart' && currentPrice" class="flex items-center gap-4 text-sm">
+        <span class="font-mono text-lg" :class="currentPrice.close >= currentPrice.open ? 'text-[#ef5350]' : 'text-[#26a69a]'">
+          {{ currentPrice.close.toFixed(2) }}
+        </span>
+        <span v-if="priceChange" :class="priceChange.change >= 0 ? 'text-[#ef5350]' : 'text-[#26a69a]'">
+          {{ priceChange.change >= 0 ? '+' : '' }}{{ priceChange.change.toFixed(2) }}
+          ({{ priceChange.change >= 0 ? '+' : '' }}{{ priceChange.changePct.toFixed(2) }}%)
+        </span>
+        <span class="text-gray-400">{{ chartData?.name || symbol }}</span>
+
+        <!-- 自选股按钮 -->
+        <button
+          @click="isInWatchlist(symbol) ? null : addToWatchlist(symbol)"
+          class="text-sm transition-all"
+          :class="isInWatchlist(symbol) ? 'text-[#ffd700]' : 'text-[#666] hover:text-[#ffd700]'"
+          :title="isInWatchlist(symbol) ? '已在自选股' : '添加到自选股 (Cmd+S)'"
+        >
+          {{ isInWatchlist(symbol) ? "★" : "☆" }}
+        </button>
+      </div>
+    </header>
+
+    <!-- 数据同步视图 -->
+    <template v-if="currentView === 'sync'">
+      <main class="flex-1 flex overflow-hidden">
+        <DataSyncPanel class="flex-1" />
+      </main>
+    </template>
+
+    <!-- K 线图视图 -->
+    <template v-else>
+      <!-- 工具栏 -->
+      <ChartToolbar
+        :timeframe="timeframe"
         :settings="settings"
-        @change="onSettingsChange"
+        :view-mode="viewMode"
+        @timeframe-change="onTimeframeChange"
+        @settings-change="onSettingsChange"
+        @view-mode-change="onViewModeChange"
       />
-    </main>
-  </template>
+
+      <!-- 主内容区 -->
+      <main class="flex-1 flex overflow-hidden">
+        <!-- 自选股侧栏 -->
+        <div class="w-40 shrink-0 border-r border-[#2a2a4a]">
+          <WatchlistPanel
+            :current-symbol="symbol"
+            @select="selectStock"
+            @remove="() => {}"
+          />
+        </div>
+
+        <!-- K 线图区域 -->
+        <div class="flex-1 flex flex-col relative">
+          <div ref="chartContainer" class="flex-1 min-h-0"></div>
+          <!-- 加载/错误/空数据提示 -->
+          <div v-if="loading" class="absolute inset-0 flex items-center justify-center bg-[#1a1a2e]/80 z-10">
+            <div class="text-[#9e9e9e] animate-pulse">加载中...</div>
+          </div>
+          <div v-else-if="error" class="absolute inset-0 flex items-center justify-center bg-[#1a1a2e]/80 z-10">
+            <div class="text-[#ff5722]">{{ error }}</div>
+          </div>
+          <div v-else-if="chartData && chartData.klines.length === 0" class="absolute inset-0 flex items-center justify-center bg-[#1a1a2e]/80 z-10">
+            <div class="text-[#9e9e9e]">暂无数据 — 请先同步该股票的 K 线数据</div>
+          </div>
+
+          <!-- 悬停信息弹窗 -->
+          <div
+            v-if="tooltipInfo"
+            class="absolute pointer-events-none z-20 bg-[#16213e] border border-[#2a2a4a] rounded shadow-lg p-2 text-xs max-w-xs"
+            :style="{ left: Math.min(tooltipInfo.x + 10, 400) + 'px', top: Math.min(tooltipInfo.y - 60, 50) + 'px' }"
+          >
+            <template v-if="tooltipInfo.type === 'bi'">
+              <div class="text-[#4a90d9] font-bold">笔</div>
+              <div>方向: {{ tooltipInfo.data.direction === 'up' ? '上升' : '下降' }}</div>
+              <div>{{ tooltipInfo.data.start_price.toFixed(2) }} → {{ tooltipInfo.data.end_price.toFixed(2) }}</div>
+              <div>幅度: {{ ((tooltipInfo.data.end_price - tooltipInfo.data.start_price) / tooltipInfo.data.start_price * 100).toFixed(2) }}%</div>
+            </template>
+            <template v-else-if="tooltipInfo.type === 'zs'">
+              <div class="text-[#b388ff] font-bold">{{ tooltipInfo.data.zs_type === 'bi_zs' ? '笔中枢' : '段中枢' }}</div>
+              <div>zg: {{ tooltipInfo.data.zg.toFixed(2) }} zd: {{ tooltipInfo.data.zd.toFixed(2) }}</div>
+              <div>gg: {{ tooltipInfo.data.gg.toFixed(2) }} dd: {{ tooltipInfo.data.dd.toFixed(2) }}</div>
+            </template>
+            <template v-else-if="tooltipInfo.type === 'bs'">
+              <div class="font-bold" :class="tooltipInfo.data.bs_type.includes('buy') ? 'text-[#00e676]' : 'text-[#ff1744]'">
+                {{ tooltipInfo.data.bs_type }}
+              </div>
+              <div>价格: {{ tooltipInfo.data.price.toFixed(2) }}</div>
+              <div>时间: {{ tooltipInfo.data.dt }}</div>
+            </template>
+            <template v-else-if="tooltipInfo.type === 'wyckoff'">
+              <div class="font-bold" :style="{ color: WYCKOFF_EVENT_COLORS[tooltipInfo.data.event_type] || '#fff' }">
+                {{ tooltipInfo.data.event_type }}
+              </div>
+              <div>{{ tooltipInfo.data.description }}</div>
+            </template>
+          </div>
+        </div>
+
+        <!-- 右侧面板 -->
+        <div class="flex flex-col w-72 shrink-0 border-l border-[#2a2a4a]">
+          <!-- 信号摘要面板 -->
+          <SignalPanel
+            v-if="chartData"
+            :chart-data="chartData"
+            :settings="settings"
+            class="flex-1 overflow-y-auto"
+          />
+
+          <!-- 勾选设置面板 -->
+          <SettingsPanel
+            :settings="settings"
+            @change="onSettingsChange"
+          />
+        </div>
+      </main>
+    </template>
+  </div>
 </template>

@@ -1,4 +1,5 @@
-// Tauri API 类型声明
+// Tauri API 类型声明 — 对齐后端 data/types.rs
+
 export interface KLine {
   symbol: string;
   timeframe: string;
@@ -18,15 +19,17 @@ export interface MacdData {
   macd_hist: number[];
 }
 
+// ===== 缠论类型 =====
+
 export interface FenXing {
-  fx_type: string;
+  fx_type: string; // "top" / "bottom"
   index: number;
   dt: string;
   price: number;
 }
 
 export interface Bi {
-  direction: string;
+  direction: string; // "up" / "down"
   start_index: number;
   end_index: number;
   start_dt: string;
@@ -48,7 +51,7 @@ export interface XianDuan {
 }
 
 export interface ZhongShu {
-  zs_type: string;
+  zs_type: string; // "bi_zs" / "xd_zs"
   start_index: number;
   end_index: number;
   start_dt: string;
@@ -60,17 +63,40 @@ export interface ZhongShu {
 }
 
 export interface BuySellPoint {
-  bs_type: string;
+  bs_type: string; // "1buy", "2buy", "3buy", "1sell", "2sell", "3sell"
   index: number;
   dt: string;
   price: number;
 }
 
 export interface BeiChi {
-  bc_type: string;
+  bc_type: string; // "bi_beichi" / "xd_beichi" / "zoushi_beichi"
   index: number;
   dt: string;
+  direction: string; // "up" / "down"
+  bc_sub_type: string; // "trend" / "panzheng"
+}
+
+export interface ZouShi {
   direction: string;
+  zs_type: string; // "trend" / "panzheng"
+  start_index: number;
+  end_index: number;
+  start_dt: string;
+  end_dt: string;
+  start_price: number;
+  end_price: number;
+  zs_count: number;
+}
+
+export interface QuJianTaoSignal {
+  level: string;
+  index: number;
+  dt: string;
+  signal_type: string;
+  direction: string;
+  higher_bc_type: string;
+  lower_bc_type: string;
 }
 
 export interface CzscResult {
@@ -81,15 +107,11 @@ export interface CzscResult {
   xd_zs: ZhongShu[];
   buy_sell: BuySellPoint[];
   beichi: BeiChi[];
+  zoushi: ZouShi[];
+  qujian_tao: QuJianTaoSignal[];
 }
 
-export interface TrendLine {
-  line_type: string;
-  start_index: number;
-  end_index: number;
-  start_price: number;
-  end_price: number;
-}
+// ===== 威科夫类型 =====
 
 export interface WyckoffEvent {
   event_type: string;
@@ -107,11 +129,73 @@ export interface TradingRange {
   ice_line: number;
 }
 
+export interface TrendLine {
+  line_type: string; // "support" / "resistance" / "channel"
+  start_index: number;
+  end_index: number;
+  start_price: number;
+  end_price: number;
+}
+
+export type WyckoffPhase =
+  | "Accumulation"
+  | "Markup"
+  | "Distribution"
+  | "Markdown"
+  | "Unknown";
+
+export interface PhaseLabel {
+  index: number;
+  dt: string;
+  phase: WyckoffPhase;
+  sub_phase: string;
+}
+
+export interface EffortResult {
+  index: number;
+  dt: string;
+  effort: number;
+  result: number;
+  harmony: string; // "harmonious" / "divergent"
+  interpretation: string; // "demand_dominant" / "supply_dominant" / "neutral"
+}
+
+export interface SupplyDemandLine {
+  line_type: string; // "supply" / "demand"
+  start_index: number;
+  end_index: number;
+  start_price: number;
+  end_price: number;
+  slope: number;
+}
+
 export interface WyckoffResult {
-  trend_lines: TrendLine[];
+  phase_labels: PhaseLabel[];
   events: WyckoffEvent[];
   trading_ranges: TradingRange[];
+  trend_lines: TrendLine[];
+  supply_demand_lines: SupplyDemandLine[];
+  effort_results: EffortResult[];
 }
+
+// ===== 融合信号 =====
+
+export interface FusionSignal {
+  czsc_type: string; // 买卖点类型
+  wyckoff_events: string[]; // 关联的威科夫事件
+  index: number;
+  dt: string;
+  price: number;
+  interpretation: string;
+  strength: number; // 1-5 星
+  direction: string; // "bullish" / "bearish"
+}
+
+export interface FusionResult {
+  signals: FusionSignal[];
+}
+
+// ===== 聚合类型 =====
 
 export interface ChartData {
   symbol: string;
@@ -121,6 +205,7 @@ export interface ChartData {
   macd: MacdData;
   czsc: CzscResult | null;
   wyckoff: WyckoffResult | null;
+  fusion: FusionResult | null;
 }
 
 export interface StockInfo {
@@ -130,9 +215,11 @@ export interface StockInfo {
   market: string;
 }
 
-// 分析勾选设置
+// ===== 分析勾选设置 =====
+
 export interface AnalysisSettings {
   czsc: {
+    showFenxing: boolean;
     showBi: boolean;
     showXd: boolean;
     showBiZs: boolean;
@@ -141,18 +228,31 @@ export interface AnalysisSettings {
     showBeichi: boolean;
   };
   wyckoff: {
-    showTrendLines: boolean;
+    showPhase: boolean;
     showTR: boolean;
     showIceLine: boolean;
+    showSupplyDemand: boolean;
+    showSC: boolean;
+    showAR: boolean;
+    showST: boolean;
+    showSpring: boolean;
+    showSOS: boolean;
     showLPS: boolean;
     showJOC: boolean;
-    showSpring: boolean;
+    showPSY: boolean;
+    showBC: boolean;
     showUTAD: boolean;
+    showSOW: boolean;
+    showLPSY: boolean;
+  };
+  fusion: {
+    showFusion: boolean;
   };
 }
 
 export const DEFAULT_SETTINGS: AnalysisSettings = {
   czsc: {
+    showFenxing: false,
     showBi: true,
     showXd: true,
     showBiZs: true,
@@ -161,13 +261,84 @@ export const DEFAULT_SETTINGS: AnalysisSettings = {
     showBeichi: true,
   },
   wyckoff: {
-    showTrendLines: true,
+    showPhase: true,
     showTR: true,
     showIceLine: true,
+    showSupplyDemand: true,
+    showSC: true,
+    showAR: true,
+    showST: true,
+    showSpring: true,
+    showSOS: false,
     showLPS: true,
     showJOC: true,
-    showSpring: true,
+    showPSY: true,
+    showBC: true,
     showUTAD: true,
+    showSOW: false,
+    showLPSY: false,
+  },
+  fusion: {
+    showFusion: true,
+  },
+};
+
+// ===== 视图模式 =====
+
+export type ViewMode = "pure" | "czsc" | "wyckoff" | "fusion";
+
+export const VIEW_MODE_SETTINGS: Record<ViewMode, AnalysisSettings> = {
+  pure: {
+    czsc: {
+      showFenxing: false, showBi: false, showXd: false,
+      showBiZs: false, showXdZs: false, showBuySell: false, showBeichi: false,
+    },
+    wyckoff: {
+      showPhase: false, showTR: false, showIceLine: false, showSupplyDemand: false,
+      showSC: false, showAR: false, showST: false, showSpring: false,
+      showSOS: false, showLPS: false, showJOC: false,
+      showPSY: false, showBC: false, showUTAD: false, showSOW: false, showLPSY: false,
+    },
+    fusion: { showFusion: false },
+  },
+  czsc: {
+    czsc: {
+      showFenxing: false, showBi: true, showXd: true,
+      showBiZs: true, showXdZs: false, showBuySell: true, showBeichi: true,
+    },
+    wyckoff: {
+      showPhase: false, showTR: false, showIceLine: false, showSupplyDemand: false,
+      showSC: false, showAR: false, showST: false, showSpring: false,
+      showSOS: false, showLPS: false, showJOC: false,
+      showPSY: false, showBC: false, showUTAD: false, showSOW: false, showLPSY: false,
+    },
+    fusion: { showFusion: false },
+  },
+  wyckoff: {
+    czsc: {
+      showFenxing: false, showBi: false, showXd: false,
+      showBiZs: false, showXdZs: false, showBuySell: false, showBeichi: false,
+    },
+    wyckoff: {
+      showPhase: true, showTR: true, showIceLine: true, showSupplyDemand: true,
+      showSC: true, showAR: true, showST: true, showSpring: true,
+      showSOS: true, showLPS: true, showJOC: true,
+      showPSY: true, showBC: true, showUTAD: true, showSOW: true, showLPSY: true,
+    },
+    fusion: { showFusion: false },
+  },
+  fusion: {
+    czsc: {
+      showFenxing: false, showBi: true, showXd: true,
+      showBiZs: true, showXdZs: false, showBuySell: true, showBeichi: true,
+    },
+    wyckoff: {
+      showPhase: true, showTR: true, showIceLine: true, showSupplyDemand: true,
+      showSC: true, showAR: true, showST: true, showSpring: true,
+      showSOS: false, showLPS: true, showJOC: true,
+      showPSY: true, showBC: true, showUTAD: true, showSOW: false, showLPSY: false,
+    },
+    fusion: { showFusion: true },
   },
 };
 
@@ -183,3 +354,44 @@ export const TIME_FRAMES: { key: TimeFrame; label: string }[] = [
   { key: "f5", label: "5F" },
   { key: "f1", label: "1F" },
 ];
+
+// ===== 威科夫事件类型分类 =====
+
+export const WYCKOFF_BULLISH_EVENTS = ["SC", "AR", "ST", "Spring", "SOS", "LPS", "JOC", "Shakeout"];
+export const WYCKOFF_BEARISH_EVENTS = ["PSY", "BC", "UTAD", "SOW", "LPSY"];
+export const WYCKOFF_ALL_EVENTS = [...WYCKOFF_BULLISH_EVENTS, ...WYCKOFF_BEARISH_EVENTS];
+
+export const WYCKOFF_EVENT_COLORS: Record<string, string> = {
+  SC: "#ff5722",
+  AR: "#4caf50",
+  ST: "#00bcd4",
+  Spring: "#ff9800",
+  Shakeout: "#ff9800",
+  SOS: "#2e7d32",
+  LPS: "#66bb6a",
+  JOC: "#00e676",
+  PSY: "#9c27b0",
+  BC: "#e91e63",
+  UTAD: "#7b1fa2",
+  SOW: "#c62828",
+  LPSY: "#ef5350",
+};
+
+export const WYCKOFF_PHASE_COLORS: Record<string, string> = {
+  Accumulation: "#00bcd4",
+  Markup: "#4caf50",
+  Distribution: "#9c27b0",
+  Markdown: "#78909c",
+  Unknown: "#424242",
+};
+
+// ===== 缠论买卖点颜色 =====
+
+export const CZSC_BS_COLORS: Record<string, { color: string; text: string }> = {
+  "1buy":  { color: "#00e676", text: "1B" },
+  "2buy":  { color: "#69f0ae", text: "2B" },
+  "3buy":  { color: "#b9f6ca", text: "3B" },
+  "1sell": { color: "#ff1744", text: "1S" },
+  "2sell": { color: "#ff5252", text: "2S" },
+  "3sell": { color: "#ff8a80", text: "3S" },
+};

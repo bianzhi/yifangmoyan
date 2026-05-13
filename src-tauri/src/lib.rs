@@ -2,6 +2,7 @@
 
 mod commands;
 mod state;
+mod fusion;
 
 use state::AppState;
 

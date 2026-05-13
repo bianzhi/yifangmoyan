@@ -188,6 +188,8 @@ pub struct ChartData {
     pub czsc: Option<CzscResult>,
     /// 威科夫分析结果
     pub wyckoff: Option<WyckoffResult>,
+    /// 缠论+威科夫融合信号
+    pub fusion: Option<FusionResult>,
 }
 
 /// MACD 指标数据
@@ -622,4 +624,37 @@ impl Default for WyckoffResult {
             effort_results: Vec::new(),
         }
     }
+}
+
+// ===== 融合信号类型 =====
+
+/// 缠论+威科夫融合信号
+///
+/// 当缠论买卖点与威科夫事件在同一区域（±5根K线）出现时，
+/// 自动生成融合解读，以高亮方式在图表上标注。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FusionSignal {
+    /// 缠论买卖点类型: "1buy", "2buy", "3buy", "1sell", "2sell", "3sell"
+    pub czsc_type: String,
+    /// 关联的威科夫事件类型列表
+    pub wyckoff_events: Vec<String>,
+    /// K 线索引
+    pub index: u64,
+    /// 时间
+    pub dt: String,
+    /// 价格
+    pub price: f64,
+    /// 融合解读文字
+    pub interpretation: String,
+    /// 信号强度 1-5 星
+    pub strength: u8,
+    /// 方向: "bullish" / "bearish"
+    pub direction: String,
+}
+
+/// 融合分析结果
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct FusionResult {
+    /// 融合信号列表
+    pub signals: Vec<FusionSignal>,
 }

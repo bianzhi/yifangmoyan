@@ -1,15 +1,17 @@
 <script setup lang="ts">
-import type { TimeFrame, AnalysisSettings } from "../types";
+import type { TimeFrame, AnalysisSettings, ViewMode } from "../types";
 import { TIME_FRAMES } from "../types";
 
 defineProps<{
   timeframe: TimeFrame;
   settings: AnalysisSettings;
+  viewMode: ViewMode;
 }>();
 
 const emit = defineEmits<{
   (e: "timeframe-change", tf: TimeFrame): void;
   (e: "settings-change", settings: AnalysisSettings): void;
+  (e: "view-mode-change", mode: ViewMode): void;
 }>();
 
 function selectTf(tf: TimeFrame) {
@@ -50,6 +52,12 @@ function selectTf(tf: TimeFrame) {
 
     <div class="flex items-center gap-2 text-xs text-[#9e9e9e]" v-if="Object.values(settings.wyckoff).some(Boolean)">
       <span class="text-[#00bcd4]">WY</span>
+    </div>
+
+    <div class="w-px h-5 bg-[#2a2a4a] mx-2" v-if="settings.fusion.showFusion"></div>
+
+    <div class="flex items-center gap-2 text-xs text-[#9e9e9e]" v-if="settings.fusion.showFusion">
+      <span class="text-[#ffd700]">融合</span>
     </div>
   </div>
 </template>

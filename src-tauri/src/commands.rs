@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use tauri::State;
 
 use crate::state::AppState;
+use crate::fusion;
 use yifang_data::{ChartData, DataSource, KLine, StockInfo, TimeFrame, SyncStockResult, DataStatus, BoardStats, BoardOnlineInfo, ValidateStockResult, ValidateLevelResult, MoveDataResult};
 use yifang_czsc::CzscAnalyzer;
 use yifang_wyckoff::WyckoffAnalyzer;
@@ -55,6 +56,12 @@ pub fn get_chart_data(
         None
     };
 
+    // 5. 融合分析
+    let fusion = match (&czsc, &wyckoff) {
+        (Some(c), Some(w)) => Some(fusion::analyze_fusion(c, w)),
+        _ => None,
+    };
+
     Ok(ChartData {
         symbol,
         name,
@@ -63,6 +70,7 @@ pub fn get_chart_data(
         macd,
         czsc,
         wyckoff,
+        fusion,
     })
 }
 
@@ -127,6 +135,7 @@ pub fn get_sub_level_data(
         macd,
         czsc,
         wyckoff: None,
+        fusion: None,
     })
 }
 

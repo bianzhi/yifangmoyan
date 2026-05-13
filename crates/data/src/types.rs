@@ -215,6 +215,10 @@ pub struct CzscResult {
     pub buy_sell: Vec<BuySellPoint>,
     /// 背驰标记
     pub beichi: Vec<BeiChi>,
+    /// 走势列表（走势递归分解）
+    pub zoushi: Vec<ZouShi>,
+    /// 区间套信号
+    pub qujian_tao: Vec<QuJianTaoSignal>,
 }
 
 /// 分型
@@ -311,7 +315,7 @@ pub struct BuySellPoint {
 /// 背驰标记
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BeiChi {
-    /// 背驰类型: "bi_beichi" / "xd_beichi"
+    /// 背驰类型: "bi_beichi" / "xd_beichi" / "zoushi_beichi"
     pub bc_type: String,
     /// K 线索引
     pub index: u64,
@@ -319,6 +323,68 @@ pub struct BeiChi {
     pub dt: String,
     /// 方向: "up" / "down"
     pub direction: String,
+    /// 背驰子类型: "trend" (趋势背驰) / "panzheng" (盘整背驰)
+    pub bc_sub_type: String,
+}
+
+impl Default for BeiChi {
+    fn default() -> Self {
+        Self {
+            bc_type: String::new(),
+            index: 0,
+            dt: String::new(),
+            direction: String::new(),
+            bc_sub_type: "trend".to_string(),
+        }
+    }
+}
+
+/// 走势类型
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ZouShi {
+    /// 走势方向: "up" / "down"
+    pub direction: String,
+    /// 走势类型: "trend" (趋势) / "panzheng" (盘整)
+    pub zs_type: String,
+    /// 起点 K 线索引
+    pub start_index: u64,
+    /// 终点 K 线索引
+    pub end_index: u64,
+    /// 起点时间
+    pub start_dt: String,
+    /// 终点时间
+    pub end_dt: String,
+    /// 起点价格
+    pub start_price: f64,
+    /// 终点价格
+    pub end_price: f64,
+    /// 包含的中枢列表
+    pub zs_list: Vec<ZhongShu>,
+    /// 是否已完成
+    pub is_finished: bool,
+}
+
+/// 区间套信号
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QuJianTaoSignal {
+    /// 信号类型: "1buy" / "1sell" / "2buy" / "2sell" / "3buy" / "3sell"
+    pub signal_type: String,
+    /// 大级别
+    pub high_level: String,
+    /// 小级别
+    pub low_level: String,
+    /// 大级别走势方向
+    pub high_direction: String,
+    /// 小级别确认方向
+    pub low_direction: String,
+    /// K 线索引
+    pub index: u64,
+    /// 时间
+    pub dt: String,
+    /// 价格
+    pub price: f64,
+    /// 区间套强度: "strong" / "medium" / "weak"
+    pub strength: String,
 }
 
 /// 威科夫分析结果

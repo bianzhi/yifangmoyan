@@ -6,8 +6,10 @@
 //! - 笔的构建
 //! - 线段分析
 //! - 中枢识别（笔中枢、线段中枢）
-//! - 背驰检测
-//! - 三类买卖点
+//! - 背驰检测（趋势背驰、盘整背驰）
+//! - 三类买卖点（笔级别 + 线段级别）
+//! - 走势递归分解
+//! - 区间套信号
 
 pub mod include;
 pub mod fenxing;
@@ -16,6 +18,9 @@ pub mod xd;
 pub mod zs;
 pub mod beichi;
 pub mod buy_sell;
+pub mod zoushi;
+pub mod qujian_tao;
 pub mod analyzer;
 
 pub use analyzer::CzscAnalyzer;
+pub use qujian_tao::{detect_qujian_tao, MultiLevelData};

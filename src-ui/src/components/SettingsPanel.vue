@@ -29,6 +29,7 @@ function toggleFusion(key: keyof AnalysisSettings["fusion"]) {
 
 function toggleChart(key: keyof AnalysisSettings["chart"]) {
   const newSettings = JSON.parse(JSON.stringify(props.settings));
+  if (!newSettings.chart) newSettings.chart = { showMacd: true };
   newSettings.chart[key] = !newSettings.chart[key];
   emit("change", newSettings);
 }
@@ -140,7 +141,7 @@ function toggleChart(key: keyof AnalysisSettings["chart"]) {
         <label class="flex items-center gap-2 cursor-pointer group">
           <input
             type="checkbox"
-            :checked="settings.chart.showMacd"
+            :checked="settings.chart?.showMacd"
             @change="toggleChart('showMacd')"
             class="w-3 h-3 rounded accent-[#2196f3]"
           />

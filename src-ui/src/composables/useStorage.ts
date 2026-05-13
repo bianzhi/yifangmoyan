@@ -1,5 +1,27 @@
 import { ref, watch } from "vue";
 
+/** 深合并：用 defaults 填充 target 中缺失的键（递归） */
+function deepMerge<T>(defaults: T, target: any): T {
+  if (typeof defaults !== "object" || defaults === null) return defaults;
+  const result = { ...(defaults as any) };
+  for (const key of Object.keys(defaults as any)) {
+    if (key in target) {
+      if (typeof (defaults as any)[key] === "object" && (defaults as any)[key] !== null && !Array.isArray((defaults as any)[key])) {
+        result[key] = deepMerge((defaults as any)[key], target[key]);
+      } else {
+        result[key] = target[key];
+      }
+    }
+  }
+  // 保留 target 中存在但 defaults 中没有的键（向前兼容）
+  for (const key of Object.keys(target)) {
+    if (!(key in result)) {
+      result[key] = target[key];
+    }
+  }
+  return result as T;
+}
+
 // ===== 自选股管理 =====
 
 const STORAGE_KEY = "moyan_watchlist";
@@ -54,7 +76,7 @@ export function usePersistedSettings<T>(key: string, defaultValue: T) {
   function load(): T {
     try {
       const raw = localStorage.getItem(storageKey);
-      return raw ? JSON.parse(raw) : defaultValue;
+      return raw ? deepMerge(defaultValue, JSON.parse(raw)) : defaultValue;
     } catch {
       return defaultValue;
     }

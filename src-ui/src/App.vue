@@ -225,7 +225,7 @@ function renderChart() {
   });
 
   // MACD 副图
-  if (settings.value.chart.showMacd && data.macd && data.macd.dif.length > 0) {
+  if (settings.value.chart?.showMacd && data.macd && data.macd.dif.length > 0) {
     const macdData = data.macd;
 
     // DIF 线

@@ -164,8 +164,10 @@ pub fn sync_stock(
     start_date: Option<String>,
     force: bool,
 ) -> Result<SyncStockResult, String> {
-    let manager = state.manager.lock().map_err(|e| e.to_string())?;
-    let data_dir = manager.data_dir();
+    let data_dir = {
+            let manager = state.manager.lock().map_err(|e| e.to_string())?;
+            manager.data_dir().to_path_buf()
+        };
 
     let tf_list: Vec<TimeFrame> = levels
         .iter()
@@ -178,7 +180,7 @@ pub fn sync_stock(
 
     let start = start_date.unwrap_or_else(|| "2023-01-01".into());
 
-    Ok(yifang_data::sync_stock(data_dir, &symbol, &tf_list, &start, force))
+    Ok(yifang_data::sync_stock(&data_dir, &symbol, &tf_list, &start, force))
 }
 
 /// 批量同步股票数据（按股票代码列表）
@@ -190,8 +192,10 @@ pub fn sync_stocks_batch(
     start_date: Option<String>,
     force: bool,
 ) -> Result<Vec<SyncStockResult>, String> {
-    let manager = state.manager.lock().map_err(|e| e.to_string())?;
-    let data_dir = manager.data_dir();
+    let data_dir = {
+            let manager = state.manager.lock().map_err(|e| e.to_string())?;
+            manager.data_dir().to_path_buf()
+        };
 
     let tf_list: Vec<TimeFrame> = levels
         .iter()
@@ -206,7 +210,7 @@ pub fn sync_stocks_batch(
 
     let results: Vec<SyncStockResult> = symbols
         .iter()
-        .map(|sym| yifang_data::sync_stock(data_dir, sym, &tf_list, &start, force))
+        .map(|sym| yifang_data::sync_stock(&data_dir, sym, &tf_list, &start, force))
         .collect();
 
     Ok(results)
@@ -352,8 +356,10 @@ pub fn sync_board(
     if tfs.is_empty() {
         return Err("未指定有效的 K 线级别".into());
     }
-    let manager = state.manager.lock().map_err(|e| e.to_string())?;
-    let data_dir = manager.data_dir();
+    let data_dir = {
+            let manager = state.manager.lock().map_err(|e| e.to_string())?;
+            manager.data_dir().to_path_buf()
+        };
     let start = start_date.unwrap_or_default();
-    Ok(yifang_data::sync_board(data_dir, &board, &tfs, &start, force))
+    Ok(yifang_data::sync_board(&data_dir, &board, &tfs, &start, force))
 }

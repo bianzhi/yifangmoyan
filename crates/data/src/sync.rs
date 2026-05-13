@@ -321,7 +321,46 @@ pub struct BoardOnlineInfo {
     pub local_count: usize,   // 本地已有股票数
 }
 
+/// 从东方财富在线 API 获取指定板块的股票总数（轻量级，仅请求1条数据取 total）
+pub fn fetch_board_online_count(board: &str) -> Result<usize> {
+    let fs = match board {
+        "sh_main" => "m:1+t:2",
+        "sz_main" => "m:0+t:6",
+        "gem" => "m:0+t:80",
+        "star" => "m:1+t:23",
+        "bse" => "m:0+t:81",
+        _ => return Err(anyhow::anyhow!("未知板块: {}", board)),
+    };
+
+    // 只请求1条数据，从 data.total 获取总数
+    let url = format!(
+        "https://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=1&np=1&ut=bd1d9ddb04089700cf9c27f6f7426281&fltt=2&invt=2&fid=f3&fs={}&fields=f12",
+        fs
+    );
+
+    let client = build_http_client()?;
+    let resp = client.get(&url)
+        .header("Referer", "https://quote.eastmoney.com/")
+        .send()?;
+    let body = resp.text()?;
+
+    if body.is_empty() {
+        return Ok(0);
+    }
+
+    let json: serde_json::Value = serde_json::from_str(&body)
+        .context("解析东方财富股票列表失败")?;
+
+    let total = json.get("data")
+        .and_then(|d| d.get("total"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as usize;
+
+    Ok(total)
+}
+
 /// 获取板块在线信息（各板块有多少只股票）
+/// 先返回本地统计（瞬间），再异步获取在线总数
 pub fn get_board_online_info(data_dir: &Path) -> Vec<BoardOnlineInfo> {
     let local_codes = get_all_stock_codes(data_dir);
 
@@ -334,13 +373,11 @@ pub fn get_board_online_info(data_dir: &Path) -> Vec<BoardOnlineInfo> {
     ];
 
     let mut results: Vec<BoardOnlineInfo> = Vec::new();
-    let mut all_online_count = 0usize;
 
     for (id, name) in &sub_boards {
-        let online_codes = fetch_board_stock_codes(id).unwrap_or_default();
-        let online_count = online_codes.len();
-        all_online_count += online_count;
         let local_count = local_codes.iter().filter(|c| classify_board(c) == *id).count();
+        // 使用轻量级 API 仅获取在线总数，不拉取全部代码列表
+        let online_count = fetch_board_online_count(id).unwrap_or(local_count);
         results.push(BoardOnlineInfo {
             id: id.to_string(),
             name: name.to_string(),
@@ -349,7 +386,8 @@ pub fn get_board_online_info(data_dir: &Path) -> Vec<BoardOnlineInfo> {
         });
     }
 
-    // 全 A 股 = 各子板块在线数之和，无需再额外请求 API
+    // 全 A 股 = 各子板块在线数之和
+    let all_online_count: usize = results.iter().map(|r| r.total_count).sum();
     results.push(BoardOnlineInfo {
         id: "all_a".to_string(),
         name: "全 A 股".to_string(),

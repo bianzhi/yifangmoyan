@@ -241,7 +241,7 @@ async function syncByBoard(boardId: string) {
   syncCompleted.value = 0;
   syncFailedDetails.value = [];
 
-  const batchSize = 5;
+  const batchSize = 20;
 
   for (let i = 0; i < codes.length; i += batchSize) {
     const batch = codes.slice(i, i + batchSize);
@@ -264,7 +264,7 @@ async function syncByBoard(boardId: string) {
     syncCompleted.value = Math.min(syncCompleted.value + batchSize, codes.length);
 
     if (i + batchSize < codes.length) {
-      await new Promise((r) => setTimeout(r, 200));
+      await new Promise((r) => setTimeout(r, 100));
     }
   }
 
@@ -481,21 +481,34 @@ const failCount = computed(() =>
 
 const boardSyncProgress = ref("");
 
-// 获取板块在线股票总数
-function getBoardOnlineTotal(boardId: string): number {
+// 获取板块在线股票总数（优先在线值，回退到本地统计）
+function getBoardOnlineTotal(boardId: string): number | null {
   const info = boardOnlineInfo.value.find(b => b.id === boardId);
-  return info?.total_count ?? 0;
+  if (info && info.total_count > 0) return info.total_count;
+  // 回退：用本地 dataStatus.boards 的 count 做兜底
+  if (dataStatus.value) {
+    const board = dataStatus.value.boards.find(b => b.id === boardId);
+    if (board) return board.count;
+  }
+  return null;
 }
 
-// 获取板块本地已有股票数
-function getBoardLocalCount(boardId: string): number {
+// 获取板块本地已有股票数（优先在线信息里的 local_count，回退到本地统计）
+function getBoardLocalCount(boardId: string): number | null {
   const info = boardOnlineInfo.value.find(b => b.id === boardId);
-  return info?.local_count ?? 0;
+  if (info && info.local_count > 0) return info.local_count;
+  if (dataStatus.value) {
+    const board = dataStatus.value.boards.find(b => b.id === boardId);
+    if (board) return board.count;
+  }
+  return null;
 }
 
 // ===== 初始化 =====
-onMounted(() => {
-  refreshStatus();
+onMounted(async () => {
+  // 先加载本地统计（瞬间完成），确保板块数量有兜底值
+  await refreshStatus();
+  // 再异步获取在线信息（需要网络请求，轻量级 pz=1）
   loadBoardOnlineInfo();
 });
 </script>
@@ -565,7 +578,7 @@ onMounted(() => {
       <div class="mt-2 space-y-1">
         <div class="text-xs text-[#9e9e9e] font-bold mb-1">
           板块概况（在线 / 本地）
-          <span v-if="loadingOnlineInfo" class="animate-pulse text-[#e94560] ml-2">⏳ 正在从东方财富获取在线数据...</span>
+          <span v-if="loadingOnlineInfo" class="animate-pulse text-[#e94560] ml-2">⏳ 更新中...</span>
         </div>
         <div class="grid grid-cols-2 gap-1.5">
           <div
@@ -577,10 +590,12 @@ onMounted(() => {
               {{ b.icon }} {{ b.name }}
             </span>
             <span class="text-xs text-white font-mono">
-              <span class="text-[#9e9e9e]">{{ getBoardOnlineTotal(b.id) || (loadingOnlineInfo ? '...' : '—') }}</span>
+              <span :class="getBoardOnlineTotal(b.id) !== null ? 'text-[#9e9e9e]' : 'text-[#9e9e9e]/50'">
+                {{ getBoardOnlineTotal(b.id) ?? '—' }}
+              </span>
               <span class="text-[#666]"> / </span>
-              <span :class="getBoardLocalCount(b.id) > 0 ? 'text-[#26a69a]' : 'text-[#9e9e9e]'">
-                {{ getBoardLocalCount(b.id) || (loadingOnlineInfo ? '...' : '—') }}
+              <span :class="getBoardLocalCount(b.id) ? 'text-[#26a69a]' : 'text-[#9e9e9e]'">
+                {{ getBoardLocalCount(b.id) ?? '—' }}
               </span>
             </span>
           </div>
@@ -703,7 +718,7 @@ onMounted(() => {
               <span>{{ bd.icon }} {{ bd.name }}</span>
               <span v-if="syncingBoard === bd.id" class="animate-pulse text-[10px]">同步中...</span>
               <span v-else class="font-mono text-[10px] opacity-70">
-                {{ getBoardOnlineTotal(bd.id) || '...' }} 只
+                {{ getBoardOnlineTotal(bd.id) ?? '—' }} 只
               </span>
             </button>
           </div>
@@ -716,7 +731,7 @@ onMounted(() => {
               text-white hover:brightness-110"
           >
             <span v-if="syncingBoard === 'all_a'" class="animate-pulse">🌐 全 A 股同步中...</span>
-            <span v-else>🌐 同步全 A 股 ({{ getBoardOnlineTotal('all_a') || '...' }} 只)</span>
+            <span v-else>🌐 同步全 A 股 ({{ getBoardOnlineTotal('all_a') ?? '—' }} 只)</span>
           </button>
         </div>
       </div>

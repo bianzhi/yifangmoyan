@@ -68,3 +68,17 @@ fn test_date_filtering() {
         assert!(filtered.last().unwrap().dt.as_str() <= "2024-12-31", "Last should be <= end");
     }
 }
+
+#[test]
+fn test_minute_level_dirty_data_filtered() {
+    let manager = KLineManager::new(None);
+    
+    // get_klines should filter out date-only entries for minute-level data
+    for tf in [TimeFrame::F60, TimeFrame::F30, TimeFrame::F15, TimeFrame::F5, TimeFrame::F1] {
+        if let Ok(klines) = manager.get_klines("000001", tf, None, None) {
+            for (i, k) in klines.iter().enumerate() {
+                assert!(k.dt.contains(':'), "Minute-level {:?} row {} has date-only dt='{}' — dirty data not filtered", tf, i, k.dt);
+            }
+        }
+    }
+}

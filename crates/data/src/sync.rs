@@ -1685,7 +1685,12 @@ fn merge_records(old: &[KlineRecord], new: &[KlineRecord]) -> Vec<KlineRecord> {
         merged.push(r.clone());
     }
     // 再插旧数据中未被覆盖的
+    // 过滤掉只有日期没有时间部分的旧数据（旧版同步可能将日线混入分钟级文件）
     for r in old {
+        // 如果旧数据只有日期没有时间，而新数据有时间部分，说明旧数据是脏数据，跳过
+        if !r.datetime.contains(':') && new.iter().any(|n| n.datetime.contains(':')) {
+            continue;
+        }
         if seen.insert(r.datetime.clone()) {
             merged.push(r.clone());
         }

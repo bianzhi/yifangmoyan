@@ -445,6 +445,12 @@ impl DataSource for KLineManager {
     ) -> Result<Vec<KLine>> {
         let mut klines = self.load_klines_from_parquet(symbol, timeframe)?;
 
+        // 分钟级数据需包含时间部分，过滤掉只有日期的脏数据
+        // （旧版同步可能将日线数据混入了分钟级文件）
+        if timeframe.is_minute_level() {
+            klines.retain(|k| k.dt.contains(':'));
+        }
+
         // 按日期过滤
         if start.is_some() || end.is_some() {
             klines.retain(|k| {

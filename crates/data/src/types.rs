@@ -94,6 +94,11 @@ impl TimeFrame {
             TimeFrame::M => Some(4800), // 一月约 20 天
         }
     }
+
+    /// 是否为分钟级 K 线（F60/F30/F15/F5/F1）
+    pub fn is_minute_level(&self) -> bool {
+        matches!(self, TimeFrame::F60 | TimeFrame::F30 | TimeFrame::F15 | TimeFrame::F5 | TimeFrame::F1)
+    }
 }
 
 impl std::fmt::Display for TimeFrame {

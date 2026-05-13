@@ -221,8 +221,8 @@ function renderChart() {
   });
   candleSeries.setData(candleData);
 
-  // 成交量
-  const volumeData: HistogramData<Time>[] = data.klines.map((k) => ({
+  // 成交量（与 K 线使用同一份截断数据，保证时间对齐）
+  const volumeData: HistogramData<Time>[] = visibleKlines.map((k) => ({
     time: toTime(k.dt),
     value: k.vol,
     color: k.close >= k.open ? "rgba(239,83,80,0.4)" : "rgba(38,166,154,0.4)",
@@ -237,7 +237,7 @@ function renderChart() {
     scaleMargins: { top: 0.7, bottom: 0.2 },
   });
 
-  // MACD 副图
+  // MACD 副图（使用截断后的数据，保证与 K 线时间对齐）
   if (settings.value.chart?.showMacd && data.macd && data.macd.dif.length > 0) {
     const macdData = data.macd;
 
@@ -252,6 +252,7 @@ function renderChart() {
     });
     const difLineData: LineData<Time>[] = [];
     for (let i = 0; i < macdData.dif.length && i < data.klines.length; i++) {
+      if (i < startIdx) continue;  // 只渲染可见范围
       difLineData.push({ time: toTime(data.klines[i].dt), value: macdData.dif[i] });
     }
     difSeries.setData(difLineData);
@@ -267,6 +268,7 @@ function renderChart() {
     });
     const deaLineData: LineData<Time>[] = [];
     for (let i = 0; i < macdData.dea.length && i < data.klines.length; i++) {
+      if (i < startIdx) continue;
       deaLineData.push({ time: toTime(data.klines[i].dt), value: macdData.dea[i] });
     }
     deaSeries.setData(deaLineData);
@@ -280,6 +282,7 @@ function renderChart() {
     });
     const macdHistData: HistogramData<Time>[] = [];
     for (let i = 0; i < macdData.macd_hist.length && i < data.klines.length; i++) {
+      if (i < startIdx) continue;
       const v = macdData.macd_hist[i];
       macdHistData.push({
         time: toTime(data.klines[i].dt),

@@ -10,7 +10,7 @@ import {
   type LineData,
   type Time,
 } from "lightweight-charts";
-import { getChartData, searchStocks, getAllStockCodes } from "./composables/useApi";
+import { getChartData, searchStocks, getAllStockCodes, getSubLevelData } from "./composables/useApi";
 import {
   type ChartData,
   type AnalysisSettings,
@@ -67,6 +67,13 @@ const tooltipInfo = ref<{
   data: any;
   x: number;
   y: number;
+} | null>(null);
+
+// ===== 次级别走势面板 =====
+const subLevelPanel = ref<{
+  xd: any;
+  data: ChartData | null;
+  loading: boolean;
 } | null>(null);
 
 // ===== 计算属性 =====
@@ -127,6 +134,8 @@ function toTime(dt: string): Time {
 }
 
 // ===== 图表渲染 =====
+const MAX_VISIBLE_KLINES = 5000; // 性能阈值：超过此数量截断
+
 function renderChart() {
   if (!chartData.value || !chartContainer.value) return;
   const data = chartData.value;
@@ -171,8 +180,14 @@ function renderChart() {
     height: chartContainer.value.clientHeight,
   });
 
-  // K 线数据
-  const candleData: CandlestickData<Time>[] = data.klines.map((k) => ({
+  // K 线数据（性能优化：超过阈值截断）
+  const startIdx = data.klines.length > MAX_VISIBLE_KLINES
+    ? data.klines.length - MAX_VISIBLE_KLINES
+    : 0;
+  const visibleKlines = data.klines.slice(startIdx);
+  // offset 用于后续剪裁缠论/威科夫 overlay 的 index 对齐
+
+  const candleData: CandlestickData<Time>[] = visibleKlines.map((k) => ({
     time: toTime(k.dt),
     open: k.open,
     high: k.high,
@@ -247,18 +262,26 @@ function renderChart() {
         info = { type: "bi", data: bi, x: param.point.x, y: param.point.y };
       }
 
+      // 查找线段
+      const xd = data.czsc.xd.find(
+        (x) => idx >= x.start_index && idx <= x.end_index
+      );
+      if (xd && !info) {
+        info = { type: "xd", data: xd, x: param.point.x, y: param.point.y };
+      }
+
       // 查找中枢
       const zs = [...data.czsc.bi_zs, ...data.czsc.xd_zs].find(
         (z) => idx >= z.start_index && idx <= z.end_index
       );
-      if (zs) {
-        info = info || { type: "zs", data: zs, x: param.point.x, y: param.point.y };
+      if (zs && !info) {
+        info = { type: "zs", data: zs, x: param.point.x, y: param.point.y };
       }
 
       // 查找买卖点
       const bs = data.czsc.buy_sell.find((b) => b.index === idx);
-      if (bs) {
-        info = info || { type: "bs", data: bs, x: param.point.x, y: param.point.y };
+      if (bs && !info) {
+        info = { type: "bs", data: bs, x: param.point.x, y: param.point.y };
       }
     }
 
@@ -679,6 +702,28 @@ function renderFusionOverlays(data: ChartData) {
   );
 }
 
+// ===== 次级别走势 =====
+async function loadSubLevel(xd: any) {
+  if (!chartData.value) return;
+  subLevelPanel.value = { xd, data: null, loading: true };
+  try {
+    const data = await getSubLevelData(
+      symbol.value,
+      timeframe.value,
+      xd.start_dt,
+      xd.end_dt,
+      hasAnyCzscEnabled()
+    );
+    subLevelPanel.value = { xd, data, loading: false };
+  } catch (e: any) {
+    subLevelPanel.value = { xd, data: null, loading: false };
+  }
+}
+
+function closeSubLevel() {
+  subLevelPanel.value = null;
+}
+
 // ===== 搜索股票 =====
 async function onSearch() {
   if (!searchKeyword.value.trim()) return;
@@ -941,7 +986,7 @@ watch(timeframe, () => loadData());
           <!-- 悬停信息弹窗 -->
           <div
             v-if="tooltipInfo"
-            class="absolute pointer-events-none z-20 bg-[#16213e] border border-[#2a2a4a] rounded shadow-lg p-2 text-xs max-w-xs"
+            class="absolute z-20 bg-[#16213e] border border-[#2a2a4a] rounded shadow-lg p-2 text-xs max-w-xs"
             :style="{ left: Math.min(tooltipInfo.x + 10, 400) + 'px', top: Math.min(tooltipInfo.y - 60, 50) + 'px' }"
           >
             <template v-if="tooltipInfo.type === 'bi'">
@@ -949,6 +994,17 @@ watch(timeframe, () => loadData());
               <div>方向: {{ tooltipInfo.data.direction === 'up' ? '上升' : '下降' }}</div>
               <div>{{ tooltipInfo.data.start_price.toFixed(2) }} → {{ tooltipInfo.data.end_price.toFixed(2) }}</div>
               <div>幅度: {{ ((tooltipInfo.data.end_price - tooltipInfo.data.start_price) / tooltipInfo.data.start_price * 100).toFixed(2) }}%</div>
+            </template>
+            <template v-else-if="tooltipInfo.type === 'xd'">
+              <div class="text-[#b388ff] font-bold">线段</div>
+              <div>方向: {{ tooltipInfo.data.direction === 'up' ? '上升' : '下降' }}</div>
+              <div>{{ tooltipInfo.data.start_price.toFixed(2) }} → {{ tooltipInfo.data.end_price.toFixed(2) }}</div>
+              <button
+                class="mt-1 text-[#00bcd4] hover:text-white underline"
+                @click="loadSubLevel(tooltipInfo.data)"
+              >
+                查看次级别 →
+              </button>
             </template>
             <template v-else-if="tooltipInfo.type === 'zs'">
               <div class="text-[#b388ff] font-bold">{{ tooltipInfo.data.zs_type === 'bi_zs' ? '笔中枢' : '段中枢' }}</div>
@@ -968,6 +1024,31 @@ watch(timeframe, () => loadData());
               </div>
               <div>{{ tooltipInfo.data.description }}</div>
             </template>
+          </div>
+
+          <!-- 次级别走势面板 -->
+          <div
+            v-if="subLevelPanel"
+            class="absolute bottom-0 left-0 right-0 h-48 bg-[#16213e] border-t border-[#2a2a4a] z-20 flex flex-col"
+          >
+            <div class="flex items-center justify-between px-3 py-1 border-b border-[#2a2a4a]">
+              <span class="text-xs text-[#b388ff]">
+                次级别走势：{{ subLevelPanel.xd.start_dt?.slice(0,10) }} → {{ subLevelPanel.xd.end_dt?.slice(0,10) }}
+              </span>
+              <button @click="closeSubLevel" class="text-[#9e9e9e] hover:text-white text-xs">✕</button>
+            </div>
+            <div v-if="subLevelPanel.loading" class="flex-1 flex items-center justify-center text-[#9e9e9e] text-xs animate-pulse">
+              加载中...
+            </div>
+            <div v-else-if="subLevelPanel.data" class="flex-1 text-[#9e9e9e] text-xs p-2 overflow-auto">
+              <div>共 {{ subLevelPanel.data.klines.length }} 根K线</div>
+              <div v-if="subLevelPanel.data.czsc && subLevelPanel.data.czsc.bi.length > 0" class="mt-1">
+                笔: {{ subLevelPanel.data.czsc.bi.length }} | 中枢: {{ subLevelPanel.data.czsc.bi_zs.length }}
+              </div>
+            </div>
+            <div v-else class="flex-1 flex items-center justify-center text-[#666] text-xs">
+              暂无次级别数据
+            </div>
           </div>
         </div>
 

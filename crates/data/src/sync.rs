@@ -404,6 +404,7 @@ struct EastMoneyBoardStrategy {
 fn get_eastmoney_strategies(board: &str) -> Vec<EastMoneyBoardStrategy> {
     match board {
         "sh_main" => vec![
+            // 主策略：精确 fs，total 直接等于沪主板数量
             EastMoneyBoardStrategy {
                 name: "沪A主板",
                 fs: "m:1+t:2,m:1+t:23",
@@ -413,6 +414,7 @@ fn get_eastmoney_strategies(board: &str) -> Vec<EastMoneyBoardStrategy> {
             },
         ],
         "sz_main" => vec![
+            // 主策略：精确 fs
             EastMoneyBoardStrategy {
                 name: "深A主板",
                 fs: "m:0+t:6,m:0+t:80",
@@ -422,28 +424,53 @@ fn get_eastmoney_strategies(board: &str) -> Vec<EastMoneyBoardStrategy> {
             },
         ],
         "gem" => vec![
+            // 主策略：moyan-project 实测可用的精确创业板参数
             EastMoneyBoardStrategy {
-                name: "创业板",
+                name: "创业板(精确)",
+                fs: "m:0+t:81+s:2048",
+                fid: "f3",
+                max_pages: 20,
+                filter: |code| code.starts_with("30"),
+            },
+            // 备用策略：深市全量中过滤
+            EastMoneyBoardStrategy {
+                name: "创业板(备用)",
                 fs: "m:0+t:6,m:0+t:80",
                 fid: "f3",
                 max_pages: 20,
                 filter: |code| code.starts_with("30"),
             },
         ],
-        // 科创板：m:1+t:23 包含沪深主板+科创板，需过滤 688
         "star" => vec![
+            // 主策略：moyan-project 实测可用的精确科创板参数
             EastMoneyBoardStrategy {
-                name: "科创板",
+                name: "科创板(精确)",
+                fs: "m:1+t:23+f:!50",
+                fid: "f3",
+                max_pages: 10,
+                filter: |code| code.starts_with("68"),
+            },
+            // 备用策略：沪市全量中过滤
+            EastMoneyBoardStrategy {
+                name: "科创板(备用)",
                 fs: "m:1+t:23",
                 fid: "f3",
                 max_pages: 25,
                 filter: |code| code.starts_with("68"),
             },
         ],
-        // 北交所：用 m:0+t:81 但北交所股票以 8/4 开头
         "bse" => vec![
+            // 主策略：moyan-project 实测可用的北交所参数
             EastMoneyBoardStrategy {
-                name: "北交所",
+                name: "北交所(精确)",
+                fs: "m:0+t:81+s:2048",
+                fid: "f3",
+                max_pages: 5,
+                filter: |code| code.starts_with("8") || code.starts_with("4"),
+            },
+            // 备用策略
+            EastMoneyBoardStrategy {
+                name: "北交所(备用)",
                 fs: "m:0+t:81",
                 fid: "f3",
                 max_pages: 5,
@@ -456,7 +483,7 @@ fn get_eastmoney_strategies(board: &str) -> Vec<EastMoneyBoardStrategy> {
                 fs: "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23,m:0+t:81",
                 fid: "f3",
                 max_pages: 60,
-                filter: |_code| true, // 不过滤
+                filter: |_code| true,
             },
         ],
         _ => Vec::new(),
@@ -531,7 +558,7 @@ fn fetch_board_codes_eastmoney_v2(strategies: &[EastMoneyBoardStrategy]) -> Resu
 
         loop {
             let url = format!(
-                "https://push2.eastmoney.com/api/qt/clist/get?pn={}&pz={}&po=1&np=1&ut=bd1d9ddb04089700cf9c27f6f7426281&fltt=2&invt=2&fid={}&fs={}&fields=f12,f14",
+                "http://push2.eastmoney.com/api/qt/clist/get?pn={}&pz={}&po=1&np=1&ut=bd1d9ddb04089700cf9c27f6f7426281&fltt=2&invt=2&fid={}&fs={}&fields=f12,f14",
                 page, page_size, strategy.fid, strategy.fs
             );
 
@@ -590,7 +617,7 @@ fn fetch_board_codes_eastmoney_v2(strategies: &[EastMoneyBoardStrategy]) -> Resu
 
 fn try_fetch_board_codes_with_total(client: &reqwest::blocking::Client, url: &str) -> Result<(Vec<String>, usize)> {
     let resp = client.get(url)
-        .header("Referer", "https://quote.eastmoney.com/")
+        .header("Referer", "http://quote.eastmoney.com/")
         .header("Accept", "*/*")
         .send()?;
     let body = resp.text()?;
@@ -634,63 +661,50 @@ pub struct BoardOnlineInfo {
 }
 
 /// 从在线 API 获取指定板块的股票总数
-/// 采用与 fetch_board_stock_codes 相同的策略，确保一致性
+/// 策略：对于精确 fs 参数（不含逗号），直接取 total；
+/// 对于混合 fs 参数（含逗号），需要分页获取并用 filter 过滤统计
 pub fn fetch_board_online_count(board: &str) -> Result<usize> {
-    // ── 1. 先尝试东方财富（与 fetch_board_stock_codes 使用相同策略） ──
     let strategies = get_eastmoney_strategies(board);
-    if !strategies.is_empty() {
-        // 对每个策略，仅获取第一页含 total 字段来统计
-        let client = build_eastmoney_client()?;
-        let mut total_filtered = 0usize;
+    if strategies.is_empty() {
+        return Err(anyhow::anyhow!("无东方财富策略用于板块 {}", board));
+    }
 
-        for strategy in &strategies {
-            let url = format!(
-                "https://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=1&np=1&ut=bd1d9ddb04089700cf9c27f6f7426281&fltt=2&invt=2&fid={}&fs={}&fields=f12",
-                strategy.fid, strategy.fs
-            );
+    let client = build_eastmoney_client()?;
 
-            // 最多重试 3 次
-            for attempt in 0..3 {
-                match try_fetch_online_count(&client, &url) {
-                    Ok(total) if total > 0 => {
-                        total_filtered += total;
-                        break;
+    // 优先使用精确策略（fs 不含逗号），直接取 total
+    for strategy in &strategies {
+        if strategy.fs.contains(",") {
+            continue; // 跳过混合策略
+        }
+
+        let url = format!(
+            "http://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=1&np=1&ut=bd1d9ddb04089700cf9c27f6f7426281&fltt=2&invt=2&fid={}&fs={}&fields=f12",
+            strategy.fid, strategy.fs
+        );
+
+        for attempt in 0..3 {
+            match try_fetch_online_count(&client, &url) {
+                Ok(total) if total > 0 => {
+                    return Ok(total);
+                }
+                Err(e) => {
+                    if attempt == 2 {
+                        eprintln!("东方财富获取 {} 在线总数第{}次失败: {}", strategy.name, attempt + 1, e);
+                    } else {
+                        std::thread::sleep(std::time::Duration::from_millis(500 * (attempt as u64 + 1)));
                     }
-                    Err(e) => {
-                        if attempt == 2 {
-                            eprintln!("东方财富获取 {} 在线总数第{}次失败: {}", strategy.name, attempt + 1, e);
-                        } else {
-                            std::thread::sleep(std::time::Duration::from_millis(500 * (attempt as u64 + 1)));
-                        }
-                    }
-                    Ok(_) => {
-                        if attempt < 2 {
-                            std::thread::sleep(std::time::Duration::from_millis(500));
-                        }
+                }
+                Ok(_) => {
+                    if attempt < 2 {
+                        std::thread::sleep(std::time::Duration::from_millis(500));
                     }
                 }
             }
         }
-
-        // 注意：合并策略的 total 可能包含了不属于此板块的股票
-        // 例如：m:0+t:6,m:0+t:80 的 total 包含深市主板+创业板
-        // 但是对于 sh_main 只有一个策略且 fs="m:1+t:2,m:1+t:23"，total 包含沪主板+科创板
-        // 所以如果用单一策略获取到更大的 total，可能是不精确的
-        // 为精确，回退到获取完整列表取长度的方法
-        if total_filtered > 0 {
-            // 如果只有一个策略且 fs 没有混合板块，直接返回 total
-            // 否则需要进一步确认
-            if strategies.len() == 1 && !strategies[0].fs.contains(",") {
-                // 单一 fs 参数，total 直接就是此板块的股票数
-                return Ok(total_filtered);
-            }
-            // 多个策略或混合 fs 参数，total 不精确
-            // 尝试用获取完整列表取长度
-        }
     }
 
-    // ── 2. 回退：获取完整股票列表取长度（最精确） ──
-    eprintln!("东方财富轻量级获取 {} 在线总数不精确，回退到获取完整列表", board);
+    // 精确策略全部失败，回退到获取完整股票列表取长度
+    eprintln!("东方财富轻量级获取 {} 在线总数失败，回退到获取完整列表", board);
     match fetch_board_stock_codes(board) {
         Ok(codes) => Ok(codes.len()),
         Err(e) => Err(e.context(format!("获取 {} 在线总数失败（所有数据源均失败）", board))),
@@ -699,7 +713,7 @@ pub fn fetch_board_online_count(board: &str) -> Result<usize> {
 
 fn try_fetch_online_count(client: &reqwest::blocking::Client, url: &str) -> Result<usize> {
     let resp = client.get(url)
-        .header("Referer", "https://quote.eastmoney.com/")
+        .header("Referer", "http://quote.eastmoney.com/")
         .header("Accept", "*/*")
         .send()?;
     let body = resp.text()?;

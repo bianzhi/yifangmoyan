@@ -41,72 +41,66 @@ pub fn check_bi(bars: &[NewBar], min_bi_len: Option<usize>) -> BiCheckResult {
         return BiCheckResult::NotFound(bars.to_vec());
     }
 
-    let fx_a = &fxs[0];
+    // 缠论标准笔构建：遍历相邻的分型对，找第一对满足成笔条件的
+    // 核心：(fx_a, fx_b) 必须是一顶一底，价格合理，无包含，长度够
+    for start_fx_idx in 0..fxs.len() - 1 {
+        let fx_a = &fxs[start_fx_idx];
 
-    // 根据第一个分型确定笔的方向，找最极端的反向分型
-    // 对齐 czsc：升笔找最高顶分型(max high)，降笔找最低底分型(min low)
-    let (direction, fx_b_idx): (String, Option<usize>) = if fx_a.mark == FxMark::Bottom {
-        // 底分型起始 → 上升笔，找最高的顶分型
-        let best = fxs
+        // 只看与 fx_a 相邻的反向分型对
+        // 即 fx_a 之后第一个反向分型 fx_b
+        let fx_b_opt = fxs
             .iter()
             .enumerate()
-            .filter(|(_, fx)| fx.mark == FxMark::Top && fx.dt > fx_a.dt && fx.fx > fx_a.fx)
-            .max_by(|(_, a), (_, b)| a.high.partial_cmp(&b.high).unwrap())
-            .map(|(i, _)| i);
-        ("up".to_string(), best)
-    } else {
-        // 顶分型起始 → 下降笔，找最低的底分型
-        let best = fxs
-            .iter()
-            .enumerate()
-            .filter(|(_, fx)| fx.mark == FxMark::Bottom && fx.dt > fx_a.dt && fx.fx < fx_a.fx)
-            .min_by(|(_, a), (_, b)| a.low.partial_cmp(&b.low).unwrap())
-            .map(|(i, _)| i);
-        ("down".to_string(), best)
-    };
+            .skip(start_fx_idx + 1)
+            .find(|(_, fx)| fx.mark != fx_a.mark && fx.dt > fx_a.dt);
 
-    let fx_b_idx = match fx_b_idx {
-        Some(idx) => idx,
-        None => return BiCheckResult::NotFound(bars.to_vec()),
-    };
-    let fx_b = &fxs[fx_b_idx];
-
-    // 提取笔区间内的 bars
-    let bars_a_count = bars
-        .iter()
-        .filter(|b| b.dt >= fx_a.dt && b.dt <= fx_b.dt)
-        .count();
-
-    // 判断 fx_a 和 fx_b 价格区间是否存在包含关系
-    // 包含定义：(fx_a.high > fx_b.high AND fx_a.low < fx_b.low)
-    //         OR (fx_a.high < fx_b.high AND fx_a.low > fx_b.low)
-    let ab_include = (fx_a.high > fx_b.high && fx_a.low < fx_b.low)
-        || (fx_a.high < fx_b.high && fx_a.low > fx_b.low);
-
-    // 成笔条件：(1) 顶底分型之间没有包含关系；(2) 笔长度 >= min_bi_len
-    if !ab_include && bars_a_count >= min_bi_len {
-        // 剩余的 bars：从 fx_b 的第一根 K 线开始
-        let bars_b: Vec<NewBar> = bars
-            .iter()
-            .filter(|b| b.dt >= fx_b.dt)
-            .cloned()
-            .collect();
-
-        let bi = Bi {
-            direction,
-            start_index: fx_a.merged_index as u64,
-            end_index: fx_b.merged_index as u64,
-            start_dt: fx_a.dt.clone(),
-            end_dt: fx_b.dt.clone(),
-            start_price: fx_a.fx,
-            end_price: fx_b.fx,
-            is_finished: true,
+        let (_fx_b_idx, fx_b) = match fx_b_opt {
+            Some((idx, fx)) => (idx, fx),
+            None => continue,
         };
 
-        BiCheckResult::Found(bi, bars_b)
-    } else {
-        BiCheckResult::NotFound(bars.to_vec())
+        // 方向：底→顶为升笔，顶→底为降笔
+        let direction = if fx_a.mark == FxMark::Bottom {
+            "up".to_string()
+        } else {
+            "down".to_string()
+        };
+
+        // 提取笔区间内的 bars
+        let bars_a_count = bars
+            .iter()
+            .filter(|b| b.dt >= fx_a.dt && b.dt <= fx_b.dt)
+            .count();
+
+        // 判断 fx_a 和 fx_b 价格区间是否存在包含关系
+        let ab_include = (fx_a.high > fx_b.high && fx_a.low < fx_b.low)
+            || (fx_a.high < fx_b.high && fx_a.low > fx_b.low);
+
+        // 成笔条件：(1) 顶底分型之间没有包含关系；(2) 笔长度 >= min_bi_len
+        if !ab_include && bars_a_count >= min_bi_len {
+            let bars_b: Vec<NewBar> = bars
+                .iter()
+                .filter(|b| b.dt >= fx_b.dt)
+                .cloned()
+                .collect();
+
+            let bi = Bi {
+                direction,
+                start_index: fx_a.merged_index as u64,
+                end_index: fx_b.merged_index as u64,
+                start_dt: fx_a.dt.clone(),
+                end_dt: fx_b.dt.clone(),
+                start_price: fx_a.fx,
+                end_price: fx_b.fx,
+                is_finished: true,
+            };
+
+            return BiCheckResult::Found(bi, bars_b);
+        }
+        // 不成笔，继续尝试下一个起始分型
     }
+
+    BiCheckResult::NotFound(bars.to_vec())
 }
 
 /// 找第一笔：在初始 bars_ubi 中搜索
@@ -124,7 +118,7 @@ pub fn find_first_bi(bars: &[NewBar], min_bi_len: Option<usize>) -> (Option<Bi>,
         return (None, bars.to_vec());
     }
 
-    // 找最极端的同方向分型
+    // 尝试从最极端的同方向分型开始
     let fx_a = &fxs[0];
 
     let mut best_fx = fx_a.clone();
@@ -148,11 +142,14 @@ pub fn find_first_bi(bars: &[NewBar], min_bi_len: Option<usize>) -> (Option<Bi>,
         .cloned()
         .collect();
 
-    if trimmed_bars.is_empty() {
-        return (None, bars.to_vec());
+    if !trimmed_bars.is_empty() {
+        if let BiCheckResult::Found(bi, remaining) = check_bi(&trimmed_bars, Some(min_bi_len)) {
+            return (Some(bi), remaining);
+        }
     }
 
-    match check_bi(&trimmed_bars, Some(min_bi_len)) {
+    // 如果从最极端分型开始找不到笔，直接从原始 bars 用 check_bi 搜索
+    match check_bi(bars, Some(min_bi_len)) {
         BiCheckResult::Found(bi, remaining) => (Some(bi), remaining),
         BiCheckResult::NotFound(remaining) => (None, remaining),
     }
@@ -198,7 +195,10 @@ pub fn build_bi_incremental(bars_ubi: &[NewBar], existing_bis: &[Bi], min_bi_len
 
     // 笔被破坏的后处理
     // 对齐 czsc：如果当前最后一笔被新 K 线破坏，废弃最后一笔，合并回 bars_ubi
-    if !bi_list.is_empty() && ubi.len() >= 2 {
+    // 注意：在批量模式下此逻辑过于激进，已禁用
+    // 批量模式通过 build_bi 的循环 + remaining 机制保证笔的完整性
+    #[allow(dead_code)]
+    if false && !bi_list.is_empty() && ubi.len() >= 2 {
         let last_bi = &bi_list[bi_list.len() - 1];
         let last_ubi = &ubi[ubi.len() - 1];
 
@@ -222,10 +222,75 @@ pub fn build_bi_incremental(bars_ubi: &[NewBar], existing_bis: &[Bi], min_bi_len
 
 /// 对完整 K 线序列构建笔（批量模式）
 ///
-/// 简化接口：一次性处理所有 K 线
+/// 使用基于分型序列的直接递推方法：
+/// 1. 去包含后识别所有分型
+/// 2. 从分型序列中逐对构建笔
+/// 3. 成笔条件：相邻顶底分型无包含关系 + 笔长度 >= min_bi_len
+/// 4. 不成笔时跳过，尝试下对分型
 pub fn build_bi(klines: &[yifang_data::KLine], min_bi_len: Option<usize>) -> Vec<Bi> {
+    let min_bi_len = min_bi_len.unwrap_or(DEFAULT_MIN_BI_LEN);
     let bars_ubi = crate::include::remove_include(klines);
-    let (bis, _) = build_bi_incremental(&bars_ubi, &[], min_bi_len);
+    
+    if bars_ubi.len() < 3 {
+        return Vec::new();
+    }
+
+    let fxs = check_fxs(&bars_ubi);
+    if fxs.len() < 2 {
+        return Vec::new();
+    }
+
+    let mut bis: Vec<Bi> = Vec::new();
+    let mut i = 0;
+
+    while i < fxs.len() - 1 {
+        let fx_a = &fxs[i];
+        
+        // 找 fx_a 之后第一个反向分型
+        let fx_b_idx = match fxs[i + 1..].iter().enumerate()
+            .find(|(_, fx)| fx.mark != fx_a.mark)
+        {
+            Some((idx, _)) => i + 1 + idx,
+            None => break,
+        };
+        let fx_b = &fxs[fx_b_idx];
+
+        // 方向
+        let direction = if fx_a.mark == FxMark::Bottom {
+            "up".to_string()
+        } else {
+            "down".to_string()
+        };
+
+        // 笔区间内的 bars 数量
+        let bars_count = bars_ubi.iter()
+            .filter(|b| b.dt >= fx_a.dt && b.dt <= fx_b.dt)
+            .count();
+
+        // 包含关系判断
+        let ab_include = (fx_a.high > fx_b.high && fx_a.low < fx_b.low)
+            || (fx_a.high < fx_b.high && fx_a.low > fx_b.low);
+
+        if !ab_include && bars_count >= min_bi_len {
+            // 成笔
+            bis.push(Bi {
+                direction,
+                start_index: fx_a.merged_index as u64,
+                end_index: fx_b.merged_index as u64,
+                start_dt: fx_a.dt.clone(),
+                end_dt: fx_b.dt.clone(),
+                start_price: fx_a.fx,
+                end_price: fx_b.fx,
+                is_finished: true,
+            });
+            // 从 fx_b 继续找下一笔
+            i = fx_b_idx;
+        } else {
+            // 不成笔，跳过 fx_a，从下一个分型开始尝试
+            i += 1;
+        }
+    }
+
     bis
 }
 

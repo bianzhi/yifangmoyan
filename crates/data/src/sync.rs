@@ -224,12 +224,12 @@ pub fn classify_board(code: &str) -> &'static str {
         "star" // 科创板
     } else if code.starts_with("300") || code.starts_with("301") {
         "gem" // 创业板
-    } else if code.starts_with("600") || code.starts_with("601")
-        || code.starts_with("603") || code.starts_with("605")
+    } else if code.starts_with("6") || code.starts_with("9") {
+        "sh_main" // 上证主板（6xx/9xx）
+    } else if code.starts_with("000") || code.starts_with("001")
+        || code.starts_with("002") || code.starts_with("003")
     {
-        "sh_main" // 上证主板
-    } else if code.starts_with("000") || code.starts_with("001") {
-        "sz_main" // 深证主板
+        "sz_main" // 深证主板（含原中小板002/003）
     } else {
         "other"
     }
@@ -266,7 +266,16 @@ pub fn get_board_stats(data_dir: &Path) -> Vec<BoardStats> {
     ]
 }
 
+/// 构建东方财富专用 HTTP client（带正确的 Referer + User-Agent + 重试）
+fn build_eastmoney_client() -> Result<reqwest::blocking::Client> {
+    Ok(reqwest::blocking::Client::builder()
+        .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
+        .timeout(std::time::Duration::from_secs(15))
+        .build()?)
+}
+
 /// 从东方财富在线 API 获取指定板块的股票代码列表
+/// 支持分页，确保获取全部股票
 pub fn fetch_board_stock_codes(board: &str) -> Result<Vec<String>> {
     let fs = match board {
         "sh_main" => "m:1+t:2",           // 上证主板
@@ -278,30 +287,83 @@ pub fn fetch_board_stock_codes(board: &str) -> Result<Vec<String>> {
         _ => return Err(anyhow::anyhow!("未知板块: {}", board)),
     };
 
-    let url = format!(
-        "https://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=10000&po=1&np=1&ut=bd1d9ddb04089700cf9c27f6f7426281&fltt=2&invt=2&fid=f3&fs={}&fields=f12",
-        fs
-    );
+    let client = build_eastmoney_client()?;
 
-    let client = build_http_client()?;
-    let resp = client.get(&url)
+    // 分页获取全部股票代码
+    let mut all_codes = Vec::new();
+    let mut page = 1;
+    let page_size = 5000u64;
+
+    loop {
+        let url = format!(
+            "https://push2.eastmoney.com/api/qt/clist/get?pn={}&pz={}&po=1&np=1&ut=bd1d9ddb04089700cf9c27f6f7426281&fltt=2&invt=2&fid=f3&fs={}&fields=f12",
+            page, page_size, fs
+        );
+
+        let mut last_err = None;
+        let mut codes = Vec::new();
+        let mut total = 0usize;
+
+        // 每页最多重试 3 次
+        for attempt in 0..3 {
+            match try_fetch_board_codes_with_total(&client, &url) {
+                Ok((c, t)) => {
+                    codes = c;
+                    total = t;
+                    break;
+                }
+                Err(e) => {
+                    last_err = Some(e);
+                    if attempt < 2 {
+                        std::thread::sleep(std::time::Duration::from_millis(500 * (attempt as u64 + 1)));
+                    }
+                }
+            }
+        }
+
+        if let Some(e) = last_err {
+            return Err(e);
+        }
+
+        let page_count = codes.len();
+        all_codes.extend(codes);
+
+        // 如果已获取全部或本页无数据，退出循环
+        if all_codes.len() >= total || page_count == 0 {
+            break;
+        }
+
+        page += 1;
+    }
+
+    Ok(all_codes)
+}
+
+fn try_fetch_board_codes_with_total(client: &reqwest::blocking::Client, url: &str) -> Result<(Vec<String>, usize)> {
+    let resp = client.get(url)
         .header("Referer", "https://quote.eastmoney.com/")
+        .header("Accept", "*/*")
         .send()?;
     let body = resp.text()?;
 
     if body.is_empty() {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), 0));
     }
 
     let json: serde_json::Value = serde_json::from_str(&body)
         .context("解析东方财富股票列表失败")?;
+
+    let total = json.get("data")
+        .and_then(|d| d.get("total"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as usize;
 
     let diff = json.get("data")
         .and_then(|d| d.get("diff"))
         .and_then(|v| v.as_array());
 
     let Some(diff) = diff else {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), total));
     };
 
     let codes: Vec<String> = diff.iter()
@@ -309,16 +371,17 @@ pub fn fetch_board_stock_codes(board: &str) -> Result<Vec<String>> {
         .filter(|c| !c.is_empty())
         .collect();
 
-    Ok(codes)
+    Ok((codes, total))
 }
 
-/// 板块在线信息（从东方财富 API 获取）
+/// 板块在线信息（含按级别的本地统计）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BoardOnlineInfo {
     pub id: String,
     pub name: String,
-    pub total_count: usize,   // 在线总股票数
-    pub local_count: usize,   // 本地已有股票数
+    pub total_count: usize,                              // 在线总股票数
+    pub local_count: usize,                              // 本地有日线数据的股票数（兼容旧前端）
+    pub level_counts: std::collections::HashMap<String, usize>,  // 每个级别的本地股票数
 }
 
 /// 从东方财富在线 API 获取指定板块的股票总数（轻量级，仅请求1条数据取 total）
@@ -338,9 +401,28 @@ pub fn fetch_board_online_count(board: &str) -> Result<usize> {
         fs
     );
 
-    let client = build_http_client()?;
-    let resp = client.get(&url)
+    let client = build_eastmoney_client()?;
+
+    // 最多重试 3 次，提升可靠性
+    let mut last_err = None;
+    for attempt in 0..3 {
+        match try_fetch_online_count(&client, &url) {
+            Ok(total) => return Ok(total),
+            Err(e) => {
+                last_err = Some(e);
+                if attempt < 2 {
+                    std::thread::sleep(std::time::Duration::from_millis(500 * (attempt as u64 + 1)));
+                }
+            }
+        }
+    }
+    Err(last_err.unwrap())
+}
+
+fn try_fetch_online_count(client: &reqwest::blocking::Client, url: &str) -> Result<usize> {
+    let resp = client.get(url)
         .header("Referer", "https://quote.eastmoney.com/")
+        .header("Accept", "*/*")
         .send()?;
     let body = resp.text()?;
 
@@ -360,9 +442,49 @@ pub fn fetch_board_online_count(board: &str) -> Result<usize> {
 }
 
 /// 获取板块在线信息（各板块有多少只股票）
-/// 先返回本地统计（瞬间），再异步获取在线总数
+/// 并发获取各板块在线总数，同时统计本地每个级别的股票数
 pub fn get_board_online_info(data_dir: &Path) -> Vec<BoardOnlineInfo> {
-    let local_codes = get_all_stock_codes(data_dir);
+    let cache_dir = data_dir.join("kline_cache");
+    let all_tfs = TimeFrame::all();
+
+    // ── 先统计每个级别目录下每个板块的本地股票数 ──
+    // level_counts[board_id][dir_name] = count
+    let mut level_counts: std::collections::HashMap<String, std::collections::HashMap<String, usize>> =
+        std::collections::HashMap::new();
+    let mut board_has_any: std::collections::HashMap<String, std::collections::HashSet<String>> =
+        std::collections::HashMap::new(); // board_id -> set of codes
+
+    for tf in all_tfs {
+        let dir_name = tf_dir_name(*tf);
+        let dir = cache_dir.join(dir_name);
+        if !dir.exists() { continue; }
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            let code = match entry.file_name().to_str()
+                .and_then(|n| n.strip_suffix(".parquet"))
+            {
+                Some(c) => c.to_string(),
+                None => continue,
+            };
+            let board = classify_board(&code);
+            if board == "other" { continue; }
+            // level_counts[board][dir_name] += 1
+            level_counts
+                .entry(board.to_string())
+                .or_default()
+                .entry(dir_name.to_string())
+                .and_modify(|c| *c += 1)
+                .or_insert(1);
+            // board_has_any[board].insert(code)
+            board_has_any
+                .entry(board.to_string())
+                .or_default()
+                .insert(code);
+        }
+    }
 
     let sub_boards = [
         ("sh_main", "上证主板"),
@@ -372,27 +494,55 @@ pub fn get_board_online_info(data_dir: &Path) -> Vec<BoardOnlineInfo> {
         ("bse", "北交所"),
     ];
 
+    // 并发获取各板块在线总数
+    let handles: Vec<_> = sub_boards.iter().map(|(id, _name)| {
+        let id = id.to_string();
+        std::thread::spawn(move || {
+            (id.clone(), fetch_board_online_count(&id))
+        })
+    }).collect();
+
+    let mut online_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for h in handles {
+        if let Ok((id, result)) = h.join() {
+            online_counts.insert(id, result.unwrap_or(0));
+        }
+    }
+
     let mut results: Vec<BoardOnlineInfo> = Vec::new();
 
     for (id, name) in &sub_boards {
-        let local_count = local_codes.iter().filter(|c| classify_board(c) == *id).count();
-        // 使用轻量级 API 仅获取在线总数，不拉取全部代码列表
-        let online_count = fetch_board_online_count(id).unwrap_or(local_count);
+        // local_count: 本地有任何级别数据的股票数
+        let local_count = board_has_any.get(*id).map(|s| s.len()).unwrap_or(0);
+        let online_count = *online_counts.get(*id).unwrap_or(&0);
+        let lv_counts = level_counts.remove(*id).unwrap_or_default();
         results.push(BoardOnlineInfo {
             id: id.to_string(),
             name: name.to_string(),
             total_count: online_count,
             local_count,
+            level_counts: lv_counts,
         });
     }
 
-    // 全 A 股 = 各子板块在线数之和
+    // 全 A 股 = 各子板块汇总
     let all_online_count: usize = results.iter().map(|r| r.total_count).sum();
+    let all_local_count: usize = results.iter().map(|r| r.local_count).sum();
+
+    // 汇总各级别计数
+    let mut all_level_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for r in &results {
+        for (lv, cnt) in &r.level_counts {
+            *all_level_counts.entry(lv.clone()).or_insert(0) += cnt;
+        }
+    }
+
     results.push(BoardOnlineInfo {
         id: "all_a".to_string(),
         name: "全 A 股".to_string(),
         total_count: all_online_count,
-        local_count: local_codes.len(),
+        local_count: all_local_count,
+        level_counts: all_level_counts,
     });
 
     results
@@ -1990,17 +2140,26 @@ pub fn get_data_status(data_dir: &Path) -> DataStatus {
     let cache_dir = data_dir.join("kline_cache");
     let all_tfs = TimeFrame::all();
 
-    // 统计总股票数（从日线目录）
-    let day_dir = cache_dir.join("1d");
-    let total_stocks = if day_dir.exists() {
-        std::fs::read_dir(&day_dir)
-            .map(|e| e.filter_map(|f| f.ok()).filter(|f| {
-                f.path().extension().map(|ext| ext == "parquet").unwrap_or(false)
-            }).count())
-            .unwrap_or(0)
-    } else {
-        0
-    };
+    // 统计总股票数：扫描所有级别目录的 parquet 文件，用 HashSet 去重
+    let mut all_codes = std::collections::HashSet::new();
+    for tf in all_tfs {
+        let dir_name = tf_dir_name(*tf);
+        let dir = cache_dir.join(dir_name);
+        if dir.exists() {
+            if let Ok(entries) = std::fs::read_dir(&dir) {
+                for entry in entries.flatten() {
+                    if entry.path().extension().map(|ext| ext == "parquet").unwrap_or(false) {
+                        if let Some(code) = entry.file_name().to_str()
+                            .and_then(|n| n.strip_suffix(".parquet"))
+                        {
+                            all_codes.insert(code.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let total_stocks = all_codes.len();
 
     let mut level_stats = Vec::new();
 
@@ -2086,23 +2245,23 @@ fn get_parquet_last_date(filepath: &Path) -> Option<String> {
     end
 }
 
-/// 获取所有股票代码列表
+/// 获取所有股票代码列表（扫描所有级别目录，用 HashSet 去重）
 pub fn get_all_stock_codes(data_dir: &Path) -> Vec<String> {
     let cache_dir = data_dir.join("kline_cache");
-    let day_dir = cache_dir.join("1d");
+    let mut all_codes = std::collections::HashSet::new();
 
-    if !day_dir.exists() {
-        // 尝试其他级别目录
-        for tf in TimeFrame::all() {
-            let dir = cache_dir.join(tf_dir_name(*tf));
-            if dir.exists() {
-                return extract_codes_from_dir(&dir);
+    for tf in TimeFrame::all() {
+        let dir = cache_dir.join(tf_dir_name(*tf));
+        if dir.exists() {
+            for code in extract_codes_from_dir(&dir) {
+                all_codes.insert(code);
             }
         }
-        return Vec::new();
     }
 
-    extract_codes_from_dir(&day_dir)
+    let mut codes: Vec<String> = all_codes.into_iter().collect();
+    codes.sort();
+    codes
 }
 
 fn extract_codes_from_dir(dir: &Path) -> Vec<String> {

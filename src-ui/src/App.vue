@@ -10,7 +10,7 @@ import {
   type LineData,
   type Time,
 } from "lightweight-charts";
-import { getChartData, searchStocks } from "./composables/useApi";
+import { getChartData, searchStocks, getAllStockCodes } from "./composables/useApi";
 import {
   type ChartData,
   type AnalysisSettings,
@@ -467,7 +467,17 @@ function onSettingsChange(newSettings: AnalysisSettings) {
 }
 
 // ===== 生命周期 =====
-onMounted(() => {
+onMounted(async () => {
+  // 自动选择本地第一个有效股票代码作为默认值
+  try {
+    const codes = await getAllStockCodes();
+    if (codes.length > 0) {
+      symbol.value = codes[0];
+    }
+  } catch {
+    // 获取失败则保持默认 "000001"
+  }
+
   nextTick(() => loadData());
 
   // 响应窗口大小变化
@@ -556,12 +566,15 @@ watch(timeframe, () => loadData());
       <div class="flex-1 flex flex-col relative">
         <!-- 主图 + 成交量 — 始终存在，避免 v-if 销毁容器 -->
         <div ref="chartContainer" class="flex-1 min-h-0"></div>
-        <!-- 加载/错误提示 — 覆盖在图表上方 -->
+        <!-- 加载/错误/空数据提示 — 覆盖在图表上方 -->
         <div v-if="loading" class="absolute inset-0 flex items-center justify-center bg-[#1a1a2e]/80 z-10">
           <div class="text-[#9e9e9e] animate-pulse">加载中...</div>
         </div>
         <div v-else-if="error" class="absolute inset-0 flex items-center justify-center bg-[#1a1a2e]/80 z-10">
           <div class="text-[#ff5722]">{{ error }}</div>
+        </div>
+        <div v-else-if="chartData && chartData.klines.length === 0" class="absolute inset-0 flex items-center justify-center bg-[#1a1a2e]/80 z-10">
+          <div class="text-[#9e9e9e]">暂无数据 — 请先同步该股票的 K 线数据</div>
         </div>
       </div>
 

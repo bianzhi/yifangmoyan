@@ -156,7 +156,8 @@ impl KLineManager {
             if let Some(higher_klines) = self.try_resample_from_higher(symbol, timeframe)? {
                 return Ok(higher_klines);
             }
-            anyhow::bail!("Parquet 文件不存在: {:?}", file_path);
+            // 本地无该股票数据，返回空列表（前端显示空图表，而非报错）
+            return Ok(Vec::new());
         }
 
         self.read_parquet_klines(&file_path, symbol, timeframe)

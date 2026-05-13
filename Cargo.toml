@@ -15,3 +15,9 @@ chrono = { version = "0.4", features = ["serde"] }
 thiserror = "2"
 anyhow = "1"
 polars = { version = "0.46", features = ["parquet", "lazy", "dtype-date", "dtype-datetime", "temporal"] }
+
+# Release 编译优化：thin LTO + 并行 codegen，比默认 fat LTO 快 3-5x
+[profile.release]
+lto = "thin"
+codegen-units = 16
+strip = true

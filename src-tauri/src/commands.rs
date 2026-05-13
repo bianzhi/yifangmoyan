@@ -363,3 +363,191 @@ pub fn sync_board(
     let start = start_date.unwrap_or_default();
     Ok(yifang_data::sync_board(&data_dir, &board, &tfs, &start, force))
 }
+
+// ═══════════════════════════════════════════════════════════
+//  后台异步同步（支持自动重试，前端轮询进度）
+// ═══════════════════════════════════════════════════════════
+
+use crate::state::SyncProgress;
+
+/// 启动后台异步同步（非阻塞）。前端通过 `get_sync_status` 轮询进度。
+/// 同步完成后自动重试失败项，直到 0 失败或被取消。
+#[tauri::command]
+pub fn start_sync_board(
+    state: State<'_, AppState>,
+    board: String,
+    levels: Vec<String>,
+    start_date: Option<String>,
+    force: bool,
+) -> Result<(), String> {
+    // 检查是否已在同步
+    {
+        let progress = state.sync_progress.lock().map_err(|e| e.to_string())?;
+        if progress.running {
+            return Err("已有同步任务在运行".into());
+        }
+    }
+
+    let tfs: Vec<TimeFrame> = levels.iter().filter_map(|s| parse_timeframe(s)).collect();
+    if tfs.is_empty() {
+        return Err("未指定有效的 K 线级别".into());
+    }
+
+    let data_dir = {
+        let manager = state.manager.lock().map_err(|e| e.to_string())?;
+        manager.data_dir().to_path_buf()
+    };
+    let start = start_date.unwrap_or_else(|| "2023-01-01".into());
+
+    // 获取股票列表
+    let codes = yifang_data::fetch_board_stock_codes(&board)
+        .map_err(|e| format!("获取板块 {} 股票列表失败: {}", board, e))?;
+
+    if codes.is_empty() {
+        return Err(format!("板块 {} 没有可同步的股票", board));
+    }
+
+    // 初始化进度
+    {
+        let mut progress = state.sync_progress.lock().map_err(|e| e.to_string())?;
+        *progress = SyncProgress {
+            running: true,
+            board: board.clone(),
+            levels: levels.clone(),
+            total: codes.len(),
+            completed: 0,
+            success: 0,
+            failures: Vec::new(),
+            retrying: false,
+            retry_round: 0,
+            cancelled: false,
+        };
+    }
+
+    // 在后台线程中执行同步
+    let progress_state = state.sync_progress.clone();
+    std::thread::spawn(move || {
+        let board_label = board.clone();
+        let tf_list = tfs;
+
+        // ── 第一轮：全量同步 ──
+        for (i, symbol) in codes.iter().enumerate() {
+            // 检查是否被取消
+            {
+                let p = progress_state.lock().unwrap();
+                if p.cancelled {
+                    let mut p = progress_state.lock().unwrap();
+                    p.running = false;
+                    return;
+                }
+            }
+
+            let result = yifang_data::sync_stock(&data_dir, symbol, &tf_list, &start, force);
+
+            // 更新进度
+            {
+                let mut p = progress_state.lock().unwrap();
+                p.completed = i + 1;
+                let mut has_failure = false;
+                for lv in &result.levels {
+                    if lv.status != "ok" && lv.status != "skip" {
+                        has_failure = true;
+                        p.failures.push((result.symbol.clone(), lv.level.clone(), lv.msg.clone()));
+                    }
+                }
+                if !has_failure {
+                    p.success += 1;
+                }
+            }
+        }
+
+        // ── 自动重试失败项 ──
+        let max_retry_rounds = 5u32;
+        for round in 1..=max_retry_rounds {
+            let failed_symbols: Vec<String> = {
+                let p = progress_state.lock().unwrap();
+                p.failures.iter().map(|(sym, _lv, _msg): &(String, String, String)| sym.clone()).collect()
+            };
+            // 去重
+            let mut unique: Vec<String> = failed_symbols.into_iter().collect::<std::collections::HashSet<_>>().into_iter().collect();
+            unique.sort();
+
+            if unique.is_empty() {
+                break;
+            }
+
+            {
+                let mut p = progress_state.lock().unwrap();
+                if p.cancelled {
+                    p.running = false;
+                    return;
+                }
+                p.retrying = true;
+                p.retry_round = round as usize;
+                // 重置进度：total = 失败数, completed = 0
+                p.total = unique.len();
+                p.completed = 0;
+                p.success = 0;
+                p.failures.clear();
+            }
+
+            eprintln!("[后台同步] 第 {} 轮重试: {} 只股票", round, unique.len());
+
+            for (i, symbol) in unique.iter().enumerate() {
+                {
+                    let p = progress_state.lock().unwrap();
+                    if p.cancelled {
+                        let mut p = progress_state.lock().unwrap();
+                        p.running = false;
+                        return;
+                    }
+                }
+
+                let result = yifang_data::sync_stock(&data_dir, symbol, &tf_list, &start, true);
+
+                {
+                    let mut p = progress_state.lock().unwrap();
+                    p.completed = i + 1;
+                    let mut has_failure = false;
+                    for lv in &result.levels {
+                        if lv.status != "ok" && lv.status != "skip" {
+                            has_failure = true;
+                            p.failures.push((result.symbol.clone(), lv.level.clone(), lv.msg.clone()));
+                        }
+                    }
+                    if !has_failure {
+                        p.success += 1;
+                    }
+                }
+
+                // 重试间隔长一些，避免被封
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            }
+        }
+
+        {
+            let mut p = progress_state.lock().unwrap();
+            p.retrying = false;
+            p.running = false;
+        }
+
+        eprintln!("[后台同步] 板块 {} 同步完成", board_label);
+    });
+
+    Ok(())
+}
+
+/// 获取后台同步的当前状态
+#[tauri::command]
+pub fn get_sync_status(state: State<'_, AppState>) -> Result<SyncProgress, String> {
+    let progress = state.sync_progress.lock().map_err(|e| e.to_string())?;
+    Ok(progress.clone())
+}
+
+/// 取消后台同步
+#[tauri::command]
+pub fn cancel_sync(state: State<'_, AppState>) -> Result<(), String> {
+    let mut progress = state.sync_progress.lock().map_err(|e| e.to_string())?;
+    progress.cancelled = true;
+    Ok(())
+}

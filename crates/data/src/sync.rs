@@ -1,15 +1,15 @@
 //! K 线数据同步模块 — 多数据源协同下载，带完整性校验
 //!
-//! 数据源优先级（按级别动态调整）：
-//! - 日线/周线/月线: 新浪 → 腾讯 → Tushare → 网易 → 东方财富(日线)
-//! - 60F/30F/15F/5F/1F: 东方财富(最优) → 新浪 → 腾讯 → Tushare
+//! 数据源优先级（按级别动态调整，对齐 moyan-project）：
+//! - 股票列表: Tushare(P1) → 东方财富(P2) → 新浪(P3)
+//! - 日线/周线/月线: Tushare(P1) → 新浪(P2) → 腾讯(P3) → 东方财富(P4,仅日线)
+//! - 分钟线: 东方财富(P1) → 新浪(P2) → 腾讯(P3) → Tushare(P4)
 //!
 //! 数据源特点：
-//! 1. 新浪财经 (sina) — 全级别，速度快，最多 2000 条
-//! 2. 腾讯财经 (tencent) — 全级别，稳定，最多 2000 条
-//! 3. 东方财富 (eastmoney) — 分钟级最优，最多 10000 条，日线也支持
-//! 4. Tushare — 数据质量最高，全级别，需要 token
-//! 5. 网易财经 (netease) — 仅日线/周线/月线
+//! 1. Tushare — 数据质量最高，支持全级别（免费token支持日/周/月线）
+//! 2. 新浪财经 (sina) — 全级别，速度快，最多 2000 条
+//! 3. 腾讯财经 (tencent) — 全级别，稳定，最多 2000 条
+//! 4. 东方财富 (eastmoney) — 分钟级最优，最多 10000 条，日线也支持
 //!
 //! 同步策略：主源失败 → 自动切换备源；多源数据交叉验证
 
@@ -39,9 +39,6 @@ struct SinaKlineItem {
 /// 腾讯 K 线返回格式 (CSV like: "日期,开盘,收盘,最高,最低,成交量")
 /// 直接解析为 Vec<String>
 
-/// 网易 K 线返回格式 (CSV: "日期,开盘,收盘,最高,最低,成交量,涨跌幅")
-/// 直接解析为 Vec<String>
-
 // ═══════════════════════════════════════════════════════════
 //  内部 K 线记录
 // ═══════════════════════════════════════════════════════════
@@ -69,8 +66,6 @@ struct DataSourceConfig {
     sina_datalen: u32,
     /// 腾讯 klt 参数 (K线类型)
     tencent_klt: Option<&'static str>,
-    /// 网易 klt 参数
-    netease_klt: Option<&'static str>,
     /// 东方财富 klt 参数 (K线类型)
     eastmoney_klt: Option<&'static str>,
     /// Tushare freq 参数
@@ -85,13 +80,15 @@ const TUSHARE_TOKEN: &str = "7b09c93667a6ac2a7c4bdc76bc8f3fe2977a93d412f39de40c0
 
 impl TimeFrame {
     /// 多数据源参数配置
+    /// 优先级参考 moyan-project:
+    ///   日/周/月线: Tushare(P1) > 新浪(P2) > 腾讯(P3) > 东方财富(P4)
+    ///   分钟线:     东方财富(P1) > 新浪(P2) > 腾讯(P3) > Tushare(P4)
     fn source_config(&self) -> Option<DataSourceConfig> {
         match self {
             TimeFrame::M => Some(DataSourceConfig {
                 sina_scale: 240, // 新浪没有月线，要从日线重采样
                 sina_datalen: 2000,
                 tencent_klt: None, // 腾讯也没有月线
-                netease_klt: Some("month"),
                 eastmoney_klt: None,  // 东方财富不支持月线
                 eastmoney_lmt: 0,
                 tushare_freq: Some("M"), // Tushare 月线
@@ -100,7 +97,6 @@ impl TimeFrame {
                 sina_scale: 1200,
                 sina_datalen: 600,
                 tencent_klt: Some("w"),
-                netease_klt: Some("week"),
                 eastmoney_klt: None,  // 东方财富没有周线
                 eastmoney_lmt: 0,
                 tushare_freq: Some("W"),
@@ -109,7 +105,6 @@ impl TimeFrame {
                 sina_scale: 240,
                 sina_datalen: 2000,
                 tencent_klt: Some("day"),
-                netease_klt: Some("day"),
                 eastmoney_klt: Some("101"), // 东方财富日线 klt=101
                 eastmoney_lmt: 5000,
                 tushare_freq: Some("D"),
@@ -118,7 +113,6 @@ impl TimeFrame {
                 sina_scale: 60,
                 sina_datalen: 500,
                 tencent_klt: Some("60"),
-                netease_klt: None,
                 eastmoney_klt: Some("60"),
                 eastmoney_lmt: 10000,
                 tushare_freq: Some("60min"),
@@ -127,7 +121,6 @@ impl TimeFrame {
                 sina_scale: 30,
                 sina_datalen: 500,
                 tencent_klt: Some("30"),
-                netease_klt: None,
                 eastmoney_klt: Some("30"),
                 eastmoney_lmt: 10000,
                 tushare_freq: Some("30min"),
@@ -136,7 +129,6 @@ impl TimeFrame {
                 sina_scale: 15,
                 sina_datalen: 500,
                 tencent_klt: Some("15"),
-                netease_klt: None,
                 eastmoney_klt: Some("15"),
                 eastmoney_lmt: 10000,
                 tushare_freq: Some("15min"),
@@ -145,7 +137,6 @@ impl TimeFrame {
                 sina_scale: 5,
                 sina_datalen: 500,
                 tencent_klt: Some("5"),
-                netease_klt: None,
                 eastmoney_klt: Some("5"),
                 eastmoney_lmt: 10000,
                 tushare_freq: Some("5min"),
@@ -154,7 +145,6 @@ impl TimeFrame {
                 sina_scale: 1,
                 sina_datalen: 500,
                 tencent_klt: Some("1"),
-                netease_klt: None,
                 eastmoney_klt: Some("1"),
                 eastmoney_lmt: 10000,
                 tushare_freq: Some("1min"),
@@ -217,19 +207,22 @@ pub struct BoardStats {
 }
 
 /// 根据股票代码判断板块
+/// 对齐 moyan-project 的分类逻辑
 pub fn classify_board(code: &str) -> &'static str {
-    if code.len() == 6 && (code.starts_with('4') || code.starts_with('8')) {
-        "bse" // 北交所
-    } else if code.starts_with("688") || code.starts_with("689") {
+    if code.starts_with("688") || code.starts_with("689") {
         "star" // 科创板
     } else if code.starts_with("300") || code.starts_with("301") {
         "gem" // 创业板
-    } else if code.starts_with("6") || code.starts_with("9") {
-        "sh_main" // 上证主板（6xx/9xx）
+    } else if code.starts_with("60") {
+        "sh_main" // 上证主板
     } else if code.starts_with("000") || code.starts_with("001")
         || code.starts_with("002") || code.starts_with("003")
     {
         "sz_main" // 深证主板（含原中小板002/003）
+    } else if code.starts_with('4') || code.starts_with('8') || code.starts_with('9') {
+        "bse" // 北交所（4xxxxx, 8xxxxx, 9xxxxx）
+    } else if code.starts_with('6') || code.starts_with('9') {
+        "sh_main" // 上证B股等（6xx/9xx 非科创板）
     } else {
         "other"
     }
@@ -274,12 +267,105 @@ fn build_eastmoney_client() -> Result<reqwest::blocking::Client> {
         .build()?)
 }
 
-/// 尝试从网易财经获取股票列表（已停服，直接返回错误）
-/// 网易 api.money.126.net 域名已于 2024 年停止解析，此函数仅作为降级占位
-pub fn fetch_board_codes_netease(board: &str) -> Result<Vec<String>> {
-    // 网易 API 已停服（api.money.126.net DNS 不可解析）
-    // 直接返回错误，避免 DNS 超时浪费时间
-    Err(anyhow::anyhow!("网易API已停服(api.money.126.net DNS不可达), 板块: {}", board))
+/// 从 Tushare 获取股票列表（第一优先，数据质量最高）
+/// 对齐 moyan-project 的 fetch_tushare_data() 逻辑
+/// Tushare 返回全市场股票（含北交所），数据最完整
+pub fn fetch_board_codes_tushare(board: &str) -> Result<Vec<String>> {
+    // 板块对应 Tushare 的市场/代码过滤
+    let (exchange, market_filter): (&str, Box<dyn Fn(&str) -> bool>) = match board {
+        "sh_main" => ("SSE", Box::new(|code: &str| code.starts_with("60"))),
+        "sz_main" => ("SZSE", Box::new(|code: &str| code.starts_with("00") || code.starts_with("001") || code.starts_with("002") || code.starts_with("003"))),
+        "gem"     => ("SZSE", Box::new(|code: &str| code.starts_with("30") || code.starts_with("301"))),
+        "star"    => ("SSE", Box::new(|code: &str| code.starts_with("688") || code.starts_with("689"))),
+        "bse"     => ("BSE", Box::new(|code: &str| code.starts_with('4') || code.starts_with('8') || code.starts_with('9'))),
+        "all_a"   => ("", Box::new(|_: &str| true) as Box<dyn Fn(&str) -> bool>),
+        _ => return Err(anyhow::anyhow!("Tushare不支持板块: {}", board)),
+    };
+
+    let params = serde_json::json!({
+        "api_name": "stock_basic",
+        "token": TUSHARE_TOKEN,
+        "params": {
+            "exchange": if board == "all_a" { "" } else { exchange },
+            "list_status": "L", // 仅上市状态
+            "fields": "ts_code,symbol,name,market,list_date,delist_date"
+        }
+    });
+
+    let client = reqwest::blocking::Client::builder()
+        .user_agent("Mozilla/5.0")
+        .timeout(std::time::Duration::from_secs(15))
+        .build()?;
+
+    let resp = client
+        .post("https://api.tushare.pro")
+        .json(&params)
+        .send()?;
+    let body = resp.text()?;
+
+    if body.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let json: serde_json::Value = serde_json::from_str(&body)
+        .context("解析 Tushare 股票列表响应失败")?;
+
+    let code_val = json.get("code").and_then(|c| c.as_i64()).unwrap_or(-1);
+    if code_val != 0 {
+        let msg = json.get("msg").and_then(|m| m.as_str()).unwrap_or("unknown");
+        anyhow::bail!("Tushare stock_basic error: {}", msg);
+    }
+
+    let fields = json.get("data")
+        .and_then(|d| d.get("fields"))
+        .and_then(|f| f.as_array());
+
+    let items = json.get("data")
+        .and_then(|d| d.get("items"))
+        .and_then(|f| f.as_array());
+
+    let Some(fields) = fields else { return Ok(Vec::new()); };
+    let Some(items) = items else { return Ok(Vec::new()); };
+
+    let field_names: Vec<&str> = fields.iter().filter_map(|f| f.as_str()).collect();
+    let symbol_idx = field_names.iter().position(|f| *f == "symbol");
+
+    let Some(sym_idx) = symbol_idx else {
+        anyhow::bail!("Tushare 响应缺少 symbol 字段");
+    };
+
+    // all_a 时获取全市场不过滤交易所
+    let codes: Vec<String> = if board == "all_a" {
+        items.iter()
+            .filter_map(|item| {
+                item.as_array()
+                    .and_then(|row| row.get(sym_idx))
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string())
+            })
+            .filter(|code| {
+                // 过滤非A股（如指数、基金等），只保留6位数字代码
+                code.len() == 6 && code.chars().all(|c| c.is_ascii_digit())
+                    && (code.starts_with('0') || code.starts_with('3')
+                        || code.starts_with('6') || code.starts_with('4')
+                        || code.starts_with('8') || code.starts_with('9'))
+            })
+            .collect()
+    } else {
+        items.iter()
+            .filter_map(|item| {
+                item.as_array()
+                    .and_then(|row| row.get(sym_idx))
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string())
+            })
+            .filter(|code| market_filter(code))
+            .collect()
+    };
+
+    Ok(codes)
 }
 
 /// 尝试从新浪财经获取股票列表（第二备案）
@@ -355,7 +441,7 @@ pub fn fetch_board_codes_sina(board: &str) -> Result<Vec<String>> {
 }
 
 /// 从东方财富在线 API 获取指定板块的股票代码列表
-/// 支持多数据源回退：东方财富 → 新浪 → 网易
+/// 支持多数据源回退：Tushare → 东方财富 → 新浪
 /// 支持分页，确保获取全部股票
 /// 东方财富板块查询策略（参考 moyan-project 实测可用配置）
 struct EastMoneyBoardStrategy {
@@ -457,7 +543,15 @@ fn get_eastmoney_strategies(board: &str) -> Vec<EastMoneyBoardStrategy> {
 }
 
 pub fn fetch_board_stock_codes(board: &str) -> Result<Vec<String>> {
-    // ── 1. 尝试东方财富（分策略分页获取） ──
+    // ── 1. Tushare（第一优先，数据最完整，含北交所）──
+    match fetch_board_codes_tushare(board) {
+        Ok(codes) if !codes.is_empty() => return Ok(codes),
+        result => {
+            eprintln!("Tushare获取 {} 股票列表失败: {:?}, 尝试东方财富", board, result.err());
+        }
+    }
+
+    // ── 2. 东方财富（分策略分页获取） ──
     let strategies = get_eastmoney_strategies(board);
     if !strategies.is_empty() {
         match fetch_board_codes_eastmoney_v2(&strategies) {
@@ -468,20 +562,12 @@ pub fn fetch_board_stock_codes(board: &str) -> Result<Vec<String>> {
         }
     }
 
-    // ── 2. 尝试新浪 ──
+    // ── 3. 新浪 ──
     if board != "all_a" {
         match fetch_board_codes_sina(board) {
             Ok(codes) if !codes.is_empty() => return Ok(codes),
             result => {
-                eprintln!("新浪获取 {} 股票列表失败: {:?}, 尝试网易", board, result.err());
-            }
-        }
-
-        // ── 3. 尝试网易 ──
-        match fetch_board_codes_netease(board) {
-            Ok(codes) if !codes.is_empty() => return Ok(codes),
-            result => {
-                eprintln!("网易获取 {} 股票列表也失败: {:?}", board, result.err());
+                eprintln!("新浪获取 {} 股票列表也失败: {:?}", board, result.err());
             }
         }
     } else {
@@ -489,19 +575,27 @@ pub fn fetch_board_stock_codes(board: &str) -> Result<Vec<String>> {
         let mut all_codes = Vec::new();
         let mut codes_set = std::collections::HashSet::new();
         for sub_board in &["sh_main", "sz_main", "gem", "star", "bse"] {
-            // 先新浪再网易
-            for fetcher in &[fetch_board_codes_sina as fn(&str) -> Result<Vec<String>>, fetch_board_codes_netease as fn(&str) -> Result<Vec<String>>] {
-                match fetcher(sub_board) {
-                    Ok(codes) if !codes.is_empty() => {
-                        for c in codes {
-                            if codes_set.insert(c.clone()) {
-                                all_codes.push(c);
-                            }
+            match fetch_board_codes_sina(sub_board) {
+                Ok(codes) if !codes.is_empty() => {
+                    for c in codes {
+                        if codes_set.insert(c.clone()) {
+                            all_codes.push(c);
                         }
-                        break;
                     }
-                    _ => continue,
+                    continue;
                 }
+                _ => {}
+            }
+            // 新浪不支持北交所，尝试东方财富
+            match fetch_board_stock_codes(sub_board) {
+                Ok(codes) if !codes.is_empty() => {
+                    for c in codes {
+                        if codes_set.insert(c.clone()) {
+                            all_codes.push(c);
+                        }
+                    }
+                }
+                _ => {}
             }
         }
         if !all_codes.is_empty() {
@@ -509,7 +603,7 @@ pub fn fetch_board_stock_codes(board: &str) -> Result<Vec<String>> {
         }
     }
 
-    Err(anyhow::anyhow!("所有数据源均无法获取 {} 的股票列表", board))
+    Err(anyhow::anyhow!("所有数据源(Tushare/东方财富/新浪)均无法获取 {} 的股票列表", board))
 }
 
 /// 东方财富分策略分页获取（参考 moyan-project 实测方案）
@@ -651,10 +745,20 @@ pub struct BoardOnlineInfo {
 }
 
 /// 从在线 API 获取指定板块的股票总数
-/// 优先东方财富(轻量total查询) → 新浪(列表计数) → 网易(列表计数) → 东方财富(完整列表计数)
+/// 优先级: Tushare(精确) → 东方财富(轻量total查询) → 新浪(列表计数) → 东方财富(完整列表计数)
 /// 任一源成功即返回，不死等限流的源
 pub fn fetch_board_online_count(board: &str) -> Result<usize> {
-    // ── 1. 东方财富轻量级 total 查询（最快） ──
+    // ── 1. Tushare（第一优先，数据最精确） ──
+    match fetch_board_codes_tushare(board) {
+        Ok(codes) if !codes.is_empty() => {
+            return Ok(codes.len());
+        }
+        result => {
+            eprintln!("Tushare获取 {} 在线总数失败: {:?}, 尝试东方财富", board, result.err());
+        }
+    }
+
+    // ── 2. 东方财富轻量级 total 查询（最快） ──
     let strategies = get_eastmoney_strategies(board);
     let client = build_eastmoney_client().ok();
 
@@ -682,7 +786,6 @@ pub fn fetch_board_online_count(board: &str) -> Result<usize> {
                             || e.to_string().contains("timed out")
                             || e.to_string().contains("Empty");
                         if is_connection_error {
-                            // 连接级别错误，不重试了，直接换源
                             eprintln!("东方财富连接失败({}), 切换数据源: {}", strategy.name, e);
                             break;
                         }
@@ -693,7 +796,6 @@ pub fn fetch_board_online_count(board: &str) -> Result<usize> {
                         }
                     }
                     Ok(_) => {
-                        // total=0，可能是接口返回异常，不重试直接换策略
                         break;
                     }
                 }
@@ -701,9 +803,9 @@ pub fn fetch_board_online_count(board: &str) -> Result<usize> {
         }
     }
 
-    eprintln!("东方财富轻量级查询失败，尝试新浪/网易获取列表计数");
+    eprintln!("东方财富轻量级查询失败，尝试新浪获取列表计数");
 
-    // ── 2. 新浪：获取列表取长度 ──
+    // ── 3. 新浪：获取列表取长度 ──
     if board != "all_a" {
         match fetch_board_codes_sina(board) {
             Ok(codes) if !codes.is_empty() => {
@@ -711,31 +813,27 @@ pub fn fetch_board_online_count(board: &str) -> Result<usize> {
                 return Ok(codes.len());
             }
             result => {
-                eprintln!("新浪获取 {} 失败: {:?}, 尝试网易", board, result.err());
-            }
-        }
-
-        // ── 3. 网易：获取列表取长度 ──
-        match fetch_board_codes_netease(board) {
-            Ok(codes) if !codes.is_empty() => {
-                eprintln!("网易获取 {} 列表成功: {} 只", board, codes.len());
-                return Ok(codes.len());
-            }
-            result => {
-                eprintln!("网易获取 {} 也失败: {:?}", board, result.err());
+                eprintln!("新浪获取 {} 失败: {:?}", board, result.err());
             }
         }
     } else {
         // all_a 需要合并各子板块
         let mut total = 0usize;
         for sub_board in &["sh_main", "sz_main", "gem", "star", "bse"] {
-            for fetcher in &[fetch_board_codes_sina as fn(&str) -> Result<Vec<String>>, fetch_board_codes_netease as fn(&str) -> Result<Vec<String>>] {
-                match fetcher(sub_board) {
+            match fetch_board_codes_sina(sub_board) {
+                Ok(codes) if !codes.is_empty() => {
+                    total += codes.len();
+                    continue;
+                }
+                _ => {}
+            }
+            // 新浪不支持北交所，尝试东方财富
+            if *sub_board == "bse" {
+                match fetch_board_stock_codes(sub_board) {
                     Ok(codes) if !codes.is_empty() => {
                         total += codes.len();
-                        break;
                     }
-                    _ => continue,
+                    _ => {}
                 }
             }
         }
@@ -745,7 +843,7 @@ pub fn fetch_board_online_count(board: &str) -> Result<usize> {
     }
 
     // ── 4. 东方财富完整列表兜底 ──
-    eprintln!("新浪/网易均失败，回退到东方财富完整列表");
+    eprintln!("新浪均失败，回退到东方财富完整列表");
     match fetch_board_stock_codes(board) {
         Ok(codes) => Ok(codes.len()),
         Err(e) => Err(e.context(format!("获取 {} 在线总数失败（所有数据源均失败）", board))),
@@ -947,19 +1045,6 @@ fn code_to_tencent(code: &str) -> String {
     }
 }
 
-/// 股票代码转网易代码 (0开头不变, 6开头加1: 0000001, 1600000)
-fn code_to_netease(code: &str) -> String {
-    if code.starts_with('6') || code.starts_with('9') {
-        format!("1{}", code)
-    } else if code.starts_with('0') || code.starts_with('3') {
-        format!("0{}", code)
-    } else if code.starts_with('4') || code.starts_with('8') {
-        format!("0{}", code)
-    } else {
-        format!("0{}", code)
-    }
-}
-
 /// 股票代码转东方财富 secid (上海: 1.600000, 深圳: 0.000001, 北京: 0.430001)
 fn code_to_eastmoney(code: &str) -> String {
     if code.starts_with('6') || code.starts_with('9') {
@@ -1104,71 +1189,7 @@ fn fetch_tencent_kline(tencent_symbol: &str, klt: &str, since: Option<&str>) -> 
 }
 
 // ═══════════════════════════════════════════════════════════
-//  数据源 3: 网易财经
-// ═══════════════════════════════════════════════════════════
-
-/// 从网易获取 K 线数据
-/// API: http://quotes.money.163.com/service/chddata.html?code=0600000&start=20230101&end=20251231&fields=TCLOSE;HIGH;LOW;TOPEN;VOTURNOVER
-/// since: 可选的增量起始日期 (格式 "20240101"，无连字符)，通过 API start 参数传递
-fn fetch_netease_kline(netease_code: &str, klt: &str, since: Option<&str>) -> Result<Vec<KlineRecord>> {
-    let start = since.unwrap_or("20200101");
-    let url = format!(
-        "http://quotes.money.163.com/service/chddata.html?code={}&start={}&end=20991231&fields=TCLOSE;HIGH;LOW;TOPEN;VOTURNOVER&klt={}",
-        netease_code, start, klt
-    );
-
-    let client = build_http_client()?;
-    let resp = client.get(&url).send()?;
-    let body = resp.text()?;
-
-    if body.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    // 网易返回 CSV 格式:
-    // 日期,股票代码,名称,收盘价,最高价,最低价,开盘价,成交量
-    // 注意：网易数据是倒序的（最新在前）
-    let mut records = Vec::new();
-    for line in body.lines().skip(1) {  // 跳过表头
-        let cols: Vec<&str> = line.split(',').collect();
-        if cols.len() < 8 {
-            continue;
-        }
-
-        let dt = cols[0].trim().replace('/', "-");
-        if dt.is_empty() || dt.len() < 8 {
-            continue;
-        }
-
-        let close: f64 = cols[3].parse().unwrap_or(0.0);
-        let high: f64 = cols[4].parse().unwrap_or(0.0);
-        let low: f64 = cols[5].parse().unwrap_or(0.0);
-        let open: f64 = cols[6].parse().unwrap_or(0.0);
-        let volume: i64 = cols[7].parse().unwrap_or(0);
-
-        // 跳过停牌日 (全部值为 0)
-        if close == 0.0 && open == 0.0 {
-            continue;
-        }
-
-        records.push(KlineRecord {
-            datetime: dt,
-            open,
-            high,
-            low,
-            close,
-            volume,
-        });
-    }
-
-    // 网易返回数据从新到旧排序，需要反转为时间正序
-    records.reverse();
-    Ok(records)
-}
-
-
-// ═══════════════════════════════════════════════════════════
-//  数据源 4: 东方财富 (分钟级最优)
+//  数据源 3: 东方财富 (分钟级最优)
 // ═══════════════════════════════════════════════════════════
 
 /// 从东方财富获取 K 线数据
@@ -1399,13 +1420,13 @@ fn fetch_tushare_kline(ts_code: &str, freq: &str, since: Option<&str>) -> Result
 /// 数据源获取结果：记录了来自哪个源
 struct FetchResult {
     records: Vec<KlineRecord>,
-    source: String, // "sina" | "tencent" | "eastmoney" | "tushare" | "netease" | ...
+    source: String, // "sina" | "tencent" | "eastmoney" | "tushare" | ...
 }
 
 /// 多数据源协同获取 K 线数据
-/// 按级别动态调整数据源优先级：
-/// - 日线/周线/月线: 新浪 → 腾讯 → Tushare → 网易 → 东方财富(日线)
-/// - 分钟级: 东方财富(最优) → 新浪 → 腾讯 → Tushare
+/// 按级别动态调整数据源优先级（对齐 moyan-project）：
+/// - 日线/周线/月线: Tushare(P1) → 新浪(P2) → 腾讯(P3) → 东方财富(P4,仅日线)
+/// - 分钟级: 东方财富(P1) → 新浪(P2) → 腾讯(P3) → Tushare(P4)
 /// since: 可选的增量起始日期 (格式 "2024-01-01"，有连字符)，各数据源内部按需转换格式
 fn fetch_kline_multi_source(
     code: &str,
@@ -1414,17 +1435,15 @@ fn fetch_kline_multi_source(
 ) -> Result<FetchResult> {
     let sina_symbol = code_to_sina(code);
     let tencent_symbol = code_to_tencent(code);
-    let netease_code = code_to_netease(code);
     let em_secid = code_to_eastmoney(code);
     let ts_code = code_to_tushare(code);
 
     // 各数据源需要的日期格式不同，提前转换
     // since 格式: "2024-01-01"（有连字符）
-    // 东财/网易/Tushare: "20240101"（无连字符）
+    // 东财/Tushare: "20240101"（无连字符）
     let since_nohyphen = since.map(|s| s.replace("-", ""));
-    let since_sina = since;                       // "2024-01-01"
-    let since_tencent = since;                    // "2024-01-01"
-    let since_netease = since_nohyphen.as_deref();// "20240101"
+    let since_sina = since;                          // "2024-01-01"
+    let since_tencent = since;                       // "2024-01-01"
     let since_eastmoney = since_nohyphen.as_deref(); // "20240101"
     let since_tushare = since_nohyphen.as_deref();   // "20240101"
 
@@ -1486,29 +1505,9 @@ fn fetch_kline_multi_source(
         }
 
     } else {
-        // ═══ 日线/周线/月线优先级: 新浪 → 腾讯 → Tushare → 网易 → 东方财富(仅日线) ═══
+        // ═══ 日线/周线/月线优先级: Tushare → 新浪 → 腾讯 → 东方财富(仅日线) ═══
 
-        // ─── 1. 新浪 (月线不支持,需日线重采样) ───
-        if tf != TimeFrame::M {
-            match fetch_sina_kline(&sina_symbol, cfg.sina_scale, cfg.sina_datalen, since_sina) {
-                Ok(data) if !data.is_empty() => {
-                    return Ok(FetchResult { records: data, source: "sina".into() });
-                }
-                _ => {}
-            }
-        }
-
-        // ─── 2. 腾讯 ───
-        if let Some(klt) = cfg.tencent_klt {
-            match fetch_tencent_kline(&tencent_symbol, klt, since_tencent) {
-                Ok(data) if !data.is_empty() => {
-                    return Ok(FetchResult { records: data, source: "tencent".into() });
-                }
-                _ => {}
-            }
-        }
-
-        // ─── 3. Tushare (全级别，数据质量最高) ───
+        // ─── 1. Tushare (全级别，数据质量最高，对齐 moyan-project) ───
         if let Some(freq) = cfg.tushare_freq {
             match fetch_tushare_kline(&ts_code, freq, since_tushare) {
                 Ok(data) if !data.is_empty() => {
@@ -1518,19 +1517,27 @@ fn fetch_kline_multi_source(
             }
         }
 
-        // ─── 4. 网易 (仅日线/周线/月线) ───
-        if is_daily_or_above {
-            if let Some(klt) = cfg.netease_klt {
-                match fetch_netease_kline(&netease_code, klt, since_netease) {
-                    Ok(data) if !data.is_empty() => {
-                        return Ok(FetchResult { records: data, source: "netease".into() });
-                    }
-                    _ => {}
+        // ─── 2. 新浪 (月线不支持,需日线重采样) ───
+        if tf != TimeFrame::M {
+            match fetch_sina_kline(&sina_symbol, cfg.sina_scale, cfg.sina_datalen, since_sina) {
+                Ok(data) if !data.is_empty() => {
+                    return Ok(FetchResult { records: data, source: "sina".into() });
                 }
+                _ => {}
             }
         }
 
-        // ─── 5. 东方财富 (仅日线) ───
+        // ─── 3. 腾讯 ───
+        if let Some(klt) = cfg.tencent_klt {
+            match fetch_tencent_kline(&tencent_symbol, klt, since_tencent) {
+                Ok(data) if !data.is_empty() => {
+                    return Ok(FetchResult { records: data, source: "tencent".into() });
+                }
+                _ => {}
+            }
+        }
+
+        // ─── 4. 东方财富 (仅日线) ───
         if let Some(klt) = cfg.eastmoney_klt {
             match fetch_eastmoney_kline(&em_secid, klt, cfg.eastmoney_lmt, since_eastmoney) {
                 Ok(data) if !data.is_empty() => {
@@ -1540,7 +1547,7 @@ fn fetch_kline_multi_source(
             }
         }
 
-        // ─── 6. 日线兜底 (周线失败时从日线重采样) ───
+        // ─── 5. 兜底: 日线重试（周线失败时也可用日线重采样） ───
         if tf == TimeFrame::D || tf == TimeFrame::W {
             match fetch_sina_kline(&sina_symbol, 240, 2000, None) {
                 Ok(data) if !data.is_empty() => {
@@ -1551,12 +1558,6 @@ fn fetch_kline_multi_source(
             match fetch_tencent_kline(&tencent_symbol, "day", None) {
                 Ok(data) if !data.is_empty() => {
                     return Ok(FetchResult { records: data, source: "tencent_daily_fallback".into() });
-                }
-                _ => {}
-            }
-            match fetch_netease_kline(&netease_code, "day", None) {
-                Ok(data) if !data.is_empty() => {
-                    return Ok(FetchResult { records: data, source: "netease_daily_fallback".into() });
                 }
                 _ => {}
             }

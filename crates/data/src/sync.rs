@@ -274,118 +274,84 @@ fn build_eastmoney_client() -> Result<reqwest::blocking::Client> {
         .build()?)
 }
 
-/// 尝试从网易财经获取股票列表（备案用）
-fn fetch_board_codes_netease(board: &str) -> Result<Vec<String>> {
-    // 网易股票列表 API
-    let prefix = match board {
-        "sh_main" => "0",        // 沪市以 60/68 开头
-        "sz_main" => "1",        // 深市以 00 开头
-        "gem"     => "1",        // 创业板以 30 开头
-        "star"    => "0",        // 科创板以 68 开头
-        "bse"     => "0",        // 北交所以 8 开头（北交所需特殊处理）
-        _ => return Err(anyhow::anyhow!("网易不支持板块: {}", board)),
-    };
-
-    let url = format!(
-        "http://api.money.126.net/data/service/{}.html?T=2&ME=0&NP=1&ST=2&CP=0&PN=1&PS=10000",
-        prefix
-    );
-
-    let client = build_http_client()?;
-    let resp = client.get(&url).send()?;
-    let body = resp.text()?;
-
-    // 网易返回 JSONP 格式，需要提取 JSON
-    let json_str = if body.starts_with("/*<div") || body.starts_with("callback") {
-        // 提取括号内的 JSON
-        if let Some(start) = body.find('(') {
-            if let Some(end) = body.rfind(')') {
-                body[start + 1..end].to_string()
-            } else {
-                body[start + 1..].to_string()
-            }
-        } else {
-            body.clone()
-        }
-    } else {
-        body
-    };
-
-    let json: serde_json::Value = serde_json::from_str(&json_str)
-        .context("解析网易股票列表失败")?;
-
-    let list = json.get("list")
-        .and_then(|v| v.as_array())
-        .ok_or_else(|| anyhow::anyhow!("网易返回数据格式异常"))?;
-
-    // 根据板块过滤
-    let codes: Vec<String> = list.iter()
-        .filter_map(|item| {
-            let code = item.get("CODE").and_then(|v| v.as_str()).unwrap_or("");
-            let code = code.trim_start_matches('0').trim_start_matches('1');
-            if code.is_empty() { return None; }
-
-            let is_match = match board {
-                "sh_main" => code.starts_with('6') && !code.starts_with("68"),
-                "sz_main" => code.starts_with("00"),
-                "gem"     => code.starts_with("30"),
-                "star"    => code.starts_with("68"),
-                "bse"     => code.starts_with('8') || code.starts_with('4'),
-                _ => false,
-            };
-
-            if is_match { Some(code.to_string()) } else { None }
-        })
-        .collect();
-
-    Ok(codes)
+/// 尝试从网易财经获取股票列表（已停服，直接返回错误）
+/// 网易 api.money.126.net 域名已于 2024 年停止解析，此函数仅作为降级占位
+pub fn fetch_board_codes_netease(board: &str) -> Result<Vec<String>> {
+    // 网易 API 已停服（api.money.126.net DNS 不可解析）
+    // 直接返回错误，避免 DNS 超时浪费时间
+    Err(anyhow::anyhow!("网易API已停服(api.money.126.net DNS不可达), 板块: {}", board))
 }
 
 /// 尝试从新浪财经获取股票列表（第二备案）
-fn fetch_board_codes_sina(board: &str) -> Result<Vec<String>> {
-    // 新浪股票列表 API：按市场获取全部
-    let (market, prefix_filter) = match board {
-        "sh_main" => ("sh", vec!["60"]),
-        "sz_main" => ("sz", vec!["00"]),
-        "gem"     => ("sz", vec!["30"]),
-        "star"    => ("sh", vec!["68"]),
-        "bse"     => ("bj", vec!["8", "4"]),
+/// 新浪 API 每页最多返回 80 条，需要分页获取全部
+pub fn fetch_board_codes_sina(board: &str) -> Result<Vec<String>> {
+    // 新浪股票列表 API：按市场/板块获取全部
+    // node 参数：sh_a=沪主板, sz_a=深主板, cyb=创业板, kcb=科创板
+    // 北交所新浪不支持，返回空
+    let (node, prefix_filter) = match board {
+        "sh_main" => ("sh_a", vec!["60"]),
+        "sz_main" => ("sz_a", vec!["00"]),
+        "gem"     => ("cyb",  vec!["30"]),
+        "star"    => ("kcb",  vec!["68"]),
+        "bse"     => return Ok(Vec::new()), // 新浪不支持北交所
         _ => return Err(anyhow::anyhow!("新浪不支持板块: {}", board)),
     };
 
-    let url = format!(
-        "https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/Market_Center.getHQNodeData?page=1&num=10000&sort=symbol&asc=1&node={}_a",
-        market
-    );
-
     let client = build_http_client()?;
-    let resp = client.get(&url)
-        .header("Referer", "https://finance.sina.com.cn/")
-        .send()?;
-    let body = resp.text()?;
+    let mut all_codes = Vec::new();
+    let page_size = 80; // 新浪每页最多80条
+    let mut page = 1;
+    let max_pages = 100; // 安全上限
 
-    let list: Vec<serde_json::Value> = if body.starts_with('[') {
-        serde_json::from_str(&body).unwrap_or_default()
-    } else {
-        // 可能返回空或格式不同
-        Vec::new()
-    };
+    loop {
+        let url = format!(
+            "https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/Market_Center.getHQNodeData?page={}&num={}&sort=symbol&asc=1&node={}",
+            page, page_size, node
+        );
 
-    let codes: Vec<String> = list.iter()
-        .filter_map(|item| {
+        let resp = client.get(&url)
+            .header("Referer", "https://finance.sina.com.cn/")
+            .send()?;
+        let body = resp.text()?;
+
+        let list: Vec<serde_json::Value> = if body.starts_with('[') {
+            serde_json::from_str(&body).unwrap_or_default()
+        } else {
+            break;
+        };
+
+        if list.is_empty() {
+            break;
+        }
+
+        for item in &list {
             let symbol = item.get("symbol").and_then(|v| v.as_str()).unwrap_or("");
             // symbol 格式: "sh600000", "sz000001"
             let code = symbol.trim_start_matches("sh")
                              .trim_start_matches("sz")
                              .trim_start_matches("bj");
-            if code.is_empty() { return None; }
+            if code.is_empty() { continue; }
 
             let is_match = prefix_filter.iter().any(|p| code.starts_with(p));
-            if is_match { Some(code.to_string()) } else { None }
-        })
-        .collect();
+            if is_match {
+                all_codes.push(code.to_string());
+            }
+        }
 
-    Ok(codes)
+        // 本页不足 page_size 条，说明已经是最后一页
+        if list.len() < page_size {
+            break;
+        }
+
+        page += 1;
+        if page > max_pages {
+            break;
+        }
+        // 请求间延迟避免限流
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+
+    Ok(all_codes)
 }
 
 /// 从东方财富在线 API 获取指定板块的股票代码列表

@@ -14,6 +14,7 @@ pub use kline_manager::{KLineManager, MoveDataResult};
 pub use sync::{
     sync_stock, sync_board, get_data_status, get_all_stock_codes, get_board_stats,
     get_stock_codes_by_board, fetch_board_stock_codes, fetch_board_online_count, get_board_online_info,
+    fetch_board_codes_sina, fetch_board_codes_netease,
     validate_stock, validate_stock_level, cross_validate_stock,
     SyncStockResult, SyncLevelResult, DataStatus, LevelStats, BoardStats, BoardOnlineInfo,
     ValidateStockResult, ValidateLevelResult, ValidationIssue,

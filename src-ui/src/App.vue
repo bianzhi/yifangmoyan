@@ -172,7 +172,7 @@ function renderChart() {
     },
     rightPriceScale: {
       borderColor: "#2a2a4a",
-      scaleMargins: { top: 0.05, bottom: 0.3 },
+      scaleMargins: { top: 0.05, bottom: 0.35 },
     },
     timeScale: {
       borderColor: "#2a2a4a",
@@ -221,7 +221,7 @@ function renderChart() {
   });
   volumeSeries.setData(volumeData);
   mainChart.priceScale("volume").applyOptions({
-    scaleMargins: { top: 0.75, bottom: 0.55 },
+    scaleMargins: { top: 0.7, bottom: 0.2 },
   });
 
   // MACD 副图
@@ -276,9 +276,9 @@ function renderChart() {
     }
     macdHistSeries.setData(macdHistData);
 
-    // MACD 副图位置：底部 45% 区域
+    // MACD 副图位置：底部 20% 区域
     mainChart.priceScale("macd").applyOptions({
-      scaleMargins: { top: 0.6, bottom: 0 },
+      scaleMargins: { top: 0.8, bottom: 0 },
     });
   }
 

@@ -1,12 +1,21 @@
 //! 背驰检测
 //!
-//! 背驰（背离）是缠论的核心概念之一：
+//! **对齐缠论原文定义**
+//!
+//! 背驰（背弛）是缠论的核心概念之一：
 //! - 趋势力度减弱：同方向两段走势，后一段的力度小于前一段
 //! - 力度可以用 MACD 面积、价格幅度、成交量等衡量
 //!
-//! 类型：
-//! - 笔背驰：同方向两笔之间的力度比较
-//! - 线段背驰：同方向两段之间的力度比较
+//! 缠论中背驰的严格定义：
+//! - **趋势背驰**：在趋势中（至少两个同级别中枢），最后一个中枢之后的离开段
+//!   力度小于前一个离开段的力度，称为趋势背驰。
+//! - **盘整背驰**：在盘整中（只有一个中枢），围绕中枢震荡的离开段
+//!   力度小于前一个同方向离开段。
+//!
+//! 当前实现为简化版本，基于相邻同方向笔/线段的力度比较：
+//! - 至少需要两根同方向的笔/线段
+//! - 后一根力度 < 前一根力度 → 疑似背驰
+//! - 力度 = MACD 面积 × 价格幅度（综合判断）
 
 use yifang_data::{Bi, BeiChi, MacdData, XianDuan};
 
@@ -66,9 +75,12 @@ where
                     let prev_macd_area = calc_macd_area(macd, prev_start as usize, prev_end as usize);
                     let curr_macd_area = calc_macd_area(macd, start_idx as usize, end_idx as usize);
 
-                    // 背驰条件：价格力度减弱 + MACD 面积减小
-                    let price_divergence = curr_amplitude < prev_amplitude * 0.8;
-                    let macd_divergence = curr_macd_area < prev_macd_area * 0.8;
+                    // 背驰判断：综合价格力度和MACD面积
+                    // 价格力度减弱（后笔幅度 < 前笔幅度）
+                    // MACD面积减弱（后笔MACD面积 < 前笔MACD面积）
+                    // 两者同时满足才判定为背驰
+                    let price_divergence = curr_amplitude < prev_amplitude;
+                    let macd_divergence = curr_macd_area < prev_macd_area;
 
                     if price_divergence && macd_divergence {
                         results.push(BeiChi {
@@ -90,8 +102,8 @@ where
                     let prev_macd_area = calc_macd_area(macd, prev_start as usize, prev_end as usize);
                     let curr_macd_area = calc_macd_area(macd, start_idx as usize, end_idx as usize);
 
-                    let price_divergence = curr_amplitude < prev_amplitude * 0.8;
-                    let macd_divergence = curr_macd_area < prev_macd_area * 0.8;
+                    let price_divergence = curr_amplitude < prev_amplitude;
+                    let macd_divergence = curr_macd_area < prev_macd_area;
 
                     if price_divergence && macd_divergence {
                         results.push(BeiChi {

@@ -1,15 +1,21 @@
 //! 去除 K 线包含关系
 //!
-//! 参考 czsc 的 remove_include 逻辑：
-//! - 向上趋势中，取高高（高点取大，低点取大）
-//! - 向下趋势中，取低低（高点取小，低点取小）
+//! **严格对齐 czsc 0.9.9 的 remove_include 实现**
+//!
+//! 缠论原文定义：
+//! - 向上趋势中（k1.high < k2.high），取高高（高点取大，低点取大）
+//! - 向下趋势中（k1.high > k2.high），取低低（高点取小，低点取小）
+//! - 方向由 k1 和 k2 的高低关系决定（不是 k2 和 k3）
+//!
+//! 关键点：方向由 **已确认的两根无包含K线** k1、k2 决定，
+//! 处理的是 k2 和 k3 之间的包含关系。
 
 use yifang_data::KLine;
 
 /// 去除包含关系后的合并 K 线
 #[derive(Debug, Clone)]
-pub struct MergedBar {
-    /// 序号
+pub struct NewBar {
+    /// 原始 K 线中的序号（取合并组第一根的 id）
     pub id: u64,
     /// 时间（取决定高低点的那根 K 线的时间）
     pub dt: String,
@@ -29,20 +35,18 @@ pub struct MergedBar {
     pub elements: Vec<usize>,
 }
 
-/// 合并方向
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum Direction {
-    Up,
-    Down,
-}
-
 /// 对 K 线序列去除包含关系，返回合并后的 K 线列表
-pub fn remove_include(klines: &[KLine]) -> Vec<MergedBar> {
+///
+/// 逐根处理：每来一根新 K 线 k3，与已确认的最后两根无包含 K 线 k1、k2 比较：
+/// - 方向由 k1、k2 决定（k1.high < k2.high → Up，k1.high > k2.high → Down）
+/// - 判断 k2、k3 是否存在包含关系
+/// - 存在包含则合并，不存在则 k3 作为新的一根加入
+pub fn remove_include(klines: &[KLine]) -> Vec<NewBar> {
     if klines.is_empty() {
         return Vec::new();
     }
     if klines.len() == 1 {
-        return vec![MergedBar {
+        return vec![NewBar {
             id: 0,
             dt: klines[0].dt.clone(),
             open: klines[0].open,
@@ -55,121 +59,161 @@ pub fn remove_include(klines: &[KLine]) -> Vec<MergedBar> {
         }];
     }
 
-    let mut merged = Vec::new();
-    let mut direction = Direction::Up; // 初始方向
+    let mut bars_ubi: Vec<NewBar> = Vec::new();
 
-    // 第一根 K 线直接加入
-    merged.push(MergedBar {
-        id: 0,
-        dt: klines[0].dt.clone(),
-        open: klines[0].open,
-        close: klines[0].close,
-        high: klines[0].high,
-        low: klines[0].low,
-        vol: klines[0].vol,
-        amount: klines[0].amount,
-        elements: vec![0],
-    });
+    // 前两根直接加入
+    for (i, k) in klines.iter().enumerate().take(2) {
+        bars_ubi.push(NewBar {
+            id: i as u64,
+            dt: k.dt.clone(),
+            open: k.open,
+            close: k.close,
+            high: k.high,
+            low: k.low,
+            vol: k.vol,
+            amount: k.amount,
+            elements: vec![i],
+        });
+    }
 
-    for i in 1..klines.len() {
-        let curr = &klines[i];
+    // 从第三根开始逐根处理
+    for i in 2..klines.len() {
+        let k3 = &klines[i];
 
-        // 先从 merged 末尾提取所需数据，避免借用冲突
-        let prev_high = merged.last().unwrap().high;
-        let prev_low = merged.last().unwrap().low;
-        let prev_vol = merged.last().unwrap().vol;
-        let prev_amount = merged.last().unwrap().amount;
-        let prev_dt = merged.last().unwrap().dt.clone();
-        let prev_id = merged.last().unwrap().id;
+        // 先从 bars_ubi 提取需要的信息到局部变量，避免借用冲突
+        let k1_high = bars_ubi[bars_ubi.len() - 2].high;
+        let k2_high = bars_ubi[bars_ubi.len() - 1].high;
+        let k2_low = bars_ubi[bars_ubi.len() - 1].low;
+        let k2_id = bars_ubi[bars_ubi.len() - 1].id;
+        let k2_dt = bars_ubi[bars_ubi.len() - 1].dt.clone();
+        let k2_vol = bars_ubi[bars_ubi.len() - 1].vol;
+        let k2_amount = bars_ubi[bars_ubi.len() - 1].amount;
+        let k2_elements = bars_ubi[bars_ubi.len() - 1].elements.clone();
 
-        // 确定方向：如果当前高点 > 前一根高点，方向向上；否则向下
-        if curr.high > prev_high {
-            direction = Direction::Up;
-        } else if curr.high < prev_high {
-            direction = Direction::Down;
-        }
-        // 如果高点相等，保持当前方向
+        // 方向由 k1、k2 决定
+        if k1_high < k2_high {
+            // 方向向上
+            let has_include = (k2_high <= k3.high && k2_low >= k3.low)
+                || (k2_high >= k3.high && k2_low <= k3.low);
 
-        // 判断是否包含关系
-        let is_contain = (prev_high >= curr.high && prev_low <= curr.low)
-            || (prev_high <= curr.high && prev_low >= curr.low);
+            if has_include {
+                // 向上取高高
+                let high = k2_high.max(k3.high);
+                let low = k2_low.max(k3.low);
+                let dt = if k2_high > k3.high {
+                    k2_dt.clone()
+                } else {
+                    k3.dt.clone()
+                };
+                let (open_, close) = if k3.open > k3.close {
+                    (high, low)
+                } else {
+                    (low, high)
+                };
+                let vol = k2_vol + k3.vol;
+                let amount = k2_amount + k3.amount;
 
-        if is_contain {
-            // 合并处理
-            let (new_high, new_low, new_dt) = match direction {
-                Direction::Up => {
-                    let high = prev_high.max(curr.high);
-                    let low = prev_low.max(curr.low);
-                    let dt = if prev_high > curr.high {
-                        prev_dt.clone()
-                    } else {
-                        curr.dt.clone()
-                    };
-                    (high, low, dt)
+                let mut elements = k2_elements.clone();
+                elements.push(i);
+                if elements.len() > 100 {
+                    elements.drain(..elements.len() - 100);
                 }
-                Direction::Down => {
-                    let high = prev_high.min(curr.high);
-                    let low = prev_low.min(curr.low);
-                    let dt = if prev_low < curr.low {
-                        prev_dt.clone()
-                    } else {
-                        curr.dt.clone()
-                    };
-                    (high, low, dt)
-                }
-            };
 
-            let open = if curr.open > curr.close {
-                new_high
+                let last = bars_ubi.last_mut().unwrap();
+                *last = NewBar {
+                    id: k2_id,
+                    dt,
+                    open: open_,
+                    close,
+                    high,
+                    low,
+                    vol,
+                    amount,
+                    elements,
+                };
             } else {
-                new_low
-            };
-            let close = if curr.open > curr.close {
-                new_low
-            } else {
-                new_high
-            };
-
-            let total_vol = prev_vol + curr.vol;
-            let total_amount = prev_amount + curr.amount;
-
-            // 更新最后一根合并 K 线
-            let last = merged.last_mut().unwrap();
-            let mut elements = std::mem::take(&mut last.elements);
-            elements.push(i);
-            // 限制 elements 长度，防止极端情况
-            if elements.len() > 100 {
-                elements.drain(..elements.len() - 100);
+                bars_ubi.push(NewBar {
+                    id: i as u64,
+                    dt: k3.dt.clone(),
+                    open: k3.open,
+                    close: k3.close,
+                    high: k3.high,
+                    low: k3.low,
+                    vol: k3.vol,
+                    amount: k3.amount,
+                    elements: vec![i],
+                });
             }
+        } else if k1_high > k2_high {
+            // 方向向下
+            let has_include = (k2_high <= k3.high && k2_low >= k3.low)
+                || (k2_high >= k3.high && k2_low <= k3.low);
 
-            *last = MergedBar {
-                id: prev_id,
-                dt: new_dt,
-                open,
-                close,
-                high: new_high,
-                low: new_low,
-                vol: total_vol,
-                amount: total_amount,
-                elements,
-            };
+            if has_include {
+                // 向下取低低
+                let high = k2_high.min(k3.high);
+                let low = k2_low.min(k3.low);
+                let dt = if k2_low < k3.low {
+                    k2_dt.clone()
+                } else {
+                    k3.dt.clone()
+                };
+                let (open_, close) = if k3.open > k3.close {
+                    (high, low)
+                } else {
+                    (low, high)
+                };
+                let vol = k2_vol + k3.vol;
+                let amount = k2_amount + k3.amount;
+
+                let mut elements = k2_elements.clone();
+                elements.push(i);
+                if elements.len() > 100 {
+                    elements.drain(..elements.len() - 100);
+                }
+
+                let last = bars_ubi.last_mut().unwrap();
+                *last = NewBar {
+                    id: k2_id,
+                    dt,
+                    open: open_,
+                    close,
+                    high,
+                    low,
+                    vol,
+                    amount,
+                    elements,
+                };
+            } else {
+                bars_ubi.push(NewBar {
+                    id: i as u64,
+                    dt: k3.dt.clone(),
+                    open: k3.open,
+                    close: k3.close,
+                    high: k3.high,
+                    low: k3.low,
+                    vol: k3.vol,
+                    amount: k3.amount,
+                    elements: vec![i],
+                });
+            }
         } else {
-            // 无包含关系，新增合并 K 线
-            merged.push(MergedBar {
+            // k1.high == k2.high：无法确定方向，k3 直接作为新 K 线
+            bars_ubi.push(NewBar {
                 id: i as u64,
-                dt: curr.dt.clone(),
-                open: curr.open,
-                close: curr.close,
-                high: curr.high,
-                low: curr.low,
-                vol: curr.vol,
-                amount: curr.amount,
+                dt: k3.dt.clone(),
+                open: k3.open,
+                close: k3.close,
+                high: k3.high,
+                low: k3.low,
+                vol: k3.vol,
+                amount: k3.amount,
                 elements: vec![i],
             });
         }
     }
 
-    merged
+    bars_ubi
 }
 
 #[cfg(test)]
@@ -194,7 +238,6 @@ mod tests {
 
     #[test]
     fn test_no_include() {
-        // 上升序列，无包含关系
         let klines = vec![
             make_kline(0, "2024-01-01", 10.0, 11.0, 11.5, 9.5),
             make_kline(1, "2024-01-02", 11.0, 12.0, 12.5, 10.5),
@@ -205,16 +248,39 @@ mod tests {
     }
 
     #[test]
-    fn test_with_include() {
-        // 第二根包含第一根
+    fn test_up_include() {
         let klines = vec![
             make_kline(0, "2024-01-01", 10.0, 11.0, 11.0, 10.0),
-            make_kline(1, "2024-01-02", 10.5, 12.0, 12.0, 9.5), // 包含第一根
-            make_kline(2, "2024-01-03", 12.0, 13.0, 13.0, 11.5),
+            make_kline(1, "2024-01-02", 10.5, 12.0, 12.0, 9.5),
+            make_kline(2, "2024-01-03", 11.0, 11.5, 11.5, 10.5),
         ];
         let result = remove_include(&klines);
-        // 第一根和第二根合并
         assert_eq!(result.len(), 2);
-        assert!(result[0].elements.len() == 2);
+        assert_eq!(result[1].high, 12.0);
+        assert_eq!(result[1].low, 10.5);
+    }
+
+    #[test]
+    fn test_down_include() {
+        let klines = vec![
+            make_kline(0, "2024-01-01", 13.0, 12.0, 13.0, 11.5),
+            make_kline(1, "2024-01-02", 12.0, 10.0, 12.0, 9.5),
+            make_kline(2, "2024-01-03", 10.5, 9.8, 11.0, 10.0),
+        ];
+        let result = remove_include(&klines);
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[1].high, 11.0);
+        assert_eq!(result[1].low, 9.5);
+    }
+
+    #[test]
+    fn test_equal_highs() {
+        let klines = vec![
+            make_kline(0, "2024-01-01", 10.0, 12.0, 12.0, 9.5),
+            make_kline(1, "2024-01-02", 11.0, 12.0, 12.0, 10.5),
+            make_kline(2, "2024-01-03", 11.5, 13.0, 13.0, 11.0),
+        ];
+        let result = remove_include(&klines);
+        assert_eq!(result.len(), 3);
     }
 }

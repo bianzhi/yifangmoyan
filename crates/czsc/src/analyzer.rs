@@ -30,7 +30,7 @@ impl CzscAnalyzer {
         let fenxing = to_fenxing(&fxs);
 
         // 3. 构建笔
-        let bis = build_bi(&fxs, merged.len());
+        let bis = build_bi(klines, None);
 
         // 4. 构建线段
         let xds = build_xd(&bis);

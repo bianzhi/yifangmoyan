@@ -830,7 +830,7 @@ function startBgSyncPolling() {
     } catch {
       // 轮询失败不影响主流程
     }
-  }, 1000);
+  }, 60_000);
 }
 
 // ===== 事件处理 =====

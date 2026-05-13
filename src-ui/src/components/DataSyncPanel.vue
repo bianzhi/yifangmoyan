@@ -303,7 +303,7 @@ async function startSync() {
       } catch {
         // 轮询失败不中断
       }
-    }, 1000);
+    }, 60_000);
   } catch (e: any) {
     error.value = `启动同步失败: ${e}`;
     syncing.value = false;
@@ -529,7 +529,7 @@ onMounted(async () => {
         } catch {
           // 轮询失败不中断
         }
-      }, 1000);
+      }, 60_000);
     }
   } catch {
     // 获取状态失败不影响页面

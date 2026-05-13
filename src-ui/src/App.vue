@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, watch, computed } from "vue";
+import { ref, onMounted, watch, computed, nextTick } from "vue";
 import {
   createChart,
   ColorType,
@@ -20,6 +20,7 @@ import {
 import ChartToolbar from "./components/ChartToolbar.vue";
 import StockSearch from "./components/StockSearch.vue";
 import SettingsPanel from "./components/SettingsPanel.vue";
+import DataSyncPanel from "./components/DataSyncPanel.vue";
 
 // ===== 状态 =====
 const symbol = ref("000001");
@@ -28,6 +29,7 @@ const chartData = ref<ChartData | null>(null);
 const loading = ref(false);
 const error = ref("");
 const settings = ref<AnalysisSettings>({ ...DEFAULT_SETTINGS });
+const currentView = ref<"chart" | "sync">("chart");
 const searchKeyword = ref("");
 const searchResults = ref<any[]>([]);
 const showSearch = ref(false);
@@ -69,6 +71,8 @@ async function loadData() {
       hasAnyWyckoffEnabled()
     );
     chartData.value = data;
+    // 确保在 DOM 更新后再渲染，避免容器尺寸为 0
+    await nextTick();
     renderChart();
   } catch (e: any) {
     error.value = e.toString();
@@ -85,10 +89,33 @@ function hasAnyWyckoffEnabled(): boolean {
   return Object.values(settings.value.wyckoff).some(Boolean);
 }
 
+// ===== 时间格式化 =====
+// lightweight-charts 要求 "YYYY-MM-DD" 或 UTCTimestamp
+// 日线/周线/月线的 dt 可能是 "2023-01-03 00:00:00"，需截取为 "2023-01-03"
+function toTime(dt: string): Time {
+  // 分钟级别带 "HH:MM"，需要 "YYYY-MM-DD HH:MM" 格式
+  // 日线及以上只取日期部分
+  const match = dt.match(/^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2})/);
+  if (match && match[2] !== "00:00") {
+    return `${match[1]} ${match[2]}` as Time;
+  }
+  // 只保留日期部分
+  return dt.slice(0, 10) as Time;
+}
+
 // ===== 图表渲染 =====
 function renderChart() {
   if (!chartData.value || !chartContainer.value) return;
   const data = chartData.value;
+  
+  // 确保容器有有效尺寸
+  const containerWidth = chartContainer.value.clientWidth;
+  const containerHeight = chartContainer.value.clientHeight;
+  if (containerWidth === 0 || containerHeight === 0) {
+    // DOM 还没渲染完成，延迟重试
+    requestAnimationFrame(() => renderChart());
+    return;
+  }
 
   // 清除旧图表
   if (mainChart) {
@@ -127,7 +154,7 @@ function renderChart() {
 
   // K 线数据
   const candleData: CandlestickData<Time>[] = data.klines.map((k) => ({
-    time: k.dt as Time,
+    time: toTime(k.dt),
     open: k.open,
     high: k.high,
     low: k.low,
@@ -146,7 +173,7 @@ function renderChart() {
 
   // 成交量
   const volumeData: HistogramData<Time>[] = data.klines.map((k) => ({
-    time: k.dt as Time,
+    time: toTime(k.dt),
     value: k.vol,
     color: k.close >= k.open ? "rgba(239,83,80,0.4)" : "rgba(38,166,154,0.4)",
   }));
@@ -192,10 +219,10 @@ function renderCzscOverlays(data: ChartData) {
       const startK = data.klines[bi.start_index];
       const endK = data.klines[Math.min(bi.end_index, data.klines.length - 1)];
       if (startK && endK) {
-        if (biData.length === 0 || biData[biData.length - 1].time !== (startK.dt as Time)) {
-          biData.push({ time: startK.dt as Time, value: bi.start_price });
+        if (biData.length === 0 || biData[biData.length - 1].time !== (toTime(startK.dt))) {
+          biData.push({ time: toTime(startK.dt), value: bi.start_price });
         }
-        biData.push({ time: endK.dt as Time, value: bi.end_price });
+        biData.push({ time: toTime(endK.dt), value: bi.end_price });
       }
     }
     biSeries.setData(biData);
@@ -217,10 +244,10 @@ function renderCzscOverlays(data: ChartData) {
       const startK = data.klines[xd.start_index];
       const endK = data.klines[Math.min(xd.end_index, data.klines.length - 1)];
       if (startK && endK) {
-        if (xdData.length === 0 || xdData[xdData.length - 1].time !== (startK.dt as Time)) {
-          xdData.push({ time: startK.dt as Time, value: xd.start_price });
+        if (xdData.length === 0 || xdData[xdData.length - 1].time !== (toTime(startK.dt))) {
+          xdData.push({ time: toTime(startK.dt), value: xd.start_price });
         }
-        xdData.push({ time: endK.dt as Time, value: xd.end_price });
+        xdData.push({ time: toTime(endK.dt), value: xd.end_price });
       }
     }
     xdSeries.setData(xdData);
@@ -232,7 +259,7 @@ function renderCzscOverlays(data: ChartData) {
       const k = data.klines[bs.index];
       const isBuy = bs.bs_type.includes("buy");
       return {
-        time: (k?.dt || bs.dt) as Time,
+        time: toTime(k?.dt || bs.dt),
         position: isBuy ? "belowBar" as const : "aboveBar" as const,
         color: isBuy ? "#00e676" : "#ff1744",
         shape: isBuy ? ("arrowUp" as const) : ("arrowDown" as const),
@@ -259,8 +286,8 @@ function renderCzscOverlays(data: ChartData) {
           crosshairMarkerVisible: false,
         });
         upperLine.setData([
-          { time: startK.dt as Time, value: zs.zg },
-          { time: endK.dt as Time, value: zs.zg },
+          { time: toTime(startK.dt), value: zs.zg },
+          { time: toTime(endK.dt), value: zs.zg },
         ]);
 
         const lowerLine = mainChart!.addLineSeries({
@@ -272,8 +299,8 @@ function renderCzscOverlays(data: ChartData) {
           crosshairMarkerVisible: false,
         });
         lowerLine.setData([
-          { time: startK.dt as Time, value: zs.zd },
-          { time: endK.dt as Time, value: zs.zd },
+          { time: toTime(startK.dt), value: zs.zd },
+          { time: toTime(endK.dt), value: zs.zd },
         ]);
       }
     }
@@ -284,7 +311,7 @@ function renderCzscOverlays(data: ChartData) {
     const beichiMarkers = czsc.beichi.map((bc) => {
       const k = data.klines[bc.index];
       return {
-        time: (k?.dt || bc.dt) as Time,
+        time: toTime(k?.dt || bc.dt),
         position: bc.direction === "up" ? ("aboveBar" as const) : ("belowBar" as const),
         color: "#ff9800",
         shape: "circle" as const,
@@ -319,8 +346,8 @@ function renderWyckoffOverlays(data: ChartData) {
           crosshairMarkerVisible: false,
         });
         series.setData([
-          { time: startK.dt as Time, value: tl.start_price },
-          { time: endK.dt as Time, value: tl.end_price },
+          { time: toTime(startK.dt), value: tl.start_price },
+          { time: toTime(endK.dt), value: tl.end_price },
         ]);
       }
     }
@@ -341,8 +368,8 @@ function renderWyckoffOverlays(data: ChartData) {
           crosshairMarkerVisible: false,
         });
         upperLine.setData([
-          { time: startK.dt as Time, value: tr.upper },
-          { time: endK.dt as Time, value: tr.upper },
+          { time: toTime(startK.dt), value: tr.upper },
+          { time: toTime(endK.dt), value: tr.upper },
         ]);
 
         const lowerLine = mainChart!.addLineSeries({
@@ -354,8 +381,8 @@ function renderWyckoffOverlays(data: ChartData) {
           crosshairMarkerVisible: false,
         });
         lowerLine.setData([
-          { time: startK.dt as Time, value: tr.lower },
-          { time: endK.dt as Time, value: tr.lower },
+          { time: toTime(startK.dt), value: tr.lower },
+          { time: toTime(endK.dt), value: tr.lower },
         ]);
 
         // 冰线
@@ -369,8 +396,8 @@ function renderWyckoffOverlays(data: ChartData) {
             crosshairMarkerVisible: false,
           });
           iceLine.setData([
-            { time: startK.dt as Time, value: tr.ice_line },
-            { time: endK.dt as Time, value: tr.ice_line },
+            { time: toTime(startK.dt), value: tr.ice_line },
+            { time: toTime(endK.dt), value: tr.ice_line },
           ]);
         }
       }
@@ -392,7 +419,7 @@ function renderWyckoffOverlays(data: ChartData) {
       const k = data.klines[e.index];
       const isBullish = ["SC", "AR", "Spring", "LPS", "SOS", "JOC"].includes(e.event_type);
       return {
-        time: (k?.dt || e.dt) as Time,
+        time: toTime(k?.dt || e.dt),
         position: isBullish ? ("belowBar" as const) : ("aboveBar" as const),
         color: isBullish ? "#00bcd4" : "#ff5722",
         shape: "square" as const,
@@ -441,7 +468,7 @@ function onSettingsChange(newSettings: AnalysisSettings) {
 
 // ===== 生命周期 =====
 onMounted(() => {
-  loadData();
+  nextTick(() => loadData());
 
   // 响应窗口大小变化
   const resizeObserver = new ResizeObserver(() => {
@@ -466,7 +493,25 @@ watch(timeframe, () => loadData());
   <header class="flex items-center justify-between px-4 h-12 bg-[#16213e] border-b border-[#2a2a4a] shrink-0">
     <div class="flex items-center gap-4">
       <h1 class="text-lg font-bold text-[#e94560]">墨岩K线</h1>
+      <!-- 视图切换 -->
+      <div class="flex items-center gap-1">
+        <button
+          @click="currentView = 'chart'"
+          class="px-3 py-1 text-xs rounded transition-all"
+          :class="currentView === 'chart' ? 'bg-[#e94560] text-white' : 'text-[#9e9e9e] hover:bg-[#0f3460] hover:text-white'"
+        >
+          K 线图
+        </button>
+        <button
+          @click="currentView = 'sync'"
+          class="px-3 py-1 text-xs rounded transition-all"
+          :class="currentView === 'sync' ? 'bg-[#e94560] text-white' : 'text-[#9e9e9e] hover:bg-[#0f3460] hover:text-white'"
+        >
+          数据同步
+        </button>
+      </div>
       <StockSearch
+        v-if="currentView === 'chart'"
         v-model="searchKeyword"
         :results="searchResults"
         :show="showSearch"
@@ -476,7 +521,7 @@ watch(timeframe, () => loadData());
       />
     </div>
 
-    <div v-if="currentPrice" class="flex items-center gap-4 text-sm">
+    <div v-if="currentView === 'chart' && currentPrice" class="flex items-center gap-4 text-sm">
       <span class="font-mono text-lg" :class="currentPrice.close >= currentPrice.open ? 'text-[#ef5350]' : 'text-[#26a69a]'">
         {{ currentPrice.close.toFixed(2) }}
       </span>
@@ -488,35 +533,43 @@ watch(timeframe, () => loadData());
     </div>
   </header>
 
-  <!-- 工具栏 -->
-  <ChartToolbar
-    :timeframe="timeframe"
-    :settings="settings"
-    @timeframe-change="onTimeframeChange"
-    @settings-change="onSettingsChange"
-  />
+  <!-- 数据同步视图 -->
+  <template v-if="currentView === 'sync'">
+    <main class="flex-1 flex overflow-hidden">
+      <DataSyncPanel class="flex-1" />
+    </main>
+  </template>
 
-  <!-- 主内容区 -->
-  <main class="flex-1 flex overflow-hidden">
-    <!-- K 线图区域 -->
-    <div class="flex-1 flex flex-col">
-      <!-- 加载/错误提示 -->
-      <div v-if="loading" class="flex items-center justify-center h-full">
-        <div class="text-[#9e9e9e] animate-pulse">加载中...</div>
-      </div>
-      <div v-else-if="error" class="flex items-center justify-center h-full">
-        <div class="text-[#ff5722]">{{ error }}</div>
-      </div>
-      <template v-else>
-        <!-- 主图 + 成交量 -->
-        <div ref="chartContainer" class="flex-1 min-h-0"></div>
-      </template>
-    </div>
-
-    <!-- 右侧设置面板 -->
-    <SettingsPanel
+  <!-- K 线图视图 -->
+  <template v-else>
+    <!-- 工具栏 -->
+    <ChartToolbar
+      :timeframe="timeframe"
       :settings="settings"
-      @change="onSettingsChange"
+      @timeframe-change="onTimeframeChange"
+      @settings-change="onSettingsChange"
     />
-  </main>
+
+    <!-- 主内容区 -->
+    <main class="flex-1 flex overflow-hidden">
+      <!-- K 线图区域 -->
+      <div class="flex-1 flex flex-col relative">
+        <!-- 主图 + 成交量 — 始终存在，避免 v-if 销毁容器 -->
+        <div ref="chartContainer" class="flex-1 min-h-0"></div>
+        <!-- 加载/错误提示 — 覆盖在图表上方 -->
+        <div v-if="loading" class="absolute inset-0 flex items-center justify-center bg-[#1a1a2e]/80 z-10">
+          <div class="text-[#9e9e9e] animate-pulse">加载中...</div>
+        </div>
+        <div v-else-if="error" class="absolute inset-0 flex items-center justify-center bg-[#1a1a2e]/80 z-10">
+          <div class="text-[#ff5722]">{{ error }}</div>
+        </div>
+      </div>
+
+      <!-- 右侧设置面板 -->
+      <SettingsPanel
+        :settings="settings"
+        @change="onSettingsChange"
+      />
+    </main>
+  </template>
 </template>

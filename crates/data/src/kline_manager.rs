@@ -10,9 +10,15 @@ use std::path::{Path, PathBuf};
 
 use crate::source::DataSource;
 use crate::types::*;
+use serde::{Deserialize, Serialize};
 
-/// 默认数据目录
-const DEFAULT_DATA_DIR: &str = "/Users/csdn/Code/moyan/moyan-project/data";
+/// 数据移动结果
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MoveDataResult {
+    pub moved: usize,
+    pub failed: usize,
+    pub errors: Vec<String>,
+}
 
 /// K 线管理器
 pub struct KLineManager {
@@ -21,11 +27,100 @@ pub struct KLineManager {
 
 impl KLineManager {
     /// 创建 K 线管理器
+    /// data_dir 为 None 时使用应用数据目录下的 data 子目录
     pub fn new(data_dir: Option<&str>) -> Self {
         let data_dir = data_dir
             .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from(DEFAULT_DATA_DIR));
+            .unwrap_or_else(|| default_data_dir());
         Self { data_dir }
+    }
+
+    /// 获取数据目录
+    pub fn data_dir(&self) -> &Path {
+        &self.data_dir
+    }
+
+    /// 设置数据目录（运行时切换）
+    pub fn set_data_dir(&mut self, path: &str) {
+        self.data_dir = PathBuf::from(path);
+    }
+
+    /// 将现有数据移动到新目录
+    /// old_dir: 旧目录路径
+    /// new_dir: 新目录路径
+    /// 返回: (移动文件数, 失败文件数, 失败信息列表)
+    pub fn move_data_to(old_dir: &Path, new_dir: &Path) -> Result<(usize, usize, Vec<String>)> {
+        let old_cache = old_dir.join("kline_cache");
+        let new_cache = new_dir.join("kline_cache");
+
+        if !old_cache.exists() {
+            return Ok((0, 0, vec![]));
+        }
+
+        // 创建新目录
+        std::fs::create_dir_all(&new_cache)
+            .with_context(|| format!("创建目标目录失败: {}", new_cache.display()))?;
+
+        let mut moved = 0usize;
+        let mut failed = 0usize;
+        let mut errors = Vec::new();
+
+        // 遍历旧目录下的所有子目录 (1d, 1wk, 1mo, 1h, ...)
+        for entry in std::fs::read_dir(&old_cache)
+            .with_context(|| format!("读取旧目录失败: {}", old_cache.display()))?
+        {
+            let entry = entry?;
+            let ft = entry.file_type()?;
+            if !ft.is_dir() {
+                continue;
+            }
+
+            let sub_dir_name = entry.file_name();
+            let old_sub = entry.path();
+            let new_sub = new_cache.join(&sub_dir_name);
+
+            // 创建目标子目录
+            if let Err(e) = std::fs::create_dir_all(&new_sub) {
+                errors.push(format!("创建 {} 失败: {}", new_sub.display(), e));
+                failed += 1;
+                continue;
+            }
+
+            // 移动所有 parquet 文件
+            for file_entry in std::fs::read_dir(&old_sub)
+                .with_context(|| format!("读取 {} 失败", old_sub.display()))?
+            {
+                let file_entry = file_entry?;
+                let fname = file_entry.file_name();
+                let name_str = fname.to_string_lossy();
+
+                // 只移动 parquet 文件
+                if !name_str.ends_with(".parquet") {
+                    continue;
+                }
+
+                let src = file_entry.path();
+                let dst = new_sub.join(&fname);
+
+                match std::fs::rename(&src, &dst) {
+                    Ok(()) => moved += 1,
+                    Err(e) => {
+                        // 跨文件系统移动需要复制+删除
+                        if let Err(copy_err) = std::fs::copy(&src, &dst).and_then(|_| std::fs::remove_file(&src)) {
+                            errors.push(format!("移动 {} 失败: rename={}, copy={}", src.display(), e, copy_err));
+                            failed += 1;
+                        } else {
+                            moved += 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        // 尝试删除旧空目录（非递归，仅当空时）
+        let _ = try_remove_empty_dirs(&old_cache);
+
+        Ok((moved, failed, errors))
     }
 
     /// 获取缓存根目录 (kline_cache)
@@ -191,7 +286,7 @@ impl KLineManager {
     }
 
     /// 从 Column 中提取日期时间字符串
-    fn extract_datetime(column: &polars::prelude::Column, idx: usize) -> String {
+    pub fn extract_datetime(column: &polars::prelude::Column, idx: usize) -> String {
         // 优先处理字符串类型
         if let Some(ca) = column.try_str() {
             if let Some(v) = ca.get(idx) {
@@ -232,7 +327,7 @@ impl KLineManager {
     }
 
     /// 从 Column 中提取 f64 值
-    fn extract_f64(column: &polars::prelude::Column, idx: usize) -> f64 {
+    pub fn extract_f64(column: &polars::prelude::Column, idx: usize) -> f64 {
         if let Some(ca) = column.try_f64() {
             if let Some(v) = ca.get(idx) {
                 return v;
@@ -413,4 +508,44 @@ impl DataSource for KLineManager {
             market: market.to_string(),
         })
     }
+}
+
+// ═══════════════════════════════════════════════════════════
+//  辅助函数
+// ═══════════════════════════════════════════════════════════
+
+/// 默认数据目录：优先使用 YIFANG_DATA_DIR 环境变量，否则使用 app 数据目录
+fn default_data_dir() -> PathBuf {
+    if let Ok(dir) = std::env::var("YIFANG_DATA_DIR") {
+        return PathBuf::from(dir);
+    }
+
+    // macOS: ~/Library/Application Support/com.moyan.yifang/data
+    // Linux: ~/.local/share/com.moyan.yifang/data
+    // Windows: C:\Users\{user}\AppData\Roaming\com.moyan.yifang\data
+    if let Some(data_dir) = dirs::data_dir() {
+        return data_dir.join("com.moyan.yifang").join("data");
+    }
+
+    // 兜底：当前目录下的 data
+    PathBuf::from("data")
+}
+
+/// 递归尝试删除空目录
+fn try_remove_empty_dirs(dir: &Path) -> std::io::Result<()> {
+    if !dir.exists() {
+        return Ok(());
+    }
+
+    // 先处理子目录
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        if entry.file_type()?.is_dir() {
+            let _ = try_remove_empty_dirs(&entry.path());
+        }
+    }
+
+    // 尝试删除自身（只有空目录才能删成功）
+    let _ = std::fs::remove_dir(dir);
+    Ok(())
 }

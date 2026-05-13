@@ -38,3 +38,69 @@ export async function getSubLevelData(
     enableCzsc,
   });
 }
+
+// ===== 数据同步 API =====
+
+export interface LevelStats {
+  level: string;
+  dir_name: string;
+  file_count: number;
+  sample_symbol: string | null;
+  sample_count: number | null;
+  sample_start: string | null;
+  sample_end: string | null;
+}
+
+export interface DataStatus {
+  data_dir: string;
+  total_stocks: number;
+  levels: LevelStats[];
+}
+
+export interface SyncLevelResult {
+  level: string;
+  status: string;
+  count: number;
+  msg: string;
+}
+
+export interface SyncStockResult {
+  symbol: string;
+  levels: SyncLevelResult[];
+}
+
+export async function getDataStatus(): Promise<DataStatus> {
+  return invoke<DataStatus>("get_data_status");
+}
+
+export async function syncStock(
+  symbol: string,
+  levels: string[],
+  startDate?: string,
+  force: boolean = false
+): Promise<SyncStockResult> {
+  return invoke<SyncStockResult>("sync_stock", {
+    symbol,
+    levels,
+    startDate: startDate || null,
+    force,
+  });
+}
+
+export async function syncStocksBatch(
+  symbols: string[],
+  levels: string[],
+  startDate?: string,
+  force: boolean = false
+): Promise<SyncStockResult[]> {
+  return invoke<SyncStockResult[]>("sync_stocks_batch", {
+    symbols,
+    levels,
+    startDate: startDate || null,
+    force,
+  });
+}
+
+export async function getAllStockCodes(): Promise<string[]> {
+  return invoke<string[]>("get_all_stock_codes");
+}

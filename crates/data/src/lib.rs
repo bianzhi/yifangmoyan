@@ -6,7 +6,14 @@
 pub mod types;
 pub mod source;
 pub mod kline_manager;
+pub mod sync;
 
 pub use types::*;
 pub use source::DataSource;
-pub use kline_manager::KLineManager;
+pub use kline_manager::{KLineManager, MoveDataResult};
+pub use sync::{
+    sync_stock, get_data_status, get_all_stock_codes, get_board_stats, get_stock_codes_by_board,
+    validate_stock, validate_stock_level, cross_validate_stock,
+    SyncStockResult, SyncLevelResult, DataStatus, LevelStats, BoardStats,
+    ValidateStockResult, ValidateLevelResult, ValidationIssue,
+};

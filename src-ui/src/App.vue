@@ -155,20 +155,45 @@ const subLevelPanel = ref<{
   loading: boolean;
 } | null>(null);
 
-// ===== 右侧面板拖动 =====
-const rightPanelTopHeight = ref(240);
-const rightPanelDragState = ref<{ startY: number; startTopHeight: number } | null>(null);
+// ===== 浮动信号窗口 =====
+const showCzscSignalWindow = ref(false);
+const showWyckoffSignalWindow = ref(false);
+const czscWindowPos = ref({ x: 60, y: 80 });
+const wyckoffWindowPos = ref({ x: 80, y: 100 });
+const czscWindowDrag = ref<{ startX: number; startY: number; startPos: { x: number; y: number } } | null>(null);
+const wyckoffWindowDrag = ref<{ startX: number; startY: number; startPos: { x: number; y: number } } | null>(null);
 
-function startRightPanelDrag(e: MouseEvent) {
+function startCzscWindowDrag(e: MouseEvent) {
   e.preventDefault();
-  rightPanelDragState.value = { startY: e.clientY, startTopHeight: rightPanelTopHeight.value };
+  czscWindowDrag.value = { startX: e.clientX, startY: e.clientY, startPos: { ...czscWindowPos.value } };
   const onMove = (ev: MouseEvent) => {
-    if (!rightPanelDragState.value) return;
-    const delta = ev.clientY - rightPanelDragState.value.startY;
-    rightPanelTopHeight.value = Math.max(60, Math.min(600, rightPanelDragState.value.startTopHeight + delta));
+    if (!czscWindowDrag.value) return;
+    czscWindowPos.value = {
+      x: czscWindowDrag.value.startPos.x + ev.clientX - czscWindowDrag.value.startX,
+      y: czscWindowDrag.value.startPos.y + ev.clientY - czscWindowDrag.value.startY,
+    };
   };
   const onUp = () => {
-    rightPanelDragState.value = null;
+    czscWindowDrag.value = null;
+    document.removeEventListener("mousemove", onMove);
+    document.removeEventListener("mouseup", onUp);
+  };
+  document.addEventListener("mousemove", onMove);
+  document.addEventListener("mouseup", onUp);
+}
+
+function startWyckoffWindowDrag(e: MouseEvent) {
+  e.preventDefault();
+  wyckoffWindowDrag.value = { startX: e.clientX, startY: e.clientY, startPos: { ...wyckoffWindowPos.value } };
+  const onMove = (ev: MouseEvent) => {
+    if (!wyckoffWindowDrag.value) return;
+    wyckoffWindowPos.value = {
+      x: wyckoffWindowDrag.value.startPos.x + ev.clientX - wyckoffWindowDrag.value.startX,
+      y: wyckoffWindowDrag.value.startPos.y + ev.clientY - wyckoffWindowDrag.value.startY,
+    };
+  };
+  const onUp = () => {
+    wyckoffWindowDrag.value = null;
     document.removeEventListener("mousemove", onMove);
     document.removeEventListener("mouseup", onUp);
   };
@@ -1428,24 +1453,69 @@ watch(currentView, (val) => {
           </div>
         </div>
 
-        <!-- 右侧面板 -->
-        <div class="flex flex-col w-72 shrink-0 border-l border-[#2a2a4a]">
-          <!-- 信号摘要面板 -->
-          <div :style="{ height: rightPanelTopHeight + 'px' }" class="overflow-y-auto min-h-0">
+        <!-- 浮动缠论信号窗口 -->
+        <div
+          v-if="showCzscSignalWindow && chartData"
+          class="absolute z-30 bg-[#16213e] border border-[#2a2a4a] rounded-lg shadow-2xl flex flex-col"
+          :style="{ left: czscWindowPos.x + 'px', top: czscWindowPos.y + 'px', width: '320px', maxHeight: '60vh' }"
+        >
+          <div
+            class="flex items-center justify-between px-3 py-1.5 border-b border-[#2a2a4a] cursor-move select-none"
+            @mousedown="startCzscWindowDrag"
+          >
+            <span class="text-xs font-bold text-[#e94560]">⚡ 缠论信号</span>
+            <button @click="showCzscSignalWindow = false" class="text-[#9e9e9e] hover:text-white text-xs px-1">✕</button>
+          </div>
+          <div class="overflow-y-auto" style="max-height: calc(60vh - 32px);">
             <SignalPanel
-              v-if="chartData"
               :chart-data="chartData"
               :settings="settings"
               @navigate="navigateToSignal"
             />
           </div>
+        </div>
 
-          <!-- 可拖动分割条 -->
+        <!-- 浮动威科夫信号窗口 -->
+        <div
+          v-if="showWyckoffSignalWindow && chartData"
+          class="absolute z-30 bg-[#16213e] border border-[#2a2a4a] rounded-lg shadow-2xl flex flex-col"
+          :style="{ left: wyckoffWindowPos.x + 'px', top: wyckoffWindowPos.y + 'px', width: '320px', maxHeight: '60vh' }"
+        >
           <div
-            class="h-1.5 bg-[#2a2a4a] cursor-row-resize hover:bg-[#e94560] transition-colors flex items-center justify-center shrink-0"
-            @mousedown="startRightPanelDrag"
+            class="flex items-center justify-between px-3 py-1.5 border-b border-[#2a2a4a] cursor-move select-none"
+            @mousedown="startWyckoffWindowDrag"
           >
-            <div class="w-8 h-0.5 bg-[#666] rounded-full"></div>
+            <span class="text-xs font-bold text-[#26a69a]">📊 威科夫信号</span>
+            <button @click="showWyckoffSignalWindow = false" class="text-[#9e9e9e] hover:text-white text-xs px-1">✕</button>
+          </div>
+          <div class="overflow-y-auto p-3" style="max-height: calc(60vh - 32px);">
+            <template v-if="chartData.wyckoff && chartData.wyckoff.events.length > 0">
+              <div v-for="(evt, idx) in chartData.wyckoff.events" :key="idx"
+                class="flex items-center gap-2 py-1 text-xs border-b border-[#2a2a4a]/50 last:border-0">
+                <span class="w-2 h-2 rounded-full shrink-0" :style="{ backgroundColor: WYCKOFF_EVENT_COLORS[evt.event_type] || '#666' }"></span>
+                <span class="text-[#9e9e9e] font-mono">{{ evt.dt }}</span>
+                <span :style="{ color: WYCKOFF_EVENT_COLORS[evt.event_type] || '#fff' }">{{ evt.event_type }}</span>
+                <span class="text-[#666] truncate">{{ evt.description }}</span>
+              </div>
+            </template>
+            <div v-else class="text-[#666] text-xs text-center py-4">暂无威科夫信号</div>
+          </div>
+        </div>
+
+        <!-- 右侧设置面板（精简，只保留设置） -->
+        <div class="flex flex-col w-56 shrink-0 border-l border-[#2a2a4a]">
+          <!-- 窗口开关 -->
+          <div class="shrink-0 p-2 border-b border-[#2a2a4a] space-y-1">
+            <button @click="showCzscSignalWindow = !showCzscSignalWindow"
+              class="w-full text-left text-xs px-2 py-1.5 rounded transition-colors"
+              :class="showCzscSignalWindow ? 'bg-[#e94560]/20 text-[#e94560]' : 'text-[#9e9e9e] hover:bg-[#2a2a4a]'">
+              ⚡ 缠论信号
+            </button>
+            <button @click="showWyckoffSignalWindow = !showWyckoffSignalWindow"
+              class="w-full text-left text-xs px-2 py-1.5 rounded transition-colors"
+              :class="showWyckoffSignalWindow ? 'bg-[#26a69a]/20 text-[#26a69a]' : 'text-[#9e9e9e] hover:bg-[#2a2a4a]'">
+              📊 威科夫信号
+            </button>
           </div>
 
           <!-- 勾选设置面板 -->

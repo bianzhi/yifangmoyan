@@ -97,6 +97,12 @@ const lastSyncFailed = ref(0);
 const lastSyncElapsed = ref("");
 const showSyncResult = ref(false);
 
+// 后台同步状态（仅用于横幅提示，不自动进入 syncing 页面状态）
+const bgSyncRunning = ref(false);
+const bgSyncBoard = ref<string | null>(null);
+const bgSyncTotal = ref(0);
+const bgSyncCompleted = ref(0);
+
 // 页面状态
 type PageState = "idle" | "syncing" | "result";
 const pageState = computed<PageState>(() => {
@@ -552,6 +558,7 @@ onMounted(async () => {
   loadBoardOnlineInfo();
 
   // 检查是否有后台同步正在运行
+  // 注意：不自动进入 syncing 页面状态，只显示顶部横幅提示
   try {
     const status = await invoke<{
       running: boolean;
@@ -567,18 +574,12 @@ onMounted(async () => {
     }>("get_sync_status");
 
     if (status.running) {
-      syncing.value = true;
-      syncingBoard.value = status.board;
-      syncTotal.value = status.total;
-      syncCompleted.value = status.completed;
-      syncFailedDetails.value = status.failures.map(f => ({
-        symbol: f[0],
-        level: f[1],
-        msg: f[2],
-      }));
-      startSyncTimer();
+      bgSyncRunning.value = true;
+      bgSyncBoard.value = status.board;
+      bgSyncTotal.value = status.total;
+      bgSyncCompleted.value = status.completed;
 
-      // 轮询进度
+      // 后台轮询更新横幅进度
       const pollTimer = setInterval(async () => {
         try {
           const s = await invoke<{
@@ -594,23 +595,13 @@ onMounted(async () => {
             cancelled: boolean;
           }>("get_sync_status");
 
-          syncTotal.value = s.total;
-          syncCompleted.value = s.completed;
-          syncFailedDetails.value = s.failures.map(f => ({
-            symbol: f[0],
-            level: f[1],
-            msg: f[2],
-          }));
+          bgSyncTotal.value = s.total;
+          bgSyncCompleted.value = s.completed;
 
           if (!s.running) {
             clearInterval(pollTimer);
-            lastSyncSuccess.value = s.success;
-            lastSyncFailed.value = s.failures.length;
-            lastSyncElapsed.value = syncElapsed.value;
-            syncing.value = false;
-            syncingBoard.value = null;
-            stopSyncTimer();
-            showSyncResult.value = true;
+            bgSyncRunning.value = false;
+            bgSyncBoard.value = null;
             refreshStatus();
             loadBoardOnlineInfo();
           }
@@ -627,6 +618,14 @@ onMounted(async () => {
 
 <template>
   <div class="h-full flex flex-col bg-[#1a1a2e]">
+
+    <!-- 后台同步横幅 -->
+    <div v-if="bgSyncRunning && pageState !== 'syncing'" class="shrink-0 px-4 py-2 bg-[#e94560]/10 border-b border-[#e94560]/20 flex items-center justify-between">
+      <div class="flex items-center gap-2">
+        <div class="w-2 h-2 rounded-full bg-[#e94560] animate-pulse"></div>
+        <span class="text-xs text-[#e94560]">后台同步中（{{ bgSyncBoard || '全A股' }}）{{ bgSyncCompleted }}/{{ bgSyncTotal }}</span>
+      </div>
+    </div>
 
     <!-- ═══════════════════════════════════════════════════════════
          同步中：全屏进度（最核心的体验）

@@ -9,6 +9,10 @@ import {
   type HistogramData,
   type LineData,
   type Time,
+  type ISeriesPrimitive,
+  type ISeriesPrimitivePaneView,
+  type ISeriesPrimitivePaneRenderer,
+  type SeriesAttachedParameter,
 } from "lightweight-charts";
 import { getChartData, searchStocks, getAllStockCodes, getSubLevelData, autoSyncOnStartup, getSyncStatus } from "./composables/useApi";
 import type { SyncProgress } from "./composables/useApi";
@@ -31,6 +35,70 @@ import DataSyncPanel from "./components/DataSyncPanel.vue";
 import SignalPanel from "./components/SignalPanel.vue";
 import WatchlistPanel from "./components/WatchlistPanel.vue";
 import { useWatchlist, usePersistedSettings } from "./composables/useStorage";
+
+// ===== 矩形图元：用于绘制中枢矩形 =====
+interface RectangleProps {
+  startTime: Time;
+  endTime: Time;
+  topPrice: number;
+  bottomPrice: number;
+  borderColor: string;
+  borderWidth: number;
+  fillColor: string;
+}
+
+class RectanglePaneView implements ISeriesPrimitivePaneView {
+  private _props: RectangleProps;
+  private _series: ISeriesApi<any> | null = null;
+  private _chart: IChartApi | null = null;
+  constructor(props: RectangleProps) { this._props = props; }
+  setContext(series: ISeriesApi<any>, chart: IChartApi) { this._series = series; this._chart = chart; }
+  zOrder(): "bottom" | "top" | "normal" { return "bottom"; }
+  renderer(): ISeriesPrimitivePaneRenderer | null {
+    return {
+      draw: (target: any) => {
+        if (!this._series || !this._chart) return;
+        const tScale = this._chart.timeScale();
+        const x1 = tScale.timeToCoordinate(this._props.startTime);
+        const x2 = tScale.timeToCoordinate(this._props.endTime);
+        const y1 = this._series.priceToCoordinate(this._props.topPrice);
+        const y2 = this._series.priceToCoordinate(this._props.bottomPrice);
+        if (x1 === null || x2 === null || y1 === null || y2 === null) return;
+        // lightweight-charts v4 使用 fancy-canvas 的 CanvasRenderingTarget2D
+        target.useMediaCoordinateSpace((scope: { context: CanvasRenderingContext2D }) => {
+          const ctx = scope.context;
+          ctx.save();
+          // 填充
+          ctx.fillStyle = this._props.fillColor;
+          ctx.fillRect(x1, y1, x2 - x1, y2 - y1);
+          // 边框
+          ctx.strokeStyle = this._props.borderColor;
+          ctx.lineWidth = this._props.borderWidth;
+          ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
+          ctx.restore();
+        });
+      },
+    } as ISeriesPrimitivePaneRenderer;
+  }
+}
+
+class RectanglePrimitive implements ISeriesPrimitive<Time> {
+  private _paneView: RectanglePaneView;
+  private _props: RectangleProps;
+  constructor(
+    startTime: Time, endTime: Time,
+    topPrice: number, bottomPrice: number,
+    borderColor: string, borderWidth: number, fillColor: string,
+  ) {
+    this._props = { startTime, endTime, topPrice, bottomPrice, borderColor, borderWidth, fillColor };
+    this._paneView = new RectanglePaneView(this._props);
+  }
+  attached(param: SeriesAttachedParameter<Time>): void {
+    this._paneView.setContext(param.series as unknown as ISeriesApi<any>, param.chart as unknown as IChartApi);
+  }
+  detached(): void {}
+  paneViews(): readonly ISeriesPrimitivePaneView[] { return [this._paneView]; }
+}
 
 // ===== 状态 =====
 const symbol = ref("000001");
@@ -402,9 +470,10 @@ function renderCzscOverlays(data: ChartData) {
 
   // 笔 — 上升红/下降蓝 折线
   if (settings.value.czsc.showBi && czsc.bi.length > 0) {
+    const biStyle = settings.value.styles.bi;
     const biSeries = mainChart!.addLineSeries({
-      color: "#4a90d9",
-      lineWidth: 2,
+      color: biStyle.color,
+      lineWidth: biStyle.lineWidth as 1 | 2 | 3 | 4,
       priceLineVisible: false,
       lastValueVisible: false,
       crosshairMarkerVisible: false,
@@ -425,11 +494,12 @@ function renderCzscOverlays(data: ChartData) {
     biSeries.setData(biData);
   }
 
-  // 线段 — 3px 虚线
+  // 线段 — 使用样式配置
   if (settings.value.czsc.showXd && czsc.xd.length > 0) {
+    const xdStyle = settings.value.styles.xd;
     const xdSeries = mainChart!.addLineSeries({
-      color: "#b388ff",
-      lineWidth: 3,
+      color: xdStyle.color,
+      lineWidth: xdStyle.lineWidth as 1 | 2 | 3 | 4,
       lineStyle: 2,
       priceLineVisible: false,
       lastValueVisible: false,
@@ -472,14 +542,16 @@ function renderCzscOverlays(data: ChartData) {
     }
   }
 
-  // 笔中枢 — 半透明矩形用上下沿线模拟
+  // 笔中枢 — 矩形
   if (settings.value.czsc.showBiZs && czsc.bi_zs.length > 0) {
-    renderZhongShu(czsc.bi_zs, data, "rgba(179,136,255,0.5)");
+    const zsStyle = settings.value.styles.biZs;
+    renderZhongShu(czsc.bi_zs, data, zsStyle);
   }
 
-  // 线段中枢 — 半透明橙色
+  // 线段中枢 — 矩形
   if (settings.value.czsc.showXdZs && czsc.xd_zs.length > 0) {
-    renderZhongShu(czsc.xd_zs, data, "rgba(255,152,0,0.5)");
+    const zsStyle = settings.value.styles.xdZs;
+    renderZhongShu(czsc.xd_zs, data, zsStyle);
   }
 
   // 背驰标记
@@ -511,40 +583,58 @@ function renderCzscOverlays(data: ChartData) {
   }
 }
 
-// 渲染中枢
-function renderZhongShu(zsList: any[], data: ChartData, color: string) {
+// 渲染中枢（矩形框+半透明填充）
+function renderZhongShu(zsList: any[], data: ChartData, style: import("./types").ZhongShuStyle) {
   for (const zs of zsList) {
     const startK = data.klines[zs.start_index];
     const endK = data.klines[Math.min(zs.end_index, data.klines.length - 1)];
     if (!startK || !endK) continue;
 
-    // zg 上沿线
-    const upperLine = mainChart!.addLineSeries({
-      color,
-      lineWidth: 1,
-      lineStyle: 1,
-      priceLineVisible: false,
-      lastValueVisible: false,
-      crosshairMarkerVisible: false,
-    });
-    upperLine.setData([
-      { time: toTime(startK.dt), value: zs.zg },
-      { time: toTime(endK.dt), value: zs.zg },
-    ]);
+    // 使用 candleSeries 的 primitive 来绘制矩形
+    const primitive = new RectanglePrimitive(
+      toTime(startK.dt),
+      toTime(endK.dt),
+      zs.zg,
+      zs.zd,
+      style.borderColor,
+      style.borderWidth,
+      style.fillColor,
+    );
+    candleSeries!.attachPrimitive(primitive);
+  }
+}
 
-    // zd 下沿线
-    const lowerLine = mainChart!.addLineSeries({
-      color,
-      lineWidth: 1,
-      lineStyle: 1,
-      priceLineVisible: false,
-      lastValueVisible: false,
-      crosshairMarkerVisible: false,
-    });
-    lowerLine.setData([
-      { time: toTime(startK.dt), value: zs.zd },
-      { time: toTime(endK.dt), value: zs.zd },
-    ]);
+// ===== 信号跳转 =====
+function navigateToSignal(dt: string, price?: number) {
+  if (!mainChart || !candleSeries || !chartData.value) return;
+  const time = toTime(dt) as Time;
+  const ts = mainChart.timeScale();
+
+  // 通过时间找到该 K 线的逻辑索引，然后滚动到该位置居中
+  const coord = ts.timeToCoordinate(time);
+  if (coord !== null) {
+    // 获取可见逻辑范围
+    const visRange = ts.getVisibleLogicalRange();
+    if (visRange) {
+      const barCount = visRange.to - visRange.from;
+      // 通过 coordinate 找到逻辑索引
+      // timeToCoordinate 返回像素坐标，我们需要 logical index
+      // 使用 candleSeries 的 data 来找到 index
+      const klines = chartData.value.klines;
+      const startIdx = klines.length > MAX_VISIBLE_KLINES
+        ? klines.length - MAX_VISIBLE_KLINES : 0;
+      const visKlines = klines.slice(startIdx);
+      const ki = visKlines.findIndex((k) => toTime(k.dt) === time);
+      if (ki >= 0) {
+        const logicalIdx = ki;  // 在截断数据中的索引 = 逻辑索引
+        ts.scrollToPosition(logicalIdx - barCount / 2, true);
+      }
+    }
+  }
+
+  // 设置十字光标到该位置
+  if (price !== undefined && price > 0) {
+    mainChart.setCrosshairPosition(price, time, candleSeries);
   }
 }
 
@@ -871,8 +961,11 @@ function onSettingsChange(newSettings: AnalysisSettings) {
 function onViewModeChange(mode: ViewMode) {
   viewMode.value = mode;
   persistedViewMode.value = mode;
-  settings.value = JSON.parse(JSON.stringify(VIEW_MODE_SETTINGS[mode]));
-  persistedSettings.value = JSON.parse(JSON.stringify(settings.value)) as any;
+  const modeSettings = JSON.parse(JSON.stringify(VIEW_MODE_SETTINGS[mode]));
+  // 保留用户自定义的 styles 配置
+  modeSettings.styles = JSON.parse(JSON.stringify(settings.value.styles));
+  settings.value = modeSettings as AnalysisSettings;
+  persistedSettings.value = JSON.parse(JSON.stringify(settings.value));
   loadData();
 }
 
@@ -1258,6 +1351,7 @@ watch(timeframe, () => loadData());
             v-if="chartData"
             :chart-data="chartData"
             :settings="settings"
+            @navigate="navigateToSignal"
             class="flex-1 overflow-y-auto"
           />
 

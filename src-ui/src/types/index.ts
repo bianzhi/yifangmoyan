@@ -217,6 +217,31 @@ export interface StockInfo {
 
 // ===== 分析勾选设置 =====
 
+export interface LineStyle {
+  color: string;
+  lineWidth: number;
+}
+
+export interface ZhongShuStyle {
+  borderColor: string;
+  borderWidth: number;
+  fillColor: string;
+}
+
+export interface ChartStyles {
+  bi: LineStyle;
+  xd: LineStyle;
+  biZs: ZhongShuStyle;
+  xdZs: ZhongShuStyle;
+}
+
+export const DEFAULT_CHART_STYLES: ChartStyles = {
+  bi: { color: "#4a90d9", lineWidth: 1 },
+  xd: { color: "#b388ff", lineWidth: 3 },
+  biZs: { borderColor: "#b388ff", borderWidth: 2, fillColor: "rgba(179,136,255,0.08)" },
+  xdZs: { borderColor: "#ff9800", borderWidth: 2, fillColor: "rgba(255,152,0,0.08)" },
+};
+
 export interface AnalysisSettings {
   czsc: {
     showFenxing: boolean;
@@ -251,6 +276,7 @@ export interface AnalysisSettings {
   chart: {
     showMacd: boolean;
   };
+  styles: ChartStyles;
 }
 
 export const DEFAULT_SETTINGS: AnalysisSettings = {
@@ -287,13 +313,14 @@ export const DEFAULT_SETTINGS: AnalysisSettings = {
   chart: {
     showMacd: true,
   },
+  styles: { ...DEFAULT_CHART_STYLES },
 };
 
 // ===== 视图模式 =====
 
 export type ViewMode = "pure" | "czsc" | "wyckoff" | "fusion";
 
-export const VIEW_MODE_SETTINGS: Record<ViewMode, AnalysisSettings> = {
+export const VIEW_MODE_SETTINGS: Record<ViewMode, Omit<AnalysisSettings, "styles">> = {
   pure: {
     czsc: {
       showFenxing: false, showBi: false, showXd: false,

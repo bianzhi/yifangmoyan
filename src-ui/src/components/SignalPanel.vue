@@ -13,6 +13,10 @@ const props = defineProps<{
   settings: AnalysisSettings;
 }>();
 
+const emit = defineEmits<{
+  (e: "navigate", dt: string, price?: number): void;
+}>();
+
 // 缠论信号
 const czscSignals = computed(() => {
   if (!props.chartData.czsc) return [];
@@ -37,12 +41,14 @@ const czscSignals = computed(() => {
     let label = "⚡笔背驰";
     if (bc.bc_type === "xd_beichi") label = "⚡线段背驰";
     if (bc.bc_sub_type === "panzheng") label += "(盘整)";
+    // 背驰取对应 K 线的高/低价作为定位
+    const k = props.chartData.klines[bc.index];
     signals.push({
       type: "beichi",
       label,
       index: bc.index,
       dt: bc.dt,
-      price: 0,
+      price: bc.direction === "up" ? (k?.high ?? 0) : (k?.low ?? 0),
       color: "#ff9800",
     });
   }
@@ -80,6 +86,10 @@ const currentPhase = computed(() => {
   const labels = props.chartData.wyckoff.phase_labels;
   return labels[labels.length - 1];
 });
+
+function onSignalClick(dt: string, price?: number) {
+  emit("navigate", dt, price);
+}
 </script>
 
 <template>
@@ -104,11 +114,13 @@ const currentPhase = computed(() => {
     <!-- 缠论信号 -->
     <div v-if="czscSignals.length > 0">
       <div class="text-[#b388ff] text-[10px] uppercase font-bold mb-1.5">缠论信号</div>
-      <div class="space-y-1 max-h-40 overflow-y-auto">
+      <div class="space-y-0.5 max-h-40 overflow-y-auto">
         <div
           v-for="(sig, i) in czscSignals.slice(-20)"
           :key="'czsc-' + i"
-          class="flex items-center justify-between py-0.5"
+          class="flex items-center justify-between py-0.5 px-1 rounded cursor-pointer hover:bg-[#0f3460] transition-colors"
+          @click="onSignalClick(sig.dt, sig.price)"
+          :title="`点击跳转至 ${sig.dt.slice(0, 10)}`"
         >
           <div class="flex items-center gap-1.5">
             <span class="w-1.5 h-1.5 rounded-full" :style="{ backgroundColor: sig.color }"></span>
@@ -122,11 +134,13 @@ const currentPhase = computed(() => {
     <!-- 威科夫信号 -->
     <div v-if="wyckoffSignals.length > 0">
       <div class="text-[#00bcd4] text-[10px] uppercase font-bold mb-1.5">威科夫信号</div>
-      <div class="space-y-1 max-h-40 overflow-y-auto">
+      <div class="space-y-0.5 max-h-40 overflow-y-auto">
         <div
           v-for="(sig, i) in wyckoffSignals.slice(-20)"
           :key="'wy-' + i"
-          class="flex items-center justify-between py-0.5"
+          class="flex items-center justify-between py-0.5 px-1 rounded cursor-pointer hover:bg-[#0f3460] transition-colors"
+          @click="onSignalClick(sig.dt, sig.price)"
+          :title="`点击跳转至 ${sig.dt.slice(0, 10)}`"
         >
           <div class="flex items-center gap-1.5">
             <span class="w-1.5 h-1.5 rounded-full" :style="{ backgroundColor: sig.color }"></span>
@@ -145,7 +159,9 @@ const currentPhase = computed(() => {
         <div
           v-for="(sig, i) in fusionSignals.slice(-10)"
           :key="'fusion-' + i"
-          class="bg-[#0f3460] rounded p-2"
+          class="bg-[#0f3460] rounded p-2 cursor-pointer hover:bg-[#16407a] transition-colors"
+          @click="onSignalClick(sig.dt, sig.price)"
+          :title="`点击跳转至 ${sig.dt.slice(0, 10)}`"
         >
           <div class="flex items-center justify-between mb-0.5">
             <span class="font-bold" :style="{ color: sig.color }">

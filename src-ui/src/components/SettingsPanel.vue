@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import type { AnalysisSettings } from "../types";
+import type { AnalysisSettings, ChartStyles, LineStyle, ZhongShuStyle } from "../types";
+import { DEFAULT_CHART_STYLES } from "../types";
 
 const props = defineProps<{
   settings: AnalysisSettings;
@@ -33,6 +34,26 @@ function toggleChart(key: keyof AnalysisSettings["chart"]) {
   newSettings.chart[key] = !newSettings.chart[key];
   emit("change", newSettings);
 }
+
+function updateLineStyle(key: keyof Pick<ChartStyles, "bi" | "xd">, field: keyof LineStyle, value: string | number) {
+  const newSettings = JSON.parse(JSON.stringify(props.settings));
+  if (!newSettings.styles) newSettings.styles = { ...DEFAULT_CHART_STYLES };
+  (newSettings.styles[key] as any)[field] = value;
+  emit("change", newSettings);
+}
+
+function updateZhongShuStyle(key: keyof Pick<ChartStyles, "biZs" | "xdZs">, field: keyof ZhongShuStyle, value: string | number) {
+  const newSettings = JSON.parse(JSON.stringify(props.settings));
+  if (!newSettings.styles) newSettings.styles = { ...DEFAULT_CHART_STYLES };
+  (newSettings.styles[key] as any)[field] = value;
+  emit("change", newSettings);
+}
+
+function resetStyles() {
+  const newSettings = JSON.parse(JSON.stringify(props.settings));
+  newSettings.styles = { ...DEFAULT_CHART_STYLES };
+  emit("change", newSettings);
+}
 </script>
 
 <template>
@@ -54,6 +75,128 @@ function toggleChart(key: keyof AnalysisSettings["chart"]) {
           />
           <span class="text-xs text-gray-300 group-hover:text-white transition-colors">{{ label }}</span>
         </label>
+      </div>
+    </div>
+
+    <div class="h-px bg-[#2a2a4a]"></div>
+
+    <!-- 样式配置 -->
+    <div>
+      <div class="flex items-center justify-between mb-1.5">
+        <h3 class="text-[10px] font-bold text-gray-400 uppercase tracking-wider">线条样式</h3>
+        <button @click="resetStyles" class="text-[9px] text-[#9e9e9e] hover:text-white transition-colors">重置</button>
+      </div>
+
+      <!-- 笔样式 -->
+      <div class="space-y-1 bg-[#0f3460] rounded p-2 mb-1.5">
+        <div class="flex items-center justify-between">
+          <span class="text-[10px] text-gray-400">笔</span>
+          <span class="text-[10px] text-gray-500">{{ settings.styles?.bi?.lineWidth ?? 1 }}px</span>
+        </div>
+        <div class="flex items-center gap-2">
+          <input
+            type="color"
+            :value="settings.styles?.bi?.color ?? '#4a90d9'"
+            @input="updateLineStyle('bi', 'color', ($event.target as HTMLInputElement).value)"
+            class="w-5 h-5 rounded cursor-pointer border-0 bg-transparent"
+          />
+          <input
+            type="range" min="1" max="4" step="1"
+            :value="settings.styles?.bi?.lineWidth ?? 1"
+            @input="updateLineStyle('bi', 'lineWidth', Number(($event.target as HTMLInputElement).value))"
+            class="flex-1 h-1 accent-[#4a90d9]"
+          />
+        </div>
+      </div>
+
+      <!-- 线段样式 -->
+      <div class="space-y-1 bg-[#0f3460] rounded p-2 mb-1.5">
+        <div class="flex items-center justify-between">
+          <span class="text-[10px] text-gray-400">线段</span>
+          <span class="text-[10px] text-gray-500">{{ settings.styles?.xd?.lineWidth ?? 3 }}px</span>
+        </div>
+        <div class="flex items-center gap-2">
+          <input
+            type="color"
+            :value="settings.styles?.xd?.color ?? '#b388ff'"
+            @input="updateLineStyle('xd', 'color', ($event.target as HTMLInputElement).value)"
+            class="w-5 h-5 rounded cursor-pointer border-0 bg-transparent"
+          />
+          <input
+            type="range" min="1" max="4" step="1"
+            :value="settings.styles?.xd?.lineWidth ?? 3"
+            @input="updateLineStyle('xd', 'lineWidth', Number(($event.target as HTMLInputElement).value))"
+            class="flex-1 h-1 accent-[#b388ff]"
+          />
+        </div>
+      </div>
+
+      <!-- 笔中枢样式 -->
+      <div class="space-y-1 bg-[#0f3460] rounded p-2 mb-1.5">
+        <div class="flex items-center justify-between">
+          <span class="text-[10px] text-gray-400">笔中枢</span>
+          <span class="text-[10px] text-gray-500">{{ settings.styles?.biZs?.borderWidth ?? 2 }}px</span>
+        </div>
+        <div class="flex items-center gap-2">
+          <div class="flex items-center gap-1">
+            <span class="text-[9px] text-gray-500">边</span>
+            <input
+              type="color"
+              :value="settings.styles?.biZs?.borderColor ?? '#b388ff'"
+              @input="updateZhongShuStyle('biZs', 'borderColor', ($event.target as HTMLInputElement).value)"
+              class="w-4 h-4 rounded cursor-pointer border-0 bg-transparent"
+            />
+          </div>
+          <div class="flex items-center gap-1">
+            <span class="text-[9px] text-gray-500">填</span>
+            <input
+              type="color"
+              :value="settings.styles?.biZs?.fillColor ?? '#b388ff'"
+              @input="updateZhongShuStyle('biZs', 'fillColor', ($event.target as HTMLInputElement).value)"
+              class="w-4 h-4 rounded cursor-pointer border-0 bg-transparent"
+            />
+          </div>
+          <input
+            type="range" min="1" max="4" step="1"
+            :value="settings.styles?.biZs?.borderWidth ?? 2"
+            @input="updateZhongShuStyle('biZs', 'borderWidth', Number(($event.target as HTMLInputElement).value))"
+            class="flex-1 h-1 accent-[#b388ff]"
+          />
+        </div>
+      </div>
+
+      <!-- 线段中枢样式 -->
+      <div class="space-y-1 bg-[#0f3460] rounded p-2">
+        <div class="flex items-center justify-between">
+          <span class="text-[10px] text-gray-400">段中枢</span>
+          <span class="text-[10px] text-gray-500">{{ settings.styles?.xdZs?.borderWidth ?? 2 }}px</span>
+        </div>
+        <div class="flex items-center gap-2">
+          <div class="flex items-center gap-1">
+            <span class="text-[9px] text-gray-500">边</span>
+            <input
+              type="color"
+              :value="settings.styles?.xdZs?.borderColor ?? '#ff9800'"
+              @input="updateZhongShuStyle('xdZs', 'borderColor', ($event.target as HTMLInputElement).value)"
+              class="w-4 h-4 rounded cursor-pointer border-0 bg-transparent"
+            />
+          </div>
+          <div class="flex items-center gap-1">
+            <span class="text-[9px] text-gray-500">填</span>
+            <input
+              type="color"
+              :value="settings.styles?.xdZs?.fillColor ?? '#ff9800'"
+              @input="updateZhongShuStyle('xdZs', 'fillColor', ($event.target as HTMLInputElement).value)"
+              class="w-4 h-4 rounded cursor-pointer border-0 bg-transparent"
+            />
+          </div>
+          <input
+            type="range" min="1" max="4" step="1"
+            :value="settings.styles?.xdZs?.borderWidth ?? 2"
+            @input="updateZhongShuStyle('xdZs', 'borderWidth', Number(($event.target as HTMLInputElement).value))"
+            class="flex-1 h-1 accent-[#ff9800]"
+          />
+        </div>
       </div>
     </div>
 
@@ -152,15 +295,27 @@ function toggleChart(key: keyof AnalysisSettings["chart"]) {
 
     <div class="h-px bg-[#2a2a4a]"></div>
 
-    <!-- 图例说明 -->
+    <!-- 图例说明（动态反映当前样式） -->
     <div>
       <h3 class="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-1.5">图例</h3>
       <div class="space-y-0.5 text-xs text-gray-400">
         <div class="flex items-center gap-2">
-          <span class="w-3 h-0.5 bg-[#4a90d9]"></span> 笔
+          <span class="w-3" :style="{ height: settings.styles?.bi?.lineWidth + 'px', backgroundColor: settings.styles?.bi?.color || '#4a90d9' }"></span> 笔
         </div>
         <div class="flex items-center gap-2">
-          <span class="w-3 h-0.5 bg-[#b388ff]"></span> 线段
+          <span class="w-3" :style="{ height: settings.styles?.xd?.lineWidth + 'px', backgroundColor: settings.styles?.xd?.color || '#b388ff' }"></span> 线段
+        </div>
+        <div class="flex items-center gap-2">
+          <span
+            class="w-3 h-2.5 rounded-sm border"
+            :style="{ borderColor: settings.styles?.biZs?.borderColor || '#b388ff', backgroundColor: settings.styles?.biZs?.fillColor || 'rgba(179,136,255,0.08)' }"
+          ></span> 笔中枢
+        </div>
+        <div class="flex items-center gap-2">
+          <span
+            class="w-3 h-2.5 rounded-sm border"
+            :style="{ borderColor: settings.styles?.xdZs?.borderColor || '#ff9800', backgroundColor: settings.styles?.xdZs?.fillColor || 'rgba(255,152,0,0.08)' }"
+          ></span> 段中枢
         </div>
         <div class="flex items-center gap-2">
           <span class="text-[#00e676]">●</span> 买点

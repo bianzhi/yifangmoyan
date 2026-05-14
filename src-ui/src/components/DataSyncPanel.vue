@@ -787,7 +787,7 @@ onMounted(async () => {
 
         <!-- ──── 一键同步 ──── -->
         <div class="bg-[#16213e] rounded-2xl p-5">
-          <div class="flex items-center justify-between mb-4">
+          <div class="flex items-center justify-between mb-2">
             <div>
               <div class="text-base font-bold text-white">同步 K 线数据</div>
               <div class="text-[11px] text-[#9e9e9e] mt-0.5">
@@ -797,31 +797,42 @@ onMounted(async () => {
                 <span class="text-[#666]">（{{ selectedBoardCount() }} 只）</span>
               </div>
             </div>
-            <button @click="showAdvanced = !showAdvanced"
-              class="p-2 rounded-lg text-[#666] hover:text-white hover:bg-[#0f3460]/50 transition"
-              :class="showAdvanced ? 'text-white bg-[#0f3460]/50' : ''">
-              <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                <path stroke-linecap="round" stroke-linejoin="round" d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4"/>
-              </svg>
-            </button>
+            <div class="flex items-center gap-1">
+              <button @click="showClearConfirm = true"
+                class="p-2 rounded-lg text-[#e94560]/60 hover:text-[#e94560] hover:bg-[#e94560]/10 transition"
+                title="清空数据">
+                <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+                </svg>
+              </button>
+              <button @click="showAdvanced = !showAdvanced"
+                class="p-2 rounded-lg text-[#666] hover:text-white hover:bg-[#0f3460]/50 transition"
+                :class="showAdvanced ? 'text-white bg-[#0f3460]/50' : ''"
+                title="高级设置">
+                <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/>
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
+                </svg>
+              </button>
+            </div>
           </div>
 
-          <!-- 高级设置 -->
-          <div v-if="showAdvanced" class="mb-4 space-y-3 pb-4 border-b border-[#2a2a4a]/50">
-            <!-- 级别 -->
-            <div>
-              <div class="text-[10px] text-[#9e9e9e] mb-1.5 uppercase tracking-wider">级别</div>
-              <div class="flex flex-wrap gap-1">
-                <button v-for="lv in LEVELS" :key="lv.key" @click="toggleLevel(lv.key)"
-                  class="px-2.5 py-1 text-[10px] rounded-md transition-all"
-                  :class="selectedLevels.includes(lv.key)
-                    ? 'bg-[#e94560]/20 text-[#e94560] ring-1 ring-[#e94560]/40'
-                    : 'bg-[#0f3460]/50 text-[#555] hover:text-[#888]'">
-                  {{ lv.label }}
-                </button>
-              </div>
+          <!-- 级别选择 — 始终显示 -->
+          <div class="mb-3">
+            <div class="text-[10px] text-[#9e9e9e] mb-1.5">同步级别</div>
+            <div class="flex flex-wrap gap-1">
+              <button v-for="lv in LEVELS" :key="lv.key" @click="toggleLevel(lv.key)"
+                class="px-2.5 py-1 text-[10px] rounded-md transition-all"
+                :class="selectedLevels.includes(lv.key)
+                  ? 'bg-[#e94560]/20 text-[#e94560] ring-1 ring-[#e94560]/40'
+                  : 'bg-[#0f3460]/50 text-[#555] hover:text-[#888]'">
+                {{ lv.label }}
+              </button>
             </div>
+          </div>
 
+          <!-- 高级设置（折叠） -->
+          <div v-if="showAdvanced" class="mb-4 space-y-3 pb-4 border-b border-[#2a2a4a]/50">
             <!-- 板块 -->
             <div>
               <div class="text-[10px] text-[#9e9e9e] mb-1.5 uppercase tracking-wider">范围</div>
@@ -867,6 +878,21 @@ onMounted(async () => {
               hover:brightness-110 active:scale-[0.98] shadow-lg shadow-[#e94560]/20">
             开始同步
           </button>
+
+          <!-- 清空确认（全局） -->
+          <div v-if="showClearConfirm" class="mt-3 bg-[#e94560]/5 border border-[#e94560]/20 rounded-lg p-3">
+            <div class="text-[11px] text-[#e94560] font-bold mb-2">⚠ 确定要清空所有数据吗？此操作不可恢复！</div>
+            <div class="flex gap-2">
+              <button @click="doClearAllData" :disabled="clearingData"
+                class="flex-1 py-1.5 text-[11px] rounded-lg bg-[#e94560] text-white font-bold hover:brightness-110 transition disabled:opacity-50">
+                {{ clearingData ? '清空中...' : '确定清空' }}
+              </button>
+              <button @click="showClearConfirm = false"
+                class="flex-1 py-1.5 text-[11px] rounded-lg bg-[#0f3460] text-[#9e9e9e] hover:text-white transition">
+                取消
+              </button>
+            </div>
+          </div>
         </div>
 
         <!-- ──── 底部标签页 ──── -->

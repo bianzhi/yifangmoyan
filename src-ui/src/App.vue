@@ -227,7 +227,8 @@ function renderChart() {
   const containerWidth = chartContainer.value.clientWidth;
   const containerHeight = chartContainer.value.clientHeight;
   if (containerWidth === 0 || containerHeight === 0) {
-    requestAnimationFrame(() => renderChart());
+    // 容器可能被 display:none 隐藏（v-show），延迟重试
+    setTimeout(() => renderChart(), 100);
     return;
   }
 
@@ -1134,6 +1135,27 @@ onMounted(async () => {
 
 // 监听 timeframe 变化
 watch(timeframe, () => loadData());
+
+// 监听视图切换回图表时，重新渲染
+watch(currentView, (val) => {
+  if (val === "chart" && chartData.value) {
+    // 视图切换回来时，chartContainer 可能刚从 display:none 恢复，需要延迟重绘
+    nextTick(() => {
+      requestAnimationFrame(() => {
+        if (mainChart && chartContainer.value) {
+          // 图表已存在，只需调整尺寸
+          mainChart.applyOptions({
+            width: chartContainer.value.clientWidth,
+            height: chartContainer.value.clientHeight,
+          });
+        } else {
+          // 图表不存在，重新创建
+          renderChart();
+        }
+      });
+    });
+  }
+});
 </script>
 
 <template>
@@ -1239,7 +1261,7 @@ watch(timeframe, () => loadData());
     </template>
 
     <!-- K 线图视图 -->
-    <template v-else>
+    <div v-show="currentView === 'chart'" class="flex-1 flex flex-col min-h-0">
       <!-- 工具栏 -->
       <ChartToolbar
         :timeframe="timeframe"
@@ -1362,6 +1384,6 @@ watch(timeframe, () => loadData());
           />
         </div>
       </main>
-    </template>
+    </div>
   </div>
 </template>

@@ -216,6 +216,7 @@ pub fn remove_include(klines: &[KLine]) -> Vec<NewBar> {
     bars_ubi
 }
 
+
 #[cfg(test)]
 mod tests {
     use super::*;

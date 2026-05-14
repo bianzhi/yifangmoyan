@@ -1,35 +1,30 @@
 //! 线段分析
 //!
-//! **对齐缠论原始定义的特征序列法**
+//! **严格遵照缠论理论的线段定义，采用一维特征值方法**
 //!
-//! 缠论线段定义（原文）：
-//! - 线段由至少3笔组成
-//! - 线段的破坏必须由特征序列的分型来确认
-//! - 特征序列方法：
-//!   1. 将笔序列中所有**同向笔**提取出来形成特征序列
-//!      （上升线段看所有上升笔，下降线段看所有下降笔）
-//!   2. 对特征序列做去包含处理（与K线去包含逻辑相同）
-//!   3. 在去包含后的特征序列上找分型
-//!   4. 分型确认 = 线段端点
+//! 缠论原文（课程71-78、88）关于线段的定义：
 //!
-//! 但是这个方法需要在线段构建过程中动态决定"同向"，
-//! Python czsc 的实践方法是：将笔映射为虚拟K线，然后用同样的增量CZSC逻辑。
+//! 1. 线段由至少3笔组成
+//! 2. 线段的破坏以特征序列的分型为判定依据
 //!
-//! **核心问题与解决方案**：
-//! 问题：直接映射的虚拟K线，相邻笔共享端点（上笔终点=下笔起点），
-//! 导致 k1.high == k2.high，无法形成严格分型。
-//! 解决：对虚拟K线去包含后如果无法找分型，则需要调整分型检测条件，
-//! 允许 high/low 相等时仍能识别分型。
+//! **关键洞察**：相邻的笔共享端点（bi_n.end_price == bi_{n+1}.start_price），
+//! 这使得将笔直接映射为2D虚拟K线（high/low）的方法无法正常工作，
+//! 因为去包含会过度合并。
 //!
-//! 本实现采用 Python czsc 的对齐方法：
-//! 1. 将笔映射为虚拟K线（与 bi.rs 中 K线→NewBar 完全对齐）
-//! 2. 对虚拟K线做去包含
-//! 3. 在去包含后的序列上找分型（放宽条件：允许边缘值相等）
-//! 4. 按照与笔完全相同的增量逻辑构建线段
-//! 5. 后处理：线段被破坏时回退
+//! **正确方法**：使用一维特征值方法
+//! 1. 每根笔有一个"特征值" = end_price（终点价格）
+//!    - 上升笔：end_price = 高点
+//!    - 下降笔：end_price = 低点
+//! 2. 在特征值序列上做1D分型检测（局部极值识别）
+//! 3. 检测到的分型就是线段的转折点
+//! 4. 从分型序列中构建线段
+//!
+//! 这种方法的合理性：
+//! - 缠论原文说"特征序列的顶分型就是线段的终点"
+//! - 特征序列的本质是笔端点的1D序列
+//! - 由于笔交替（up, down, up...），特征值自然交替（高点、低点、高点...）
+//! - 局部极值就是特征序列中的分型转折点
 
-use crate::fenxing::{FxMark, check_fxs};
-use crate::include::NewBar;
 use yifang_data::{Bi, XianDuan};
 
 /// 默认最小线段长度（笔数），对齐缠论定义：至少3笔
@@ -47,176 +42,98 @@ pub fn build_xd_with_min_len(bis: &[Bi], min_xd_len: Option<usize>) -> Vec<XianD
         return Vec::new();
     }
 
-    // Step 1: 将笔映射为虚拟K线序列
-    let virtual_bars: Vec<NewBar> = bis.iter().enumerate().map(|(i, bi)| {
-        let high = bi.start_price.max(bi.end_price);
-        let low = bi.start_price.min(bi.end_price);
-        let open = if bi.direction == "up" { low } else { high };
-        let close = if bi.direction == "up" { high } else { low };
-        NewBar {
-            id: i as u64,
-            dt: bi.start_dt.clone(),
-            open,
-            close,
-            high,
-            low,
-            vol: 1.0,
-            amount: (high - low).max(0.01),
-            elements: vec![i],
+    // Step 1: 提取特征值序列
+    // 每根笔的特征值 = end_price
+    // 同时记录 start_price 用于计算线段的价格范围
+    let feature_values: Vec<FeatureValue> = bis.iter().enumerate().map(|(i, bi)| {
+        FeatureValue {
+            bi_index: i,
+            value: bi.end_price,
         }
     }).collect();
 
-    // Step 2: 模拟 Python CZSC 增量过程
-    let mut xd_list: Vec<XdEx> = Vec::new();
-    let mut bars_ubi: Vec<NewBar> = Vec::new();
-
-    for (i, vbar) in virtual_bars.iter().enumerate() {
-        update_bars_ubi(&mut bars_ubi, vbar, i);
-        __update_xd(&mut xd_list, &mut bars_ubi, min_len, bis);
+    // Step 2: 在特征值序列上检测1D分型（局部极值）
+    let fxs = detect_1d_fenxing(&feature_values);
+    if fxs.len() < 2 {
+        return Vec::new();
     }
 
-    xd_list.into_iter().map(|xex| xex.xd).collect()
-}
-
-/// 内部用的扩展线段结构
-struct XdEx {
-    xd: XianDuan,
-    bars: Vec<NewBar>,
-}
-
-/// 将虚拟K线加入 bars_ubi（去包含处理）
-fn update_bars_ubi(bars_ubi: &mut Vec<NewBar>, vbar: &NewBar, _idx: usize) {
-    if bars_ubi.len() < 2 {
-        bars_ubi.push(vbar.clone());
-        return;
+    // Step 3: 确保分型顶底交替（去掉连续同类型的分型）
+    let alt_fxs = ensure_1d_alternating(fxs);
+    if alt_fxs.len() < 2 {
+        return Vec::new();
     }
 
-    let k1_high = bars_ubi[bars_ubi.len() - 2].high;
-    let k2_high = bars_ubi[bars_ubi.len() - 1].high;
-    let k2_low = bars_ubi[bars_ubi.len() - 1].low;
-    let k2_id = bars_ubi[bars_ubi.len() - 1].id;
-    let k2_dt = bars_ubi[bars_ubi.len() - 1].dt.clone();
-    let k2_vol = bars_ubi[bars_ubi.len() - 1].vol;
-    let k2_amount = bars_ubi[bars_ubi.len() - 1].amount;
-    let k2_elements = bars_ubi[bars_ubi.len() - 1].elements.clone();
-
-    let k3_high = vbar.high;
-    let k3_low = vbar.low;
-
-    let has_include = (k2_high <= k3_high && k2_low >= k3_low)
-        || (k2_high >= k3_high && k2_low <= k3_low);
-
-    if has_include {
-        if k1_high < k2_high {
-            let high = k2_high.max(k3_high);
-            let low = k2_low.max(k3_low);
-            let dt = if k2_high > k3_high { k2_dt } else { vbar.dt.clone() };
-            let (open_, close) = if vbar.open > vbar.close { (high, low) } else { (low, high) };
-            let vol = k2_vol + vbar.vol;
-            let amount = k2_amount + vbar.amount;
-            let mut elements = k2_elements;
-            elements.push(vbar.id as usize);
-            if elements.len() > 100 { elements.drain(..elements.len() - 100); }
-
-            let last = bars_ubi.last_mut().unwrap();
-            *last = NewBar { id: k2_id, dt, open: open_, close, high, low, vol, amount, elements };
-        } else if k1_high > k2_high {
-            let high = k2_high.min(k3_high);
-            let low = k2_low.min(k3_low);
-            let dt = if k2_low < k3_low { k2_dt } else { vbar.dt.clone() };
-            let (open_, close) = if vbar.open > vbar.close { (high, low) } else { (low, high) };
-            let vol = k2_vol + vbar.vol;
-            let amount = k2_amount + vbar.amount;
-            let mut elements = k2_elements;
-            elements.push(vbar.id as usize);
-            if elements.len() > 100 { elements.drain(..elements.len() - 100); }
-
-            let last = bars_ubi.last_mut().unwrap();
-            *last = NewBar { id: k2_id, dt, open: open_, close, high, low, vol, amount, elements };
-        } else {
-            bars_ubi.push(vbar.clone());
-        }
-    } else {
-        bars_ubi.push(vbar.clone());
-    }
+    // Step 4: 从分型序列构建线段
+    build_xd_from_fenxing(&alt_fxs, bis, min_len)
 }
 
-/// 对虚拟K线序列找分型（放宽条件版）
+/// 特征值
+#[derive(Debug, Clone)]
+struct FeatureValue {
+    /// 对应原始笔的索引
+    bi_index: usize,
+    /// 特征值 = end_price
+    value: f64,
+}
+
+/// 1D分型
+#[derive(Debug, Clone)]
+struct FenXing1D {
+    /// 分型类型
+    mark: FxMark1D,
+    /// 分型值
+    value: f64,
+    /// 对应的笔索引
+    bi_index: usize,
+}
+
+/// 分型类型
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FxMark1D {
+    /// 顶分型（局部极大值）
+    Top,
+    /// 底分型（局部极小值）
+    Bottom,
+}
+
+/// 在特征值序列上检测1D分型
 ///
-/// 与普通分型检测的区别：
-/// - 普通分型要求 k1.high < k2.high > k3.high AND k1.low < k2.low > k3.low
-/// - 虚拟K线因为相邻笔共享端点，经常出现 k1.high == k2.high
-/// - 放宽条件：对虚拟K线只需满足以下任一：
-///   - 标准（严格）分型
-///   - 宽松顶分型：k2.fx > k1.fx && k2.fx > k3.fx（fx=high），且 k2.low > k1.low 和 k2.low > k3.low 至少一个成立
-///   - 宽松底分型：k2.fx < k1.fx && k2.fx < k3.fx（fx=low），且 k2.high < k1.high 和 k2.high < k3.high 至少一个成立
-fn check_fxs_relaxed(bars: &[NewBar]) -> Vec<FxResultRelaxed> {
-    if bars.len() < 3 {
+/// 简单的局部极值检测：
+/// - 顶分型：value[i] > value[i-1] 且 value[i] > value[i+1]
+/// - 底分型：value[i] < value[i-1] 且 value[i] < value[i+1]
+fn detect_1d_fenxing(fvs: &[FeatureValue]) -> Vec<FenXing1D> {
+    if fvs.len() < 3 {
         return Vec::new();
     }
 
     let mut fxs = Vec::new();
+    for i in 1..fvs.len() - 1 {
+        let prev = fvs[i - 1].value;
+        let cur = fvs[i].value;
+        let next = fvs[i + 1].value;
 
-    for i in 1..bars.len() - 1 {
-        let k1 = &bars[i - 1];
-        let k2 = &bars[i];
-        let k3 = &bars[i + 1];
-
-        // 顶分型：k2 的分型值(high)严格高于两侧
-        // 条件1：k2.high > k1.high || (k2.high == k1.high && k2.low > k1.low)  — 左侧不是更高的
-        // 条件2：k2.high > k3.high || (k2.high == k3.high && k2.low > k3.low)  — 右侧不是更高的
-        // 条件3：至少一侧 high 严格大于
-        let left_top = k2.high > k1.high || (k2.high == k1.high && k2.low > k1.low);
-        let right_top = k2.high > k3.high || (k2.high == k3.high && k2.low > k3.low);
-        if left_top && right_top && (k2.high > k1.high || k2.high > k3.high) {
-            fxs.push(FxResultRelaxed {
-                mark: FxMark::Top,
-                bar_index: i,
-                merged_index: k2.id as usize,
-                dt: k2.dt.clone(),
-                high: k2.high,
-                low: k2.low,
-                fx: k2.high,
-                bars: [i - 1, i, i + 1],
+        if cur > prev && cur > next {
+            fxs.push(FenXing1D {
+                mark: FxMark1D::Top,
+                value: cur,
+                bi_index: fvs[i].bi_index,
             });
-            continue;
-        }
-
-        // 底分型：k2 的分型值(low)严格低于两侧
-        let left_bottom = k2.low < k1.low || (k2.low == k1.low && k2.high < k1.high);
-        let right_bottom = k2.low < k3.low || (k2.low == k3.low && k2.high < k3.high);
-        if left_bottom && right_bottom && (k2.low < k1.low || k2.low < k3.low) {
-            fxs.push(FxResultRelaxed {
-                mark: FxMark::Bottom,
-                bar_index: i,
-                merged_index: k2.id as usize,
-                dt: k2.dt.clone(),
-                high: k2.high,
-                low: k2.low,
-                fx: k2.low,
-                bars: [i - 1, i, i + 1],
+        } else if cur < prev && cur < next {
+            fxs.push(FenXing1D {
+                mark: FxMark1D::Bottom,
+                value: cur,
+                bi_index: fvs[i].bi_index,
             });
         }
     }
-
-    ensure_alternating_relaxed(fxs)
+    fxs
 }
 
-/// 放宽版分型结果
-#[derive(Debug, Clone)]
-struct FxResultRelaxed {
-    mark: FxMark,
-    bar_index: usize,
-    merged_index: usize,
-    dt: String,
-    high: f64,
-    low: f64,
-    fx: f64,
-    bars: [usize; 3],
-}
-
-/// 确保分型序列顶底交替
-fn ensure_alternating_relaxed(fxs: Vec<FxResultRelaxed>) -> Vec<FxResultRelaxed> {
+/// 确保1D分型序列顶底交替
+///
+/// 如果出现连续同类型分型，保留更极端的那个
+fn ensure_1d_alternating(fxs: Vec<FenXing1D>) -> Vec<FenXing1D> {
     if fxs.is_empty() {
         return Vec::new();
     }
@@ -229,23 +146,31 @@ fn ensure_alternating_relaxed(fxs: Vec<FxResultRelaxed>) -> Vec<FxResultRelaxed>
         if fx.mark == last.mark {
             // 同类型：保留更极端的
             let should_replace = match fx.mark {
-                FxMark::Top => fx.fx > last.fx,
-                FxMark::Bottom => fx.fx < last.fx,
+                FxMark1D::Top => fx.value > last.value,
+                FxMark1D::Bottom => fx.value < last.value,
             };
-
             if should_replace {
                 let last = result.last_mut().unwrap();
                 *last = fx.clone();
             }
         } else {
-            // 不同类型：顶的 fx 必须高于底的 fx
+            // 不同类型：顶的 fx 值必须高于底的 fx 值
             let valid = match fx.mark {
-                FxMark::Top => fx.fx > last.fx,
-                FxMark::Bottom => fx.fx < last.fx,
+                FxMark1D::Top => fx.value > last.value,
+                FxMark1D::Bottom => fx.value < last.value,
             };
-
             if valid {
                 result.push(fx.clone());
+            } else {
+                // 不满足约束：保留更极端的
+                let should_replace = match fx.mark {
+                    FxMark1D::Top => fx.value > last.value,
+                    FxMark1D::Bottom => fx.value < last.value,
+                };
+                if should_replace {
+                    let last = result.last_mut().unwrap();
+                    *last = fx.clone();
+                }
             }
         }
     }
@@ -253,224 +178,196 @@ fn ensure_alternating_relaxed(fxs: Vec<FxResultRelaxed>) -> Vec<FxResultRelaxed>
     result
 }
 
-/// 在无包含虚拟K线序列中查找一条线段
-fn check_xd(bars: &[NewBar], min_xd_len: usize) -> Option<(XianDuan, Vec<NewBar>)> {
-    let fxs = check_fxs_relaxed(bars);
+/// 从分型序列构建线段
+///
+/// 将分型序列中相邻的顶底分型配对，形成线段：
+/// - 底→顶：上升线段
+/// - 顶→底：下降线段
+///
+/// 对齐 Python CZSC.__update_bi 的增量逻辑：
+/// - 从分型序列的第一个分型开始
+/// - 找最极端的反向分型作为 fx_b（与 check_bi 对齐）
+/// - 后续线段：从上一条线段的终点继续找
+fn build_xd_from_fenxing(fxs: &[FenXing1D], bis: &[Bi], min_len: usize) -> Vec<XianDuan> {
+    let mut xd_list: Vec<XianDuan> = Vec::new();
+
     if fxs.len() < 2 {
-        return None;
+        return Vec::new();
     }
 
-    let fx_a = &fxs[0];
-    let direction: String;
-    let fx_b_idx: usize;
+    // 找第一条线段：从第一个分型开始
+    // 与 Python CZSC.__update_bi 不同的是，增量过程从第一个出现
+    // 的分型开始找笔。但我们的1D分型已经是局部极值，
+    // 所以直接从第一个分型出发。
+    //
+    // 对齐 Python CZSC 的做法：先找同方向最极端的分型作为 fx_a，
+    // 然后找最极端的反向分型作为 fx_b。
+    //
+    // 但"最极端的 fx_a"只应该在已经找到的同方向分型中选择，
+    // 即所有相同类型中 price 最极端的那个，这与 Python __update_bi 
+    // 中找"第一笔"的逻辑一致。
+    let first_mark = fxs[0].mark;
+    let mut fx_a_idx = 0;
+    let mut fx_a_value = fxs[0].value;
 
-    if fx_a.mark == FxMark::Bottom {
-        let mut best_idx: Option<usize> = None;
-        let mut best_high: f64 = f64::NEG_INFINITY;
-        for (i, fx) in fxs.iter().enumerate() {
-            if fx.mark == FxMark::Top && fx.dt > fx_a.dt && fx.fx > fx_a.fx && fx.high > best_high {
-                best_high = fx.high;
-                best_idx = Some(i);
-            }
+    for (i, fx) in fxs.iter().enumerate() {
+        if fx.mark != first_mark {
+            continue;
         }
-        match best_idx {
-            Some(idx) => { direction = "up".to_string(); fx_b_idx = idx; }
-            None => return None,
+        let is_better = match fx.mark {
+            FxMark1D::Top => fx.value >= fx_a_value,
+            FxMark1D::Bottom => fx.value <= fx_a_value,
+        };
+        if is_better {
+            fx_a_value = fx.value;
+            fx_a_idx = i;
         }
-    } else {
-        let mut best_idx: Option<usize> = None;
-        let mut best_low: f64 = f64::INFINITY;
-        for (i, fx) in fxs.iter().enumerate() {
-            if fx.mark == FxMark::Bottom && fx.dt > fx_a.dt && fx.fx < fx_a.fx && fx.low < best_low {
-                best_low = fx.low;
-                best_idx = Some(i);
-            }
-        }
-        match best_idx {
-            Some(idx) => { direction = "down".to_string(); fx_b_idx = idx; }
-            None => return None,
-        }
-    };
+    }
 
-    let fx_b = &fxs[fx_b_idx];
+    // 从 fx_a 出发，找最极端的反向分型作为 fx_b
+    if let Some(fx_b_idx) = find_xd_endpoint(fxs, fx_a_idx, min_len, bis) {
+        let fx_a = &fxs[fx_a_idx];
+        let fx_b = &fxs[fx_b_idx];
 
-    let fx_a_first_bar_dt = bars.get(fx_a.bars[0]).map(|b| b.dt.as_str()).unwrap_or(fx_a.dt.as_str());
-    let fx_b_last_bar_dt = bars.get(fx_b.bars[2]).map(|b| b.dt.as_str()).unwrap_or(fx_b.dt.as_str());
-    let bars_a_count = bars.iter()
-        .filter(|b| b.dt.as_str() >= fx_a_first_bar_dt && b.dt.as_str() <= fx_b_last_bar_dt)
-        .count();
+        let direction = if fx_a.mark == FxMark1D::Bottom {
+            "up".to_string()
+        } else {
+            "down".to_string()
+        };
 
-    let fx_b_first_bar_dt = bars.get(fx_b.bars[0]).map(|b| b.dt.as_str()).unwrap_or(&fx_b.dt);
-    let bars_b: Vec<NewBar> = bars.iter()
-        .filter(|b| b.dt.as_str() >= fx_b_first_bar_dt)
-        .cloned()
-        .collect();
+        let start_bi = fx_a.bi_index;
+        let end_bi = fx_b.bi_index;
 
-    let ab_include = (fx_a.high > fx_b.high && fx_a.low < fx_b.low)
-        || (fx_a.high < fx_b.high && fx_a.low > fx_b.low);
-
-    if !ab_include && bars_a_count >= min_xd_len {
         let xd = XianDuan {
             direction,
-            start_index: fx_a.merged_index as u64,
-            end_index: fx_b.merged_index as u64,
-            start_dt: fx_a.dt.clone(),
-            end_dt: fx_b.dt.clone(),
-            start_price: fx_a.fx,
-            end_price: fx_b.fx,
+            start_index: start_bi as u64,
+            end_index: end_bi as u64,
+            start_dt: bis[start_bi].end_dt.clone(),
+            end_dt: bis[end_bi].end_dt.clone(),
+            start_price: fx_a.value,
+            end_price: fx_b.value,
             is_finished: true,
         };
-        Some((xd, bars_b))
-    } else {
-        None
-    }
-}
 
-/// 更新线段（增量逻辑）
-fn __update_xd(
-    xd_list: &mut Vec<XdEx>,
-    bars_ubi: &mut Vec<NewBar>,
-    min_xd_len: usize,
-    bis: &[Bi],
-) {
-    if bars_ubi.len() < 3 {
-        return;
-    }
+        xd_list.push(xd);
 
-    if xd_list.is_empty() {
-        let fxs = check_fxs_relaxed(bars_ubi);
-        if fxs.is_empty() {
-            return;
-        }
+        // 增量构建后续线段
+        let mut i = fx_b_idx;
+        while i + 1 < fxs.len() {
+            let fx_a_ref = &fxs[i];
+            let fx_b = find_xd_endpoint(fxs, i, min_len, bis);
 
-        let mut fx_a = fxs[0].clone();
-        for fx in &fxs {
-            if fx.mark != fx_a.mark { continue; }
-            let should_replace = match fx.mark {
-                FxMark::Bottom => fx.low <= fx_a.low,
-                FxMark::Top => fx.high >= fx_a.high,
-            };
-            if should_replace {
-                fx_a = fx.clone();
-            }
-        }
+            match fx_b {
+                Some(j) => {
+                    let fx_b_ref = &fxs[j];
 
-        let start_dt = bars_ubi
-            .get(fx_a.bars[0])
-            .map(|b| b.dt.as_str())
-            .unwrap_or(fx_a.dt.as_str())
-            .to_string();
+                    let direction = if fx_a_ref.mark == FxMark1D::Bottom {
+                        "up".to_string()
+                    } else {
+                        "down".to_string()
+                    };
 
-        let trimmed: Vec<NewBar> = bars_ubi.iter()
-            .filter(|b| b.dt.as_str() >= start_dt.as_str())
-            .cloned()
-            .collect();
+                    let start_bi = fx_a_ref.bi_index;
+                    let end_bi = fx_b_ref.bi_index;
 
-        if let Some((xd, bars_b)) = check_xd(&trimmed, min_xd_len) {
-            let fxs_in_trimmed = check_fxs_relaxed(&trimmed);
-            let fx_a_t = fxs_in_trimmed.iter().find(|fx| fx.dt == xd.start_dt);
-            let fx_b_t = fxs_in_trimmed.iter().find(|fx| fx.dt == xd.end_dt);
+                    let xd = XianDuan {
+                        direction,
+                        start_index: start_bi as u64,
+                        end_index: end_bi as u64,
+                        start_dt: bis[start_bi].end_dt.clone(),
+                        end_dt: bis[end_bi].end_dt.clone(),
+                        start_price: fx_a_ref.value,
+                        end_price: fx_b_ref.value,
+                        is_finished: true,
+                    };
 
-            let a_start = fx_a_t.and_then(|fx| trimmed.get(fx.bars[0])).map(|b| b.dt.as_str()).unwrap_or(xd.start_dt.as_str());
-            let a_end = fx_b_t.and_then(|fx| trimmed.get(fx.bars[2])).map(|b| b.dt.as_str()).unwrap_or(xd.end_dt.as_str());
-
-            let bars_a: Vec<NewBar> = trimmed.iter()
-                .filter(|b| b.dt.as_str() >= a_start && b.dt.as_str() <= a_end)
-                .cloned()
-                .collect();
-
-            let xd = map_xd_to_bi_indices(xd, bis);
-            xd_list.push(XdEx { xd, bars: bars_a });
-            *bars_ubi = bars_b;
-        }
-        return;
-    }
-
-    let check_result = check_xd(bars_ubi, min_xd_len);
-    match check_result {
-        Some((xd, bars_b)) => {
-            let fxs_for_bars = check_fxs_relaxed(bars_ubi);
-            let fx_a_f = fxs_for_bars.iter().find(|fx| fx.dt == xd.start_dt);
-            let fx_b_f = fxs_for_bars.iter().find(|fx| fx.dt == xd.end_dt);
-
-            let a_start = fx_a_f.and_then(|fx| bars_ubi.get(fx.bars[0])).map(|b| b.dt.as_str()).unwrap_or(xd.start_dt.as_str());
-            let a_end = fx_b_f.and_then(|fx| bars_ubi.get(fx.bars[2])).map(|b| b.dt.as_str()).unwrap_or(xd.end_dt.as_str());
-
-            let bars_a: Vec<NewBar> = bars_ubi.iter()
-                .filter(|b| b.dt.as_str() >= a_start && b.dt.as_str() <= a_end)
-                .cloned()
-                .collect();
-
-            let xd = map_xd_to_bi_indices(xd, bis);
-            xd_list.push(XdEx { xd, bars: bars_a });
-            *bars_ubi = bars_b;
-        }
-        None => {}
-    }
-
-    // 后处理：线段被破坏时回退
-    if !xd_list.is_empty() && bars_ubi.len() >= 2 {
-        let last_xd = &xd_list[xd_list.len() - 1];
-        let last_ubi = &bars_ubi[bars_ubi.len() - 1];
-
-        let is_broken = (last_xd.xd.direction == "up" && last_ubi.high > last_xd.xd.end_price)
-            || (last_xd.xd.direction == "down" && last_ubi.low < last_xd.xd.end_price);
-
-        if is_broken {
-            let broken_xex = xd_list.pop().unwrap();
-            let broken_bars = &broken_xex.bars;
-            if broken_bars.len() >= 2 {
-                let rollback_dt = broken_bars[broken_bars.len() - 2].dt.clone();
-                let mut new_bars_ubi: Vec<NewBar> = broken_bars.iter()
-                    .take(broken_bars.len() - 2)
-                    .cloned()
-                    .collect();
-                let remaining: Vec<NewBar> = bars_ubi.iter()
-                    .filter(|b| b.dt >= rollback_dt)
-                    .cloned()
-                    .collect();
-                let last_dt = new_bars_ubi.last().map(|b| b.dt.clone()).unwrap_or_default();
-                for b in &remaining {
-                    if b.dt > last_dt { new_bars_ubi.push(b.clone()); }
+                    xd_list.push(xd);
+                    i = j;
                 }
-                *bars_ubi = new_bars_ubi;
-            } else {
-                let rollback_dt = broken_xex.xd.start_dt.clone();
-                *bars_ubi = bars_ubi.iter()
-                    .filter(|b| b.dt >= rollback_dt)
-                    .cloned()
-                    .collect();
+                None => break,
             }
+            i += 1;
         }
     }
+
+    xd_list
 }
 
-/// 将 XianDuan 的索引从虚拟K线索引映射回原始笔序列索引
-fn map_xd_to_bi_indices(xd: XianDuan, bis: &[Bi]) -> XianDuan {
-    let start_bi_idx = xd.start_index as usize;
-    let end_bi_idx = xd.end_index as usize;
+/// 找到线段的终点分型
+///
+/// 对齐 Python check_bi 逻辑：
+/// - 从 fx_a 出发，找方向相反且满足条件的分型
+/// - 上升线段：找最高顶分型（fx > fx_a.fx）
+/// - 下降线段：找最低底分型（fx < fx_a.fx）
+/// - 保证线段包含至少 min_len 根笔
+///
+/// bi_count 计算：对齐 Python check_bi 中 bars_a_count 的计算方式
+/// fx_a 的"元素"范围是 [fx_a.bi_index-1, fx_a.bi_index+1]
+/// fx_b 的"元素"范围是 [fx_b.bi_index-1, fx_b.bi_index+1]
+/// bars_a 从 fx_a 第一个元素到 fx_b 最后一个元素
+fn find_xd_endpoint(fxs: &[FenXing1D], start_idx: usize, min_len: usize, bis: &[Bi]) -> Option<usize> {
+    let fx_a = &fxs[start_idx];
 
-    let (start_index, start_dt, start_price) = if let Some(bi) = bis.get(start_bi_idx) {
-        (bi.start_index, bi.start_dt.clone(), bi.start_price)
-    } else {
-        (xd.start_index, xd.start_dt.clone(), xd.start_price)
-    };
+    match fx_a.mark {
+        FxMark1D::Bottom => {
+            // 找上升线段的终点：最高顶分型
+            let mut best_idx: Option<usize> = None;
+            let mut best_high = f64::NEG_INFINITY;
 
-    let (end_index, end_dt, end_price) = if let Some(bi) = bis.get(end_bi_idx) {
-        (bi.end_index, bi.end_dt.clone(), bi.end_price)
-    } else {
-        (xd.end_index, xd.end_dt.clone(), xd.end_price)
-    };
+            for j in (start_idx + 1)..fxs.len() {
+                let fx_b = &fxs[j];
+                if fx_b.mark != FxMark1D::Top {
+                    continue;
+                }
+                // fx_b.value 必须高于 fx_a.value（上升线段）
+                if fx_b.value <= fx_a.value {
+                    continue;
+                }
+                // 检查线段长度：对齐 Python bars_a_count
+                // Python: bars_a = [x for x in bars if fx_a.elements[0].dt <= x.dt <= fx_b.elements[2].dt]
+                // 1D fenxing 的 elements: fx_a 的范围是 [bi_index-1, bi_index+1]
+                //                       fx_b 的范围是 [bi_index-1, bi_index+1]
+                let a_start = fx_a.bi_index.saturating_sub(1);
+                let b_end = (fx_b.bi_index + 1).min(bis.len() - 1);
+                let bi_count = b_end.saturating_sub(a_start) + 1;
+                if bi_count < min_len {
+                    continue;
+                }
+                if fx_b.value > best_high {
+                    best_high = fx_b.value;
+                    best_idx = Some(j);
+                }
+            }
+            best_idx
+        }
+        FxMark1D::Top => {
+            // 找下降线段的终点：最低底分型
+            let mut best_idx: Option<usize> = None;
+            let mut best_low = f64::INFINITY;
 
-    XianDuan {
-        direction: xd.direction,
-        start_index,
-        end_index,
-        start_dt,
-        end_dt,
-        start_price,
-        end_price,
-        is_finished: xd.is_finished,
+            for j in (start_idx + 1)..fxs.len() {
+                let fx_b = &fxs[j];
+                if fx_b.mark != FxMark1D::Bottom {
+                    continue;
+                }
+                // fx_b.value 必须低于 fx_a.value（下降线段）
+                if fx_b.value >= fx_a.value {
+                    continue;
+                }
+                // 检查线段长度
+                let a_start = fx_a.bi_index.saturating_sub(1);
+                let b_end = (fx_b.bi_index + 1).min(bis.len() - 1);
+                let bi_count = b_end.saturating_sub(a_start) + 1;
+                if bi_count < min_len {
+                    continue;
+                }
+                if fx_b.value < best_low {
+                    best_low = fx_b.value;
+                    best_idx = Some(j);
+                }
+            }
+            best_idx
+        }
     }
 }
 
@@ -492,157 +389,114 @@ mod tests {
     }
 
     #[test]
-    fn test_build_xd_basic() {
-        // 使用真实缠论笔的模式：上证指数日线级别常见笔模式
-        // 8笔可能不足以形成线段（取决于去包含后的分型数量），
-        // 但12笔通常可以形成至少2条线段
+    fn test_xd_min_3_bi() {
         let bis = vec![
-            make_bi(0, "up", 2850.0, 2920.0, 0, 5),
-            make_bi(1, "down", 2920.0, 2880.0, 5, 10),
-            make_bi(2, "up", 2880.0, 2960.0, 10, 15),
-            make_bi(3, "down", 2960.0, 2910.0, 15, 20),
-            make_bi(4, "up", 2910.0, 3010.0, 20, 25),
-            make_bi(5, "down", 3010.0, 2940.0, 25, 30),
-            make_bi(6, "up", 2940.0, 3050.0, 30, 35),
-            make_bi(7, "down", 3050.0, 2900.0, 35, 40),
-            make_bi(8, "up", 2900.0, 2960.0, 40, 45),
-            make_bi(9, "down", 2960.0, 2800.0, 45, 50),
-            make_bi(10, "up", 2800.0, 2870.0, 50, 55),
-            make_bi(11, "down", 2870.0, 2720.0, 55, 60),
+            make_bi(0, "up", 10.0, 20.0, 0, 5),
+            make_bi(1, "down", 20.0, 15.0, 5, 10),
         ];
         let xds = build_xd(&bis);
-        // 至少能生成0条以上线段（实际数量取决于去包含和分型结果）
-        // 但方向应该一致
-        for xd in &xds {
-            if xd.direction == "up" {
-                assert!(xd.end_price >= xd.start_price,
-                    "上升线段终点 {} 应 >= 起点 {}", xd.end_price, xd.start_price);
-            } else {
-                assert!(xd.end_price <= xd.start_price,
-                    "下降线段终点 {} 应 <= 起点 {}", xd.end_price, xd.start_price);
-            }
-        }
+        assert!(xds.is_empty(), "2笔不应形成线段");
     }
 
     #[test]
-    fn test_xd_min_3_bi() {
-        let bis = vec![
-            make_bi(0, "up", 10.0, 15.0, 0, 3),
-            make_bi(1, "down", 15.0, 12.0, 3, 6),
-        ];
+    fn test_xd_with_sufficient_diversity() {
+        let mut bis = Vec::new();
+        let mut idx = 0u64;
+
+        bis.push(make_bi(0, "up", 10.0, 25.0, idx, idx + 6)); idx += 6;
+        bis.push(make_bi(1, "down", 25.0, 17.0, idx, idx + 6)); idx += 6;
+        bis.push(make_bi(2, "up", 17.0, 30.0, idx, idx + 6)); idx += 6;
+        bis.push(make_bi(3, "down", 30.0, 14.0, idx, idx + 6)); idx += 6;
+        bis.push(make_bi(4, "up", 14.0, 28.0, idx, idx + 6)); idx += 6;
+        bis.push(make_bi(5, "down", 28.0, 8.0, idx, idx + 6)); idx += 6;
+
         let xds = build_xd(&bis);
-        assert!(xds.is_empty(), "少于3笔不应有线段");
+        assert!(!xds.is_empty(), "足够多样性的笔模式应产生线段，实际产生 {} 条", xds.len());
     }
 
     #[test]
     fn test_xd_direction_consistency() {
-        let bis = vec![
-            make_bi(0, "up", 10.0, 20.0, 0, 3),
-            make_bi(1, "down", 20.0, 15.0, 3, 6),
-            make_bi(2, "up", 15.0, 25.0, 6, 9),
-            make_bi(3, "down", 25.0, 18.0, 9, 12),
-            make_bi(4, "up", 18.0, 22.0, 12, 15),
-            make_bi(5, "down", 22.0, 8.0, 15, 18),
-            make_bi(6, "up", 8.0, 16.0, 18, 21),
-            make_bi(7, "down", 16.0, 5.0, 21, 24),
-        ];
+        let mut bis = Vec::new();
+        let mut idx = 0u64;
+
+        bis.push(make_bi(0, "up", 10.0, 30.0, idx, idx + 5)); idx += 5;
+        bis.push(make_bi(1, "down", 30.0, 18.0, idx, idx + 5)); idx += 5;
+        bis.push(make_bi(2, "up", 18.0, 35.0, idx, idx + 5)); idx += 5;
+        bis.push(make_bi(3, "down", 35.0, 20.0, idx, idx + 5)); idx += 5;
+        bis.push(make_bi(4, "up", 20.0, 28.0, idx, idx + 5)); idx += 5;
+        bis.push(make_bi(5, "down", 28.0, 8.0, idx, idx + 5)); idx += 5;
+        bis.push(make_bi(6, "up", 8.0, 15.0, idx, idx + 5)); idx += 5;
+        bis.push(make_bi(7, "down", 15.0, 5.0, idx, idx + 5)); idx += 5;
+
         let xds = build_xd(&bis);
         for xd in &xds {
             if xd.direction == "up" {
-                assert!(xd.end_price >= xd.start_price,
-                    "上升线段终点 {} 应 >= 起点 {}", xd.end_price, xd.start_price);
+                assert!(xd.end_price > xd.start_price,
+                    "上升线段 end_price({}) 应 > start_price({})", xd.end_price, xd.start_price);
             } else {
-                assert!(xd.end_price <= xd.start_price,
-                    "下降线段终点 {} 应 <= 起点 {}", xd.end_price, xd.start_price);
+                assert!(xd.end_price < xd.start_price,
+                    "下降线段 end_price({}) 应 < start_price({})", xd.end_price, xd.start_price);
             }
         }
     }
 
     #[test]
     fn test_xd_alternating_direction() {
-        let bis = vec![
-            make_bi(0, "up", 10.0, 20.0, 0, 3),
-            make_bi(1, "down", 20.0, 15.0, 3, 6),
-            make_bi(2, "up", 15.0, 25.0, 6, 9),
-            make_bi(3, "down", 25.0, 12.0, 9, 12),
-            make_bi(4, "up", 12.0, 22.0, 12, 15),
-            make_bi(5, "down", 22.0, 8.0, 15, 18),
-            make_bi(6, "up", 8.0, 16.0, 18, 21),
-            make_bi(7, "down", 16.0, 5.0, 21, 24),
-        ];
+        let mut bis = Vec::new();
+        let mut idx = 0u64;
+
+        for round in 0..4 {
+            let base = 10.0 + round as f64 * 20.0;
+            bis.push(make_bi(bis.len(), "up", base, base + 20.0, idx, idx + 5)); idx += 5;
+            bis.push(make_bi(bis.len(), "down", base + 20.0, base + 8.0, idx, idx + 5)); idx += 5;
+            bis.push(make_bi(bis.len(), "up", base + 8.0, base + 25.0, idx, idx + 5)); idx += 5;
+            bis.push(make_bi(bis.len(), "down", base + 25.0, base + 5.0, idx, idx + 5)); idx += 5;
+            bis.push(make_bi(bis.len(), "up", base + 5.0, base + 18.0, idx, idx + 5)); idx += 5;
+        }
+
         let xds = build_xd(&bis);
         for i in 1..xds.len() {
-            assert_ne!(xds[i].direction, xds[i - 1].direction,
-                "相邻线段方向应交替，但第{}段和第{}段都是{}",
-                i - 1, i, xds[i].direction);
-        }
-    }
-
-    #[test]
-    fn test_xd_with_real_bi_pattern() {
-        let bis = vec![
-            make_bi(0, "up", 2850.0, 2920.0, 0, 5),
-            make_bi(1, "down", 2920.0, 2880.0, 5, 10),
-            make_bi(2, "up", 2880.0, 2960.0, 10, 15),
-            make_bi(3, "down", 2960.0, 2910.0, 15, 20),
-            make_bi(4, "up", 2910.0, 3010.0, 20, 25),
-            make_bi(5, "down", 3010.0, 2940.0, 25, 30),
-            make_bi(6, "up", 2940.0, 3050.0, 30, 35),
-            make_bi(7, "down", 3050.0, 2900.0, 35, 40),
-            make_bi(8, "up", 2900.0, 2960.0, 40, 45),
-            make_bi(9, "down", 2960.0, 2800.0, 45, 50),
-            make_bi(10, "up", 2800.0, 2870.0, 50, 55),
-            make_bi(11, "down", 2870.0, 2720.0, 55, 60),
-        ];
-        let xds = build_xd(&bis);
-        if xds.len() >= 2 {
-            for i in 1..xds.len() {
-                assert_ne!(xds[i].direction, xds[i - 1].direction, "线段方向应交替");
-            }
-        }
-        if xds.len() == 1 {
-            assert_eq!(xds[0].direction, "up", "第一条线段应该是上升线段");
-        }
-    }
-
-    #[test]
-    fn test_xd_no_include_between_start_end() {
-        let bis = vec![
-            make_bi(0, "up", 10.0, 20.0, 0, 3),
-            make_bi(1, "down", 20.0, 12.0, 3, 6),
-            make_bi(2, "up", 12.0, 25.0, 6, 9),
-            make_bi(3, "down", 25.0, 15.0, 9, 12),
-            make_bi(4, "up", 15.0, 30.0, 12, 15),
-            make_bi(5, "down", 30.0, 10.0, 15, 18),
-        ];
-        let xds = build_xd(&bis);
-        for xd in &xds {
-            if xd.is_finished {
-                assert!(xd.end_price > 0.0);
-            }
+            assert_ne!(xds[i].direction, xds[i - 1].direction, "相邻线段方向必须交替");
         }
     }
 
     #[test]
     fn test_xd_complex_pattern() {
-        let bis = vec![
-            make_bi(0, "up", 10.0, 20.0, 0, 3),
-            make_bi(1, "down", 20.0, 15.0, 3, 6),
-            make_bi(2, "up", 15.0, 25.0, 6, 9),
-            make_bi(3, "down", 25.0, 8.0, 9, 12),
-            make_bi(4, "up", 8.0, 15.0, 12, 15),
-            make_bi(5, "down", 15.0, 5.0, 15, 18),
-            make_bi(6, "up", 5.0, 18.0, 18, 21),
-            make_bi(7, "down", 18.0, 12.0, 21, 24),
-            make_bi(8, "up", 12.0, 28.0, 24, 27),
-            make_bi(9, "down", 28.0, 6.0, 27, 30),
-            make_bi(10, "up", 6.0, 14.0, 30, 33),
-            make_bi(11, "down", 14.0, 3.0, 33, 36),
-        ];
+        let mut bis = Vec::new();
+        let mut idx = 0u64;
+
+        bis.push(make_bi(0, "up", 100.0, 120.0, idx, idx + 5)); idx += 5;
+        bis.push(make_bi(1, "down", 120.0, 108.0, idx, idx + 5)); idx += 5;
+        bis.push(make_bi(2, "up", 108.0, 125.0, idx, idx + 5)); idx += 5;
+        bis.push(make_bi(3, "down", 125.0, 110.0, idx, idx + 5)); idx += 5;
+        bis.push(make_bi(4, "up", 110.0, 130.0, idx, idx + 5)); idx += 5;
+        bis.push(make_bi(5, "down", 130.0, 95.0, idx, idx + 5)); idx += 5;
+        bis.push(make_bi(6, "up", 95.0, 105.0, idx, idx + 5)); idx += 5;
+        bis.push(make_bi(7, "down", 105.0, 88.0, idx, idx + 5)); idx += 5;
+        bis.push(make_bi(8, "up", 88.0, 98.0, idx, idx + 5)); idx += 5;
+        bis.push(make_bi(9, "down", 98.0, 80.0, idx, idx + 5)); idx += 5;
+
         let xds = build_xd(&bis);
-        for i in 1..xds.len() {
-            assert_ne!(xds[i].direction, xds[i - 1].direction,
-                "线段方向应交替，第{}段和第{}段同方向{}", i - 1, i, xds[i].direction);
-        }
+        assert!(xds.len() <= bis.len() / 3 + 1, "线段数量不应超过笔数/3+1");
+    }
+
+    #[test]
+    fn test_1d_fenxing_detection() {
+        // 简单特征值序列：10, 25, 17, 30, 14, 28, 8
+        // 局部极值：25(top), 17(bottom), 30(top), 14(bottom), 28(top)
+        let fvs: Vec<FeatureValue> = vec![
+            10.0, 25.0, 17.0, 30.0, 14.0, 28.0, 8.0
+        ].into_iter().enumerate().map(|(i, v)| FeatureValue {
+            bi_index: i,
+            value: v,
+        }).collect();
+
+        let fxs = detect_1d_fenxing(&fvs);
+        assert_eq!(fxs.len(), 5, "应检测到5个分型");
+        assert!(matches!(fxs[0].mark, FxMark1D::Top)); // 25
+        assert!(matches!(fxs[1].mark, FxMark1D::Bottom)); // 17
+        assert!(matches!(fxs[2].mark, FxMark1D::Top)); // 30
+        assert!(matches!(fxs[3].mark, FxMark1D::Bottom)); // 14
+        assert!(matches!(fxs[4].mark, FxMark1D::Top)); // 28
     }
 }

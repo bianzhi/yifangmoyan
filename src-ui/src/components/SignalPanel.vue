@@ -11,11 +11,15 @@ import {
 const props = defineProps<{
   chartData: ChartData;
   settings: AnalysisSettings;
+  /** 显示模式: "czsc" 只显示缠论信号, "wyckoff" 只显示威科夫信号, "all" 显示所有 */
+  mode?: "czsc" | "wyckoff" | "all";
 }>();
 
 const emit = defineEmits<{
   (e: "navigate", dt: string, price?: number): void;
 }>();
+
+const displayMode = computed(() => props.mode || "all");
 
 // 缠论信号
 const czscSignals = computed(() => {
@@ -41,9 +45,7 @@ const czscSignals = computed(() => {
     let label = "⚡笔背驰";
     if (bc.bc_type === "xd_beichi") label = "⚡线段背驰";
     if (bc.bc_sub_type === "panzheng") label += "(盘整)";
-    // 背驰取对应 K 线的高/低价作为定位
     const k = props.chartData.klines[bc.index];
-    // 顶背驰红色系，底背驰绿色系
     const bcColor = bc.direction === "up" ? "#ff5252" : "#69f0ae";
     signals.push({
       type: "beichi",
@@ -95,9 +97,9 @@ function onSignalClick(dt: string, price?: number) {
 </script>
 
 <template>
-  <div class="bg-[#16213e] p-3 space-y-3 text-xs">
-    <!-- 当前阶段 -->
-    <div v-if="currentPhase" class="pb-2 border-b border-[#2a2a4a]">
+  <div class="p-3 space-y-3 text-xs h-full overflow-y-auto">
+    <!-- 当前阶段（只在威科夫或全部模式显示） -->
+    <div v-if="currentPhase && (displayMode === 'wyckoff' || displayMode === 'all')" class="pb-2 border-b border-[#2a2a4a]">
       <div class="text-[#9e9e9e] text-[10px] uppercase mb-1">当前阶段</div>
       <div class="flex items-center gap-2">
         <span
@@ -113,12 +115,12 @@ function onSignalClick(dt: string, price?: number) {
       </div>
     </div>
 
-    <!-- 缠论信号 -->
-    <div v-if="czscSignals.length > 0">
+    <!-- 缠论信号（只在缠论或全部模式显示） -->
+    <div v-if="czscSignals.length > 0 && (displayMode === 'czsc' || displayMode === 'all')">
       <div class="text-[#b388ff] text-[10px] uppercase font-bold mb-1.5">缠论信号</div>
-      <div class="space-y-0.5 max-h-40 overflow-y-auto">
+      <div class="space-y-0.5 overflow-y-auto" :class="displayMode === 'all' ? 'max-h-40' : ''">
         <div
-          v-for="(sig, i) in czscSignals.slice(-20)"
+          v-for="(sig, i) in (displayMode === 'all' ? czscSignals.slice(-20) : czscSignals)"
           :key="'czsc-' + i"
           class="flex items-center justify-between py-0.5 px-1 rounded cursor-pointer hover:bg-[#0f3460] transition-colors"
           @click="onSignalClick(sig.dt, sig.price)"
@@ -133,12 +135,12 @@ function onSignalClick(dt: string, price?: number) {
       </div>
     </div>
 
-    <!-- 威科夫信号 -->
-    <div v-if="wyckoffSignals.length > 0">
+    <!-- 威科夫信号（只在威科夫或全部模式显示） -->
+    <div v-if="wyckoffSignals.length > 0 && (displayMode === 'wyckoff' || displayMode === 'all')">
       <div class="text-[#00bcd4] text-[10px] uppercase font-bold mb-1.5">威科夫信号</div>
-      <div class="space-y-0.5 max-h-40 overflow-y-auto">
+      <div class="space-y-0.5 overflow-y-auto" :class="displayMode === 'all' ? 'max-h-40' : ''">
         <div
-          v-for="(sig, i) in wyckoffSignals.slice(-20)"
+          v-for="(sig, i) in (displayMode === 'all' ? wyckoffSignals.slice(-20) : wyckoffSignals)"
           :key="'wy-' + i"
           class="flex items-center justify-between py-0.5 px-1 rounded cursor-pointer hover:bg-[#0f3460] transition-colors"
           @click="onSignalClick(sig.dt, sig.price)"
@@ -153,8 +155,8 @@ function onSignalClick(dt: string, price?: number) {
       </div>
     </div>
 
-    <!-- 融合解读 -->
-    <div v-if="fusionSignals.length > 0 && settings.fusion.showFusion">
+    <!-- 融合解读（只在全部模式显示） -->
+    <div v-if="fusionSignals.length > 0 && settings.fusion.showFusion && displayMode === 'all'">
       <div class="h-px bg-[#2a2a4a] mb-2"></div>
       <div class="text-[#ffd700] text-[10px] uppercase font-bold mb-1.5">⚡ 融合解读</div>
       <div class="space-y-2">
@@ -181,7 +183,7 @@ function onSignalClick(dt: string, price?: number) {
 
     <!-- 无信号 -->
     <div
-      v-if="czscSignals.length === 0 && wyckoffSignals.length === 0 && fusionSignals.length === 0"
+      v-if="(displayMode !== 'czsc' || czscSignals.length === 0) && (displayMode !== 'wyckoff' || wyckoffSignals.length === 0) && (displayMode !== 'all' || (czscSignals.length === 0 && wyckoffSignals.length === 0 && fusionSignals.length === 0))"
       class="text-center text-[#666] py-4"
     >
       暂无信号

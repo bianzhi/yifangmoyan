@@ -155,45 +155,51 @@ const subLevelPanel = ref<{
   loading: boolean;
 } | null>(null);
 
-// ===== 浮动信号窗口 =====
-const showCzscSignalWindow = ref(false);
-const showWyckoffSignalWindow = ref(false);
-const czscWindowPos = ref({ x: 60, y: 80 });
-const wyckoffWindowPos = ref({ x: 80, y: 100 });
-const czscWindowDrag = ref<{ startX: number; startY: number; startPos: { x: number; y: number } } | null>(null);
-const wyckoffWindowDrag = ref<{ startX: number; startY: number; startPos: { x: number; y: number } } | null>(null);
+// ===== 右栏窗格拖拽 =====
+/** 三个窗格的高度占比（缠论信号 / 威科夫信号 / 设置），用 flex-grow 控制 */
+const czscPaneGrow = ref(1);
+const wyckoffPaneGrow = ref(1);
+const settingsPaneGrow = ref(1);
 
-function startCzscWindowDrag(e: MouseEvent) {
+/** 正在拖拽的分隔线：'czsc-wy' 或 'wy-settings' */
+const draggingDivider = ref<string | null>(null);
+const dragStartY = ref(0);
+const dragStartGrows = ref({ a: 0, b: 0 });
+
+function startDividerDrag(e: MouseEvent, divider: string) {
   e.preventDefault();
-  czscWindowDrag.value = { startX: e.clientX, startY: e.clientY, startPos: { ...czscWindowPos.value } };
+  const rightPanel = document.getElementById("right-panel");
+  if (!rightPanel) return;
+  const totalHeight = rightPanel.clientHeight;
+  draggingDivider.value = divider;
+  dragStartY.value = e.clientY;
+  if (divider === "czsc-wy") {
+    dragStartGrows.value = { a: czscPaneGrow.value, b: wyckoffPaneGrow.value };
+  } else {
+    dragStartGrows.value = { a: wyckoffPaneGrow.value, b: settingsPaneGrow.value };
+  }
   const onMove = (ev: MouseEvent) => {
-    if (!czscWindowDrag.value) return;
-    czscWindowPos.value = {
-      x: czscWindowDrag.value.startPos.x + ev.clientX - czscWindowDrag.value.startX,
-      y: czscWindowDrag.value.startPos.y + ev.clientY - czscWindowDrag.value.startY,
-    };
+    if (!draggingDivider.value) return;
+    const delta = ev.clientY - dragStartY.value;
+    const totalGrow = dragStartGrows.value.a + dragStartGrows.value.b;
+    const deltaGrow = (delta / totalHeight) * totalGrow;
+    const minGrow = 0.2;
+    let newA = dragStartGrows.value.a + deltaGrow;
+    let newB = dragStartGrows.value.b - deltaGrow;
+    if (newA < minGrow) { newB -= minGrow - newA; newA = minGrow; }
+    if (newB < minGrow) { newA -= minGrow - newB; newB = minGrow; }
+    newA = Math.max(minGrow, newA);
+    newB = Math.max(minGrow, newB);
+    if (draggingDivider.value === "czsc-wy") {
+      czscPaneGrow.value = newA;
+      wyckoffPaneGrow.value = newB;
+    } else {
+      wyckoffPaneGrow.value = newA;
+      settingsPaneGrow.value = newB;
+    }
   };
   const onUp = () => {
-    czscWindowDrag.value = null;
-    document.removeEventListener("mousemove", onMove);
-    document.removeEventListener("mouseup", onUp);
-  };
-  document.addEventListener("mousemove", onMove);
-  document.addEventListener("mouseup", onUp);
-}
-
-function startWyckoffWindowDrag(e: MouseEvent) {
-  e.preventDefault();
-  wyckoffWindowDrag.value = { startX: e.clientX, startY: e.clientY, startPos: { ...wyckoffWindowPos.value } };
-  const onMove = (ev: MouseEvent) => {
-    if (!wyckoffWindowDrag.value) return;
-    wyckoffWindowPos.value = {
-      x: wyckoffWindowDrag.value.startPos.x + ev.clientX - wyckoffWindowDrag.value.startX,
-      y: wyckoffWindowDrag.value.startPos.y + ev.clientY - wyckoffWindowDrag.value.startY,
-    };
-  };
-  const onUp = () => {
-    wyckoffWindowDrag.value = null;
+    draggingDivider.value = null;
     document.removeEventListener("mousemove", onMove);
     document.removeEventListener("mouseup", onUp);
   };
@@ -1468,77 +1474,70 @@ watch(currentView, (val) => {
           </div>
         </div>
 
-        <!-- 浮动缠论信号窗口 -->
-        <div
-          v-if="showCzscSignalWindow && chartData"
-          class="absolute z-30 bg-[#16213e] border border-[#2a2a4a] rounded-lg shadow-2xl flex flex-col"
-          :style="{ left: czscWindowPos.x + 'px', top: czscWindowPos.y + 'px', width: '320px', maxHeight: '60vh' }"
-        >
+        <!-- 右侧面板：三个可拖拽分隔的窗格 -->
+        <div id="right-panel" class="flex flex-col w-64 shrink-0 border-l border-[#2a2a4a] select-none">
+          <!-- 缠论信号窗格 -->
+          <div class="flex flex-col min-h-0 border-b border-[#2a2a4a]" :style="{ flexGrow: czscPaneGrow }">
+            <div class="shrink-0 px-3 py-1.5 border-b border-[#2a2a4a]/50 flex items-center gap-1.5">
+              <span class="w-2 h-2 rounded-full bg-[#e94560]"></span>
+              <span class="text-[10px] font-bold text-[#e94560] uppercase tracking-wider">缠论信号</span>
+            </div>
+            <div class="flex-1 overflow-y-auto min-h-0" v-if="chartData">
+              <SignalPanel
+                :chart-data="chartData"
+                :settings="settings"
+                mode="czsc"
+                @navigate="navigateToSignal"
+              />
+            </div>
+            <div v-else class="flex-1 flex items-center justify-center text-[#666] text-xs">暂无数据</div>
+          </div>
+
+          <!-- 拖拽分隔条 1 -->
           <div
-            class="flex items-center justify-between px-3 py-1.5 border-b border-[#2a2a4a] cursor-move select-none"
-            @mousedown="startCzscWindowDrag"
+            class="shrink-0 h-1.5 cursor-row-resize bg-[#2a2a4a]/60 hover:bg-[#e94560]/40 transition-colors flex items-center justify-center"
+            @mousedown="startDividerDrag($event, 'czsc-wy')"
           >
-            <span class="text-xs font-bold text-[#e94560]">⚡ 缠论信号</span>
-            <button @click="showCzscSignalWindow = false" class="text-[#9e9e9e] hover:text-white text-xs px-1">✕</button>
+            <div class="w-6 h-0.5 rounded-full bg-[#9e9e9e]/30"></div>
           </div>
-          <div class="overflow-y-auto" style="max-height: calc(60vh - 32px);">
-            <SignalPanel
-              :chart-data="chartData"
-              :settings="settings"
-              @navigate="navigateToSignal"
-            />
-          </div>
-        </div>
 
-        <!-- 浮动威科夫信号窗口 -->
-        <div
-          v-if="showWyckoffSignalWindow && chartData"
-          class="absolute z-30 bg-[#16213e] border border-[#2a2a4a] rounded-lg shadow-2xl flex flex-col"
-          :style="{ left: wyckoffWindowPos.x + 'px', top: wyckoffWindowPos.y + 'px', width: '320px', maxHeight: '60vh' }"
-        >
+          <!-- 威科夫信号窗格 -->
+          <div class="flex flex-col min-h-0 border-b border-[#2a2a4a]" :style="{ flexGrow: wyckoffPaneGrow }">
+            <div class="shrink-0 px-3 py-1.5 border-b border-[#2a2a4a]/50 flex items-center gap-1.5">
+              <span class="w-2 h-2 rounded-full bg-[#26a69a]"></span>
+              <span class="text-[10px] font-bold text-[#26a69a] uppercase tracking-wider">威科夫信号</span>
+            </div>
+            <div class="flex-1 overflow-y-auto min-h-0" v-if="chartData">
+              <SignalPanel
+                :chart-data="chartData"
+                :settings="settings"
+                mode="wyckoff"
+                @navigate="navigateToSignal"
+              />
+            </div>
+            <div v-else class="flex-1 flex items-center justify-center text-[#666] text-xs">暂无数据</div>
+          </div>
+
+          <!-- 拖拽分隔条 2 -->
           <div
-            class="flex items-center justify-between px-3 py-1.5 border-b border-[#2a2a4a] cursor-move select-none"
-            @mousedown="startWyckoffWindowDrag"
+            class="shrink-0 h-1.5 cursor-row-resize bg-[#2a2a4a]/60 hover:bg-[#26a69a]/40 transition-colors flex items-center justify-center"
+            @mousedown="startDividerDrag($event, 'wy-settings')"
           >
-            <span class="text-xs font-bold text-[#26a69a]">📊 威科夫信号</span>
-            <button @click="showWyckoffSignalWindow = false" class="text-[#9e9e9e] hover:text-white text-xs px-1">✕</button>
-          </div>
-          <div class="overflow-y-auto p-3" style="max-height: calc(60vh - 32px);">
-            <template v-if="chartData.wyckoff && chartData.wyckoff.events.length > 0">
-              <div v-for="(evt, idx) in chartData.wyckoff.events" :key="idx"
-                class="flex items-center gap-2 py-1 text-xs border-b border-[#2a2a4a]/50 last:border-0">
-                <span class="w-2 h-2 rounded-full shrink-0" :style="{ backgroundColor: WYCKOFF_EVENT_COLORS[evt.event_type] || '#666' }"></span>
-                <span class="text-[#9e9e9e] font-mono">{{ evt.dt }}</span>
-                <span :style="{ color: WYCKOFF_EVENT_COLORS[evt.event_type] || '#fff' }">{{ evt.event_type }}</span>
-                <span class="text-[#666] truncate">{{ evt.description }}</span>
-              </div>
-            </template>
-            <div v-else class="text-[#666] text-xs text-center py-4">暂无威科夫信号</div>
-          </div>
-        </div>
-
-        <!-- 右侧设置面板（精简，只保留设置） -->
-        <div class="flex flex-col w-56 shrink-0 border-l border-[#2a2a4a]">
-          <!-- 窗口开关 -->
-          <div class="shrink-0 p-2 border-b border-[#2a2a4a] space-y-1">
-            <button @click="showCzscSignalWindow = !showCzscSignalWindow"
-              class="w-full text-left text-xs px-2 py-1.5 rounded transition-colors"
-              :class="showCzscSignalWindow ? 'bg-[#e94560]/20 text-[#e94560]' : 'text-[#9e9e9e] hover:bg-[#2a2a4a]'">
-              ⚡ 缠论信号
-            </button>
-            <button @click="showWyckoffSignalWindow = !showWyckoffSignalWindow"
-              class="w-full text-left text-xs px-2 py-1.5 rounded transition-colors"
-              :class="showWyckoffSignalWindow ? 'bg-[#26a69a]/20 text-[#26a69a]' : 'text-[#9e9e9e] hover:bg-[#2a2a4a]'">
-              📊 威科夫信号
-            </button>
+            <div class="w-6 h-0.5 rounded-full bg-[#9e9e9e]/30"></div>
           </div>
 
-          <!-- 勾选设置面板 -->
-          <div class="flex-1 overflow-y-auto min-h-0">
-            <SettingsPanel
-              :settings="settings"
-              @change="onSettingsChange"
-            />
+          <!-- 设置窗格 -->
+          <div class="flex flex-col min-h-0" :style="{ flexGrow: settingsPaneGrow }">
+            <div class="shrink-0 px-3 py-1.5 border-b border-[#2a2a4a]/50 flex items-center gap-1.5">
+              <span class="w-2 h-2 rounded-full bg-[#b388ff]"></span>
+              <span class="text-[10px] font-bold text-[#b388ff] uppercase tracking-wider">设置</span>
+            </div>
+            <div class="flex-1 overflow-y-auto min-h-0">
+              <SettingsPanel
+                :settings="settings"
+                @change="onSettingsChange"
+              />
+            </div>
           </div>
         </div>
       </main>

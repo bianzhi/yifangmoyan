@@ -156,46 +156,44 @@ const subLevelPanel = ref<{
 } | null>(null);
 
 // ===== 右栏窗格拖拽 =====
-/** 三个窗格的高度占比（缠论信号 / 威科夫信号 / 设置），用 flex-grow 控制 */
-const czscPaneGrow = ref(1);
-const wyckoffPaneGrow = ref(1);
-const settingsPaneGrow = ref(1);
+/** 三个窗格的像素高度（缠论信号 / 威科夫信号 / 设置） */
+const czscPaneH = ref(200);
+const wyckoffPaneH = ref(200);
+const settingsPaneH = ref(200);
 
 /** 正在拖拽的分隔线：'czsc-wy' 或 'wy-settings' */
 const draggingDivider = ref<string | null>(null);
 const dragStartY = ref(0);
-const dragStartGrows = ref({ a: 0, b: 0 });
+const dragStartHeights = ref({ a: 0, b: 0 });
+
+/** 最小窗格高度（px） */
+const MIN_PANE_H = 40;
 
 function startDividerDrag(e: MouseEvent, divider: string) {
   e.preventDefault();
-  const rightPanel = document.getElementById("right-panel");
-  if (!rightPanel) return;
-  const totalHeight = rightPanel.clientHeight;
   draggingDivider.value = divider;
   dragStartY.value = e.clientY;
   if (divider === "czsc-wy") {
-    dragStartGrows.value = { a: czscPaneGrow.value, b: wyckoffPaneGrow.value };
+    dragStartHeights.value = { a: czscPaneH.value, b: wyckoffPaneH.value };
   } else {
-    dragStartGrows.value = { a: wyckoffPaneGrow.value, b: settingsPaneGrow.value };
+    dragStartHeights.value = { a: wyckoffPaneH.value, b: settingsPaneH.value };
   }
   const onMove = (ev: MouseEvent) => {
     if (!draggingDivider.value) return;
     const delta = ev.clientY - dragStartY.value;
-    const totalGrow = dragStartGrows.value.a + dragStartGrows.value.b;
-    const deltaGrow = (delta / totalHeight) * totalGrow;
-    const minGrow = 0.2;
-    let newA = dragStartGrows.value.a + deltaGrow;
-    let newB = dragStartGrows.value.b - deltaGrow;
-    if (newA < minGrow) { newB -= minGrow - newA; newA = minGrow; }
-    if (newB < minGrow) { newA -= minGrow - newB; newB = minGrow; }
-    newA = Math.max(minGrow, newA);
-    newB = Math.max(minGrow, newB);
+    let newA = dragStartHeights.value.a + delta;
+    let newB = dragStartHeights.value.b - delta;
+    // 限制最小高度
+    if (newA < MIN_PANE_H) { newB -= MIN_PANE_H - newA; newA = MIN_PANE_H; }
+    if (newB < MIN_PANE_H) { newA -= MIN_PANE_H - newB; newB = MIN_PANE_H; }
+    newA = Math.max(MIN_PANE_H, newA);
+    newB = Math.max(MIN_PANE_H, newB);
     if (draggingDivider.value === "czsc-wy") {
-      czscPaneGrow.value = newA;
-      wyckoffPaneGrow.value = newB;
+      czscPaneH.value = newA;
+      wyckoffPaneH.value = newB;
     } else {
-      wyckoffPaneGrow.value = newA;
-      settingsPaneGrow.value = newB;
+      wyckoffPaneH.value = newA;
+      settingsPaneH.value = newB;
     }
   };
   const onUp = () => {
@@ -1477,7 +1475,7 @@ watch(currentView, (val) => {
         <!-- 右侧面板：三个可拖拽分隔的窗格 -->
         <div id="right-panel" class="flex flex-col w-64 shrink-0 border-l border-[#2a2a4a] select-none">
           <!-- 缠论信号窗格 -->
-          <div class="flex flex-col min-h-0 border-b border-[#2a2a4a]" :style="{ flexGrow: czscPaneGrow }">
+          <div class="flex flex-col min-h-0 border-b border-[#2a2a4a] overflow-hidden" :style="{ height: czscPaneH + 'px' }">
             <div class="shrink-0 px-3 py-1.5 border-b border-[#2a2a4a]/50 flex items-center gap-1.5">
               <span class="w-2 h-2 rounded-full bg-[#e94560]"></span>
               <span class="text-[10px] font-bold text-[#e94560] uppercase tracking-wider">缠论信号</span>
@@ -1502,7 +1500,7 @@ watch(currentView, (val) => {
           </div>
 
           <!-- 威科夫信号窗格 -->
-          <div class="flex flex-col min-h-0 border-b border-[#2a2a4a]" :style="{ flexGrow: wyckoffPaneGrow }">
+          <div class="flex flex-col min-h-0 border-b border-[#2a2a4a] overflow-hidden" :style="{ height: wyckoffPaneH + 'px' }">
             <div class="shrink-0 px-3 py-1.5 border-b border-[#2a2a4a]/50 flex items-center gap-1.5">
               <span class="w-2 h-2 rounded-full bg-[#26a69a]"></span>
               <span class="text-[10px] font-bold text-[#26a69a] uppercase tracking-wider">威科夫信号</span>
@@ -1527,7 +1525,7 @@ watch(currentView, (val) => {
           </div>
 
           <!-- 设置窗格 -->
-          <div class="flex flex-col min-h-0" :style="{ flexGrow: settingsPaneGrow }">
+          <div class="flex flex-col min-h-0 overflow-hidden" :style="{ height: settingsPaneH + 'px' }">
             <div class="shrink-0 px-3 py-1.5 border-b border-[#2a2a4a]/50 flex items-center gap-1.5">
               <span class="w-2 h-2 rounded-full bg-[#b388ff]"></span>
               <span class="text-[10px] font-bold text-[#b388ff] uppercase tracking-wider">设置</span>

@@ -75,7 +75,7 @@ const syncElapsed = ref("");
 let syncTimer: ReturnType<typeof setInterval> | null = null;
 
 // 同步选项
-const selectedLevels = ref<string[]>(["m", "w", "d", "f60", "f30", "f15", "f5", "f1"]);
+const selectedLevels = ref<string[]>(["d"]);
 const START_DATE_KEY = "moyan_start_date";
 function loadStartDate(): string {
   try {
@@ -372,6 +372,18 @@ function cancelSync() {
   stopSyncTimer();
 }
 
+/** 停止后台同步（横幅按钮触发） */
+async function stopBgSync() {
+  try {
+    await invoke("cancel_sync");
+  } catch { /* ignore */ }
+  bgSyncRunning.value = false;
+  bgSyncBoard.value = null;
+  bgSyncTotal.value = 0;
+  bgSyncCompleted.value = 0;
+  await refreshStatus();
+}
+
 // ═══════════════════════════════════════════════════════════════
 //  校验
 // ═══════════════════════════════════════════════════════════════
@@ -625,6 +637,9 @@ onMounted(async () => {
         <div class="w-2 h-2 rounded-full bg-[#e94560] animate-pulse"></div>
         <span class="text-xs text-[#e94560]">后台同步中（{{ bgSyncBoard || '全A股' }}）{{ bgSyncCompleted }}/{{ bgSyncTotal }}</span>
       </div>
+      <button @click="stopBgSync" class="text-[10px] px-2 py-0.5 rounded border border-[#e94560]/40 text-[#e94560] hover:bg-[#e94560]/20 transition">
+        停止
+      </button>
     </div>
 
     <!-- ═══════════════════════════════════════════════════════════

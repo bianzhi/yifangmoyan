@@ -14,7 +14,7 @@ import {
   type ISeriesPrimitivePaneRenderer,
   type SeriesAttachedParameter,
 } from "lightweight-charts";
-import { getChartData, searchStocks, getAllStockCodes, getSubLevelData, autoSyncOnStartup, getSyncStatus } from "./composables/useApi";
+import { getChartData, searchStocks, getAllStockCodes, getSubLevelData, autoSyncOnStartup, getSyncStatus, cancelSync } from "./composables/useApi";
 import type { SyncProgress } from "./composables/useApi";
 import {
   type ChartData,
@@ -999,6 +999,17 @@ function startBgSyncPolling() {
   }, 60_000);
 }
 
+async function stopBgSyncFromChart() {
+  try {
+    await cancelSync();
+  } catch { /* ignore */ }
+  if (bgSyncTimer) {
+    clearInterval(bgSyncTimer);
+    bgSyncTimer = null;
+  }
+  bgSyncProgress.value = { running: false, board: "", levels: [], total: 0, completed: 0, success: 0, failures: [], retrying: false, retry_round: 0, cancelled: false };
+}
+
 // ===== 事件处理 =====
 function onTimeframeChange(tf: TimeFrame) {
   timeframe.value = tf;
@@ -1163,7 +1174,7 @@ onMounted(async () => {
 
   // 启动后台自动增量同步（非阻塞，失败自动重试直到0失败）
   try {
-    await autoSyncOnStartup(["m", "w", "d", "f60", "f30", "f15", "f5", "f1"]);
+    await autoSyncOnStartup(["d"]);
     // 开始轮询同步状态
     startBgSyncPolling();
   } catch {
@@ -1272,6 +1283,10 @@ watch(currentView, (val) => {
           <span class="whitespace-nowrap">{{ bgSyncProgress.completed }}/{{ bgSyncProgress.total }}
             <span v-if="bgSyncProgress.retrying" class="text-[#ff9800]">重试#{{ bgSyncProgress.retry_round }}</span>
           </span>
+          <button @click="stopBgSyncFromChart" class="px-1.5 py-0.5 rounded border border-[#e94560]/40 text-[#e94560] hover:bg-[#e94560]/20 transition text-[10px]"
+            title="停止后台同步">
+            停止
+          </button>
         </div>
 
         <StockSearch

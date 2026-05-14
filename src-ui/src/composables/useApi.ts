@@ -113,6 +113,10 @@ export async function getSyncStatus(): Promise<SyncProgress> {
   return invoke<SyncProgress>("get_sync_status");
 }
 
+export async function cancelSync(): Promise<void> {
+  return invoke("cancel_sync");
+}
+
 export interface SyncProgress {
   running: boolean;
   board: string;

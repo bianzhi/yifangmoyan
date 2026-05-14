@@ -75,6 +75,7 @@ export interface BeiChi {
   dt: string;
   direction: string; // "up" / "down"
   bc_sub_type: string; // "trend" / "panzheng"
+  reason: string; // 背驰判断理由
 }
 
 export interface ZouShi {

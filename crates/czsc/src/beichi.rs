@@ -96,19 +96,21 @@ where
                     let curr_macd_area = calc_macd_area(macd, start_idx as usize, end_idx as usize);
 
                     // 背驰判断：综合价格力度和MACD面积
-                    // 对齐 czsc __check_first_buy 的背驰判断：
-                    // 价格力度减弱 AND (成交量减弱 OR 长度减弱)
-                    // 此处简化为：价格力度 + MACD面积同时减弱
                     let price_divergence = curr_amplitude < prev_amplitude;
                     let macd_divergence = curr_macd_area < prev_macd_area;
 
                     if price_divergence && macd_divergence {
+                        let reason = format!(
+                            "顶背驰: 价格力度 {:.2} < 前段 {:.2}, MACD面积 {:.2} < 前段 {:.2}",
+                            curr_amplitude, prev_amplitude, curr_macd_area, prev_macd_area
+                        );
                         results.push(BeiChi {
                             bc_type: bc_type.to_string(),
                             index: end_idx,
                             dt: String::new(),
                             direction: "up".to_string(),
                             bc_sub_type: bc_sub_type.to_string(),
+                            reason,
                         });
                     }
                 }
@@ -127,12 +129,17 @@ where
                     let macd_divergence = curr_macd_area < prev_macd_area;
 
                     if price_divergence && macd_divergence {
+                        let reason = format!(
+                            "底背驰: 价格力度 {:.2} < 前段 {:.2}, MACD面积 {:.2} < 前段 {:.2}",
+                            curr_amplitude, prev_amplitude, curr_macd_area, prev_macd_area
+                        );
                         results.push(BeiChi {
                             bc_type: bc_type.to_string(),
                             index: end_idx,
                             dt: String::new(),
                             direction: "down".to_string(),
                             bc_sub_type: bc_sub_type.to_string(),
+                            reason,
                         });
                     }
                 }

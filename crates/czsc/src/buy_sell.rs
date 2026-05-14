@@ -282,6 +282,7 @@ mod tests {
             dt: "t2".to_string(),
             direction: "down".to_string(),
             bc_sub_type: "simple".to_string(),
+            reason: String::new(),
         }];
 
         let points = detect_buy_sell(&bis, &zs, &beichi);
@@ -347,6 +348,7 @@ mod tests {
             dt: "t3".to_string(),
             direction: "down".to_string(),
             bc_sub_type: "simple".to_string(),
+            reason: String::new(),
         }];
 
         let points = detect_xd_buy_sell(&xds, &[], &xd_beichi);

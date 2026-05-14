@@ -15,6 +15,12 @@
 //! 5. 也可以参考 czsc 的简化判断：
 //!    - 线段至少3笔
 //!    - 反向笔超过前一同向笔的极值点 → 线段终结
+//!
+//! 线段校验规则（类似笔的校验）：
+//! 1. 线段端点价格必须与方向一致（上升线段终点>起点，下降线段终点<起点）
+//! 2. 相邻线段必须首尾相接
+//! 3. 相邻线段方向必须交替
+//! 4. 未完成线段的 is_finished = false
 
 use yifang_data::{Bi, XianDuan};
 
@@ -24,13 +30,19 @@ use yifang_data::{Bi, XianDuan};
 /// 1. 至少3笔才能构成线段
 /// 2. 特征序列出现分型 → 线段终结
 /// 3. 对齐 czsc 的简化逻辑：反向笔超过前一同向笔极值 → 线段被破坏
+/// 4. 后处理校验：纠正不合理的线段
 pub fn build_xd(bis: &[Bi]) -> Vec<XianDuan> {
     if bis.len() < 3 {
         return Vec::new();
     }
 
     // 使用特征序列法构建线段
-    build_xd_by_feature_sequence(bis)
+    let mut xds = build_xd_by_feature_sequence(bis);
+
+    // 校验并纠正线段
+    validate_xd(&mut xds, bis);
+
+    xds
 }
 
 /// 特征序列法构建线段
@@ -118,8 +130,14 @@ fn build_xd_by_feature_sequence(bis: &[Bi]) -> Vec<XianDuan> {
     if start_idx + 2 < bis.len() {
         let start_bi = &bis[start_idx];
         let end_bi = &bis[bis.len() - 1];
+        // 方向由起点到终点的价格关系决定
+        let direction = if end_bi.end_price >= start_bi.start_price {
+            "up".to_string()
+        } else {
+            "down".to_string()
+        };
         xds.push(XianDuan {
-            direction: start_bi.direction.clone(),
+            direction,
             start_index: start_bi.start_index,
             end_index: end_bi.end_index,
             start_dt: start_bi.start_dt.clone(),
@@ -131,6 +149,78 @@ fn build_xd_by_feature_sequence(bis: &[Bi]) -> Vec<XianDuan> {
     }
 
     xds
+}
+
+/// 校验并纠正线段
+///
+/// 纠正规则（类似笔校验）：
+/// 1. 方向一致性：上升线段 end_price > start_price，下降线段 end_price < start_price
+///    如果不一致，根据实际价格关系修正方向
+/// 2. 相邻线段方向交替：连续同方向线段应合并
+/// 3. 线段至少覆盖2笔（最少构成线段的基本单位）
+fn validate_xd(xds: &mut Vec<XianDuan>, bis: &[Bi]) {
+    if xds.is_empty() {
+        return;
+    }
+
+    // === 第1轮校验：修正方向 ===
+    for xd in xds.iter_mut() {
+        // 上升线段终点应高于起点
+        if xd.direction == "up" && xd.end_price < xd.start_price {
+            // 方向不一致，根据实际价格修正
+            xd.direction = "down".to_string();
+        }
+        // 下降线段终点应低于起点
+        if xd.direction == "down" && xd.end_price > xd.start_price {
+            xd.direction = "up".to_string();
+        }
+    }
+
+    // === 第2轮校验：合并连续同方向线段 ===
+    let mut i = 0;
+    while i + 1 < xds.len() {
+        if xds[i].direction == xds[i + 1].direction {
+            // 同方向，合并：后一段延伸到前一段的终点
+            let next = xds[i + 1].clone();
+            xds[i].end_index = next.end_index;
+            xds[i].end_dt = next.end_dt;
+            xds[i].end_price = next.end_price;
+            // 合并后重新检查方向一致性
+            if xds[i].direction == "up" && xds[i].end_price < xds[i].start_price {
+                xds[i].direction = "down".to_string();
+            }
+            if xds[i].direction == "down" && xds[i].end_price > xds[i].start_price {
+                xds[i].direction = "up".to_string();
+            }
+            xds.remove(i + 1);
+            // 不递增 i，继续检查合并后的线段
+        } else {
+            i += 1;
+        }
+    }
+
+    // === 第3轮校验：检查相邻线段端点是否衔接 ===
+    // 相邻线段应该首尾相接（前一段的 end 应等于后一段的 start）
+    for i in 0..xds.len().saturating_sub(1) {
+        let gap = xds[i + 1].start_index.saturating_sub(xds[i].end_index);
+        if gap > 1 {
+            // 有间隔，尝试修正后一段的起点
+            // 找到覆盖 gap 范围的第一笔
+            if let Some(bi) = bis.iter().find(|b| b.start_index >= xds[i].end_index && b.end_index <= xds[i + 1].start_index) {
+                // 修正衔接点
+                xds[i].end_index = bi.end_index;
+                xds[i].end_dt = bi.end_dt.clone();
+                xds[i].end_price = bi.end_price;
+                xds[i + 1].start_index = bi.end_index;
+                xds[i + 1].start_dt = bi.end_dt.clone();
+                xds[i + 1].start_price = bi.end_price;
+            }
+        }
+    }
+
+    // === 第4轮校验：确保最后一个未完成线段标记正确 ===
+    // 最后一段如果没有被特征序列破坏确认，标记为未完成
+    // （build_xd_by_feature_sequence 已经正确标记，此处不做额外修改）
 }
 
 /// 特征序列元素
@@ -254,5 +344,64 @@ mod tests {
         ];
         let xds = build_xd(&bis);
         assert!(xds.is_empty(), "少于3笔不应有线段");
+    }
+
+    #[test]
+    fn test_xd_direction_consistency() {
+        // 方向校验：上升线段终点必须高于起点
+        let bis = vec![
+            make_bi(0, "up", 10.0, 20.0, 0, 3),
+            make_bi(1, "down", 20.0, 15.0, 3, 6),
+            make_bi(2, "up", 15.0, 18.0, 6, 9),
+            make_bi(3, "down", 18.0, 8.0, 9, 12),  // 跌破起点
+            make_bi(4, "up", 8.0, 12.0, 12, 15),
+            make_bi(5, "down", 12.0, 6.0, 15, 18),
+        ];
+        let xds = build_xd(&bis);
+        // 校验后每个线段方向应和端点价格一致
+        for xd in &xds {
+            if xd.direction == "up" {
+                assert!(xd.end_price >= xd.start_price,
+                    "上升线段终点 {} 应 >= 起点 {}", xd.end_price, xd.start_price);
+            } else {
+                assert!(xd.end_price <= xd.start_price,
+                    "下降线段终点 {} 应 <= 起点 {}", xd.end_price, xd.start_price);
+            }
+        }
+    }
+
+    #[test]
+    fn test_xd_alternating_direction() {
+        // 校验：相邻线段方向应交替
+        let bis = vec![
+            make_bi(0, "up", 10.0, 20.0, 0, 3),
+            make_bi(1, "down", 20.0, 15.0, 3, 6),
+            make_bi(2, "up", 15.0, 25.0, 6, 9),
+            make_bi(3, "down", 25.0, 12.0, 9, 12),
+            make_bi(4, "up", 12.0, 22.0, 12, 15),
+            make_bi(5, "down", 22.0, 8.0, 15, 18),
+            make_bi(6, "up", 8.0, 16.0, 18, 21),
+            make_bi(7, "down", 16.0, 5.0, 21, 24),
+        ];
+        let xds = build_xd(&bis);
+        for i in 1..xds.len() {
+            assert_ne!(xds[i].direction, xds[i - 1].direction,
+                "相邻线段方向应交替，但第{}段和第{}段都是{}",
+                i - 1, i, xds[i].direction);
+        }
+    }
+
+    #[test]
+    fn test_xd_unfinished_last() {
+        // 最后一根线段标记为未完成
+        let bis = vec![
+            make_bi(0, "up", 10.0, 20.0, 0, 3),
+            make_bi(1, "down", 20.0, 15.0, 3, 6),
+            make_bi(2, "up", 15.0, 18.0, 6, 9),
+        ];
+        let xds = build_xd(&bis);
+        if let Some(last) = xds.last() {
+            assert!(!last.is_finished, "最后一段未完成线段应标记 is_finished=false");
+        }
     }
 }

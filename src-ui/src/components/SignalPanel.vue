@@ -43,13 +43,15 @@ const czscSignals = computed(() => {
     if (bc.bc_sub_type === "panzheng") label += "(盘整)";
     // 背驰取对应 K 线的高/低价作为定位
     const k = props.chartData.klines[bc.index];
+    // 顶背驰红色系，底背驰绿色系
+    const bcColor = bc.direction === "up" ? "#ff5252" : "#69f0ae";
     signals.push({
       type: "beichi",
-      label,
+      label: bc.direction === "up" ? label + " 顶" : label + " 底",
       index: bc.index,
       dt: bc.dt,
       price: bc.direction === "up" ? (k?.high ?? 0) : (k?.low ?? 0),
-      color: "#ff9800",
+      color: bcColor,
     });
   }
 

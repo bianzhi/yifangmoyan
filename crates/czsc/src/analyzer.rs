@@ -59,12 +59,13 @@ impl CzscAnalyzer {
         // 6. 背驰检测（笔级别 + 线段级别）
         let bi_beichi = detect_bi_beichi(&bis, macd, &bi_zs);
         let xd_beichi = detect_xd_beichi(&xds, macd, &xd_zs);
-        let mut beichi = bi_beichi;
-        beichi.extend(xd_beichi);
+        let mut beichi = bi_beichi.clone();
+        beichi.extend(xd_beichi.clone());
 
         // 7. 买卖点识别（笔级别 + 线段级别）
-        let bi_bs = detect_buy_sell(&bis, &bi_zs, &beichi);
-        let xd_bs = detect_xd_buy_sell(&xds, &xd_zs, &beichi);
+        // 重要：笔级别买卖点只看笔背驰，线段级别买卖点只看线段背驰，避免重复
+        let bi_bs = detect_buy_sell(&bis, &bi_zs, &bi_beichi);
+        let xd_bs = detect_xd_buy_sell(&xds, &xd_zs, &xd_beichi);
         let mut buy_sell = bi_bs;
         buy_sell.extend(xd_bs);
         buy_sell.sort_by_key(|p| p.index);

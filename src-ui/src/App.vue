@@ -155,6 +155,27 @@ const subLevelPanel = ref<{
   loading: boolean;
 } | null>(null);
 
+// ===== 右侧面板拖动 =====
+const rightPanelTopHeight = ref(240);
+const rightPanelDragState = ref<{ startY: number; startTopHeight: number } | null>(null);
+
+function startRightPanelDrag(e: MouseEvent) {
+  e.preventDefault();
+  rightPanelDragState.value = { startY: e.clientY, startTopHeight: rightPanelTopHeight.value };
+  const onMove = (ev: MouseEvent) => {
+    if (!rightPanelDragState.value) return;
+    const delta = ev.clientY - rightPanelDragState.value.startY;
+    rightPanelTopHeight.value = Math.max(60, Math.min(600, rightPanelDragState.value.startTopHeight + delta));
+  };
+  const onUp = () => {
+    rightPanelDragState.value = null;
+    document.removeEventListener("mousemove", onMove);
+    document.removeEventListener("mouseup", onUp);
+  };
+  document.addEventListener("mousemove", onMove);
+  document.addEventListener("mouseup", onUp);
+}
+
 // ===== 计算属性 =====
 const currentPrice = computed(() => {
   if (!chartData.value || chartData.value.klines.length === 0) return null;
@@ -434,6 +455,12 @@ function renderChart() {
       if (bs && !info) {
         info = { type: "bs", data: bs, x: param.point.x, y: param.point.y };
       }
+
+      // 查找背驰
+      const bc = data.czsc.beichi.find((b) => b.index === idx);
+      if (bc && !info) {
+        info = { type: "beichi", data: bc, x: param.point.x, y: param.point.y };
+      }
     }
 
     // 查找威科夫事件
@@ -555,7 +582,7 @@ function renderCzscOverlays(data: ChartData) {
     renderZhongShu(czsc.xd_zs, data, zsStyle);
   }
 
-  // 背驰标记
+  // 背驰标记 — 顶背驰红色，底背驰绿色
   if (settings.value.czsc.showBeichi && czsc.beichi.length > 0) {
     for (const bc of czsc.beichi) {
       const k = data.klines[bc.index];
@@ -565,10 +592,12 @@ function renderCzscOverlays(data: ChartData) {
       if (bc.bc_sub_type === "panzheng") text = "⚡盘整";
       else if (bc.bc_type === "xd_beichi") text = "⚡线段";
       else text = "⚡笔";
+      // 顶背驰用红色系，底背驰用绿色系
+      const bcColor = isUp ? "#ff5252" : "#69f0ae";
       allMarkers.push({
         time: toTime(k.dt),
         position: isUp ? ("aboveBar" as const) : ("belowBar" as const),
-        color: "#ff9800",
+        color: bcColor,
         shape: "circle" as const,
         size: 1,
         text,
@@ -1254,6 +1283,17 @@ watch(currentView, (val) => {
         <span class="text-gray-400">{{ symbol }}</span>
         <span v-if="chartData?.name" class="text-gray-300">{{ chartData.name }}</span>
 
+        <!-- 光标位置背驰信息 -->
+        <template v-if="crosshairKline && chartData?.czsc?.beichi">
+          <template v-for="bc in chartData.czsc.beichi.filter(b => b.index === crosshairKline!.id)" :key="bc.index + bc.direction">
+            <span class="text-xs font-semibold" :class="bc.direction === 'up' ? 'text-[#ff5252]' : 'text-[#69f0ae]'">
+              {{ bc.direction === 'up' ? '⚡顶背驰' : '⚡底背驰' }}
+              <span class="font-normal text-[#9e9e9e]">({{ bc.bc_type === 'xd_beichi' ? '线段' : '笔' }}{{ bc.bc_sub_type === 'panzheng' ? '·盘整' : bc.bc_sub_type === 'trend' ? '·趋势' : '' }})</span>
+            </span>
+            <span v-if="bc.reason" class="text-[10px] text-[#9e9e9e] max-w-[200px] truncate" :title="bc.reason">{{ bc.reason }}</span>
+          </template>
+        </template>
+
         <!-- 自选股按钮 -->
         <button
           @click="isInWatchlist(symbol) ? null : addToWatchlist(symbol)"
@@ -1345,6 +1385,15 @@ watch(currentView, (val) => {
               <div>价格: {{ tooltipInfo.data.price.toFixed(2) }}</div>
               <div>时间: {{ tooltipInfo.data.dt }}</div>
             </template>
+            <template v-else-if="tooltipInfo.type === 'beichi'">
+              <div class="font-bold" :class="tooltipInfo.data.direction === 'up' ? 'text-[#ff5252]' : 'text-[#69f0ae]'">
+                {{ tooltipInfo.data.direction === 'up' ? '顶背驰' : '底背驰' }}
+                <span class="font-normal text-[#9e9e9e]">
+                  ({{ tooltipInfo.data.bc_type === 'xd_beichi' ? '线段' : '笔' }}{{ tooltipInfo.data.bc_sub_type === 'panzheng' ? '·盘整' : tooltipInfo.data.bc_sub_type === 'trend' ? '·趋势' : '' }})
+                </span>
+              </div>
+              <div v-if="tooltipInfo.data.reason" class="text-[#ccc] mt-0.5 leading-snug">{{ tooltipInfo.data.reason }}</div>
+            </template>
             <template v-else-if="tooltipInfo.type === 'wyckoff'">
               <div class="font-bold" :style="{ color: WYCKOFF_EVENT_COLORS[tooltipInfo.data.event_type] || '#fff' }">
                 {{ tooltipInfo.data.event_type }}
@@ -1382,19 +1431,30 @@ watch(currentView, (val) => {
         <!-- 右侧面板 -->
         <div class="flex flex-col w-72 shrink-0 border-l border-[#2a2a4a]">
           <!-- 信号摘要面板 -->
-          <SignalPanel
-            v-if="chartData"
-            :chart-data="chartData"
-            :settings="settings"
-            @navigate="navigateToSignal"
-            class="flex-1 overflow-y-auto"
-          />
+          <div :style="{ height: rightPanelTopHeight + 'px' }" class="overflow-y-auto min-h-0">
+            <SignalPanel
+              v-if="chartData"
+              :chart-data="chartData"
+              :settings="settings"
+              @navigate="navigateToSignal"
+            />
+          </div>
+
+          <!-- 可拖动分割条 -->
+          <div
+            class="h-1.5 bg-[#2a2a4a] cursor-row-resize hover:bg-[#e94560] transition-colors flex items-center justify-center shrink-0"
+            @mousedown="startRightPanelDrag"
+          >
+            <div class="w-8 h-0.5 bg-[#666] rounded-full"></div>
+          </div>
 
           <!-- 勾选设置面板 -->
-          <SettingsPanel
-            :settings="settings"
-            @change="onSettingsChange"
-          />
+          <div class="flex-1 overflow-y-auto min-h-0">
+            <SettingsPanel
+              :settings="settings"
+              @change="onSettingsChange"
+            />
+          </div>
         </div>
       </main>
     </div>

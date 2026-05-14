@@ -332,6 +332,8 @@ pub struct BeiChi {
     pub direction: String,
     /// 背驰子类型: "trend" (趋势背驰) / "panzheng" (盘整背驰)
     pub bc_sub_type: String,
+    /// 背驰判断理由（如：价格力度 0.50 < 前段 0.80, MACD面积 12.3 < 前段 25.6）
+    pub reason: String,
 }
 
 impl Default for BeiChi {
@@ -342,6 +344,7 @@ impl Default for BeiChi {
             dt: String::new(),
             direction: String::new(),
             bc_sub_type: "trend".to_string(),
+            reason: String::new(),
         }
     }
 }

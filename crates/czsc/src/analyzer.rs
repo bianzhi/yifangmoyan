@@ -49,8 +49,8 @@ impl CzscAnalyzer {
         // 3. 构建笔
         let bis = build_bi(klines, None);
 
-        // 4. 构建线段（使用 FX-as-KLine 方法）
-        let xds = build_xd(&bis, &fxs);
+        // 4. 构建线段（特征序列分型破坏法）
+        let xds = build_xd(&bis);
 
         // 5. 识别中枢
         let bi_zs = build_bi_zs(&bis);

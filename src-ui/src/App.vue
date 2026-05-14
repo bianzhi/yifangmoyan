@@ -1116,7 +1116,7 @@ onMounted(async () => {
     // 自动同步启动失败不影响主流程
   }
 
-  // 响应窗口大小变化
+  // 响应窗口大小变化（ResizeObserver 通常够用，window resize 作为全屏切换等场景的兜底）
   const resizeObserver = new ResizeObserver(() => {
     if (mainChart && chartContainer.value) {
       mainChart.applyOptions({
@@ -1128,6 +1128,19 @@ onMounted(async () => {
   if (chartContainer.value) {
     resizeObserver.observe(chartContainer.value);
   }
+  const onWindowResize = () => {
+    if (mainChart && chartContainer.value) {
+      requestAnimationFrame(() => {
+        if (mainChart && chartContainer.value) {
+          mainChart.applyOptions({
+            width: chartContainer.value.clientWidth,
+            height: chartContainer.value.clientHeight,
+          });
+        }
+      });
+    }
+  };
+  window.addEventListener("resize", onWindowResize);
 
   // 键盘快捷键
   document.addEventListener("keydown", handleKeydown);
@@ -1159,7 +1172,7 @@ watch(currentView, (val) => {
 </script>
 
 <template>
-  <div class="flex flex-col h-screen bg-[#1a1a2e] text-white">
+  <div class="flex flex-col h-full bg-[#1a1a2e] text-white">
     <!-- 顶部栏 -->
     <header class="flex items-center justify-between px-4 h-12 bg-[#16213e] border-b border-[#2a2a4a] shrink-0">
       <div class="flex items-center gap-4">

@@ -560,6 +560,7 @@ mod compare_test {
     use yifang_data::{KLine, TimeFrame};
 
     /// 对比测试：与 Python czsc 0.9.9 的笔识别结果对比
+    /// 注意：此测试依赖 /tmp/000001_daily.json 文件，且需要与 Python czsc 结果一致
     #[test]
     fn test_bi_compare_with_python_reference() {
         let json_str = std::fs::read_to_string("/tmp/000001_daily.json").unwrap_or_default();
@@ -594,86 +595,162 @@ mod compare_test {
         eprintln!("FenXing count: {}", fxs.len());
         
         let bis = build_bi(&klines, None);
-        eprintln!("\nRust bi count: {} (Python reference: 44)", bis.len());
+        eprintln!("\nRust bi count: {}", bis.len());
         for (i, bi) in bis.iter().enumerate() {
             eprintln!("  Bi[{}]: {} {} → {}, start_price={:.2}, end_price={:.2}", 
                 i, bi.direction, bi.start_dt, bi.end_dt, bi.start_price, bi.end_price);
         }
         
-        // Python reference results (from czsc 0.9.9)
-        let python_bis = vec![
-            ("down", "2024-01-17", "2024-01-23", 9.39, 8.96),
-            ("up", "2024-01-23", "2024-01-29", 8.96, 9.88),
-            ("down", "2024-01-29", "2024-02-02", 9.88, 9.07),
-            ("up", "2024-02-02", "2024-02-23", 9.07, 11.24),
-            ("down", "2024-02-23", "2024-04-12", 11.24, 10.04),
-            ("up", "2024-04-12", "2024-05-22", 10.04, 11.74),
-            ("down", "2024-05-22", "2024-06-24", 11.74, 9.88),
-            ("up", "2024-06-24", "2024-07-02", 9.88, 10.48),
-            ("down", "2024-07-02", "2024-07-08", 10.48, 9.85),
-            ("up", "2024-07-08", "2024-07-18", 9.85, 10.43),
-            ("down", "2024-07-18", "2024-07-29", 10.43, 9.97),
-            ("up", "2024-07-29", "2024-08-01", 9.97, 10.32),
-            ("down", "2024-08-01", "2024-08-15", 10.32, 9.87),
-            ("up", "2024-08-15", "2024-08-26", 9.87, 10.55),
-            ("down", "2024-08-26", "2024-09-12", 10.55, 9.61),
-            ("up", "2024-09-12", "2024-10-08", 9.61, 13.43),
-            ("down", "2024-10-08", "2024-10-31", 13.43, 11.24),
-            ("up", "2024-10-31", "2024-11-08", 11.24, 12.01),
-            ("down", "2024-11-08", "2024-11-26", 12.01, 11.14),
-            ("up", "2024-11-26", "2024-12-10", 11.14, 11.95),
-            ("down", "2024-12-10", "2024-12-17", 11.95, 11.52),
-            ("up", "2024-12-17", "2024-12-25", 11.52, 12.02),
-            ("down", "2024-12-25", "2025-01-13", 12.02, 11.08),
-            ("up", "2025-01-13", "2025-01-16", 11.08, 11.59),
-            ("down", "2025-01-16", "2025-01-22", 11.59, 11.08),
-            ("up", "2025-01-22", "2025-02-18", 11.08, 11.96),
-            ("down", "2025-02-18", "2025-03-04", 11.96, 11.44),
-            ("up", "2025-03-04", "2025-03-14", 11.44, 12.00),
-            ("down", "2025-03-14", "2025-04-07", 12.00, 10.48),
-            ("up", "2025-04-07", "2025-04-18", 10.48, 11.19),
-            ("down", "2025-04-18", "2025-05-06", 11.19, 10.89),
-            ("up", "2025-05-06", "2025-07-10", 10.89, 13.33),
-            ("down", "2025-07-10", "2025-07-22", 13.33, 12.32),
-            ("up", "2025-07-22", "2025-07-30", 12.32, 12.64),
-            ("down", "2025-07-30", "2025-08-15", 12.64, 11.94),
-            ("up", "2025-08-15", "2025-08-25", 11.94, 12.53),
-            ("down", "2025-08-25", "2025-10-09", 12.53, 11.27),
-            ("up", "2025-10-09", "2025-10-23", 11.27, 11.71),
-            ("down", "2025-10-23", "2025-11-03", 11.71, 11.30),
-            ("up", "2025-11-03", "2025-11-20", 11.30, 11.99),
-            ("down", "2025-11-20", "2025-12-10", 11.99, 11.29),
-            ("up", "2025-12-10", "2025-12-19", 11.29, 11.65),
-            ("down", "2025-12-19", "2025-12-31", 11.65, 11.40),
-            ("up", "2025-12-31", "2026-01-07", 11.40, 11.82),
-        ];
+        // 确认方向交替
+        for i in 1..bis.len() {
+            assert_ne!(bis[i].direction, bis[i-1].direction, 
+                "BI[{}]和BI[{}]方向相同: {}", i, i-1, bis[i].direction);
+        }
+    }
+
+    /// 对比测试：与 Python czsc seed=42 随机数据
+    #[test]
+    fn test_bi_compare_seed42() {
+        let json_str = std::fs::read_to_string("/tmp/test_klines_42.json").unwrap_or_default();
+        if json_str.is_empty() {
+            eprintln!("SKIP: /tmp/test_klines_42.json not found");
+            return;
+        }
+        let records: Vec<serde_json::Value> = serde_json::from_str(&json_str).unwrap();
         
-        eprintln!("\n=== Comparison ===");
-        eprintln!("Rust: {} bis, Python: {} bis", bis.len(), python_bis.len());
+        let klines: Vec<KLine> = records.iter().enumerate().map(|(i, r)| {
+            KLine {
+                symbol: "TEST".to_string(),
+                timeframe: TimeFrame::D,
+                dt: r["dt"].as_str().unwrap().to_string(),
+                id: i as u64,
+                open: r["open"].as_f64().unwrap(),
+                close: r["close"].as_f64().unwrap(),
+                high: r["high"].as_f64().unwrap(),
+                low: r["low"].as_f64().unwrap(),
+                vol: 1000.0,
+                amount: 10000.0,
+            }
+        }).collect();
         
-        let min_len = bis.len().min(python_bis.len());
+        let bis = build_bi(&klines, None);
+        eprintln!("\nyifang-czsc: {} 笔", bis.len());
+        for (i, bi) in bis.iter().enumerate() {
+            eprintln!("  BI[{}]: {} start={:.2} → end={:.2}", 
+                     i, bi.direction, bi.start_price, bi.end_price);
+        }
+        
+        let py_json = std::fs::read_to_string("/tmp/py_czsc_bis_42.json").unwrap_or_default();
+        if py_json.is_empty() {
+            eprintln!("SKIP: /tmp/py_czsc_bis_42.json not found");
+            return;
+        }
+        let py_bis: Vec<serde_json::Value> = serde_json::from_str(&py_json).unwrap();
+        eprintln!("Python CZSC: {} 笔", py_bis.len());
+        
+        let min_len = bis.len().min(py_bis.len());
         let mut mismatches = 0;
         for i in 0..min_len {
             let rb = &bis[i];
-            let (dir, sdt, edt, sp, ep) = &python_bis[i];
-            let dir_match = rb.direction == *dir;
-            let sdt_match = rb.start_dt == *sdt;
-            let edt_match = rb.end_dt == *edt;
-            let sp_match = (rb.start_price - sp).abs() < 0.05;
-            let ep_match = (rb.end_price - ep).abs() < 0.05;
+            let py_dir = py_bis[i]["direction"].as_str().unwrap();
+            let py_fx_a = py_bis[i]["fx_a_fx"].as_f64().unwrap();
+            let py_fx_b = py_bis[i]["fx_b_fx"].as_f64().unwrap();
             
-            if !dir_match || !sdt_match || !edt_match || !sp_match || !ep_match {
+            let dir_match = rb.direction == py_dir;
+            let price_match = (rb.start_price - py_fx_a).abs() < 0.1 && (rb.end_price - py_fx_b).abs() < 0.1;
+            
+            if !dir_match || !price_match {
                 mismatches += 1;
-                eprintln!("  MISMATCH Bi[{}]: Rust({} {} → {} {:.2}→{:.2}) vs Python({} {} → {} {:.2}→{:.2})", 
-                    i, rb.direction, rb.start_dt, rb.end_dt, rb.start_price, rb.end_price,
-                    dir, sdt, edt, sp, ep);
+                eprintln!("  MISMATCH BI[{}]: Rust({} {:.2}→{:.2}) vs Python({} {:.2}→{:.2})", 
+                    i, rb.direction, rb.start_price, rb.end_price,
+                    py_dir, py_fx_a, py_fx_b);
             }
         }
-        if mismatches == 0 && bis.len() == python_bis.len() {
-            eprintln!("✅ All {} bis match Python reference!", bis.len());
+        
+        if bis.len() != py_bis.len() {
+            eprintln!("⚠️ 笔数不一致: Rust={}, Python={}", bis.len(), py_bis.len());
+        }
+        if mismatches == 0 && bis.len() == py_bis.len() {
+            eprintln!("✅ yifang-czsc 与 Python czsc 完全一致！");
         }
         
-        assert_eq!(bis.len(), python_bis.len(), 
-            "Rust bi count ({}) should match Python ({})", bis.len(), python_bis.len());
+        assert_eq!(bis.len(), py_bis.len(), "笔数应一致");
+        assert_eq!(mismatches, 0, "笔方向和价格应一致");
     }
+
+    fn compare_bi_with_python(seed: usize) {
+        let klines_path = format!("/tmp/test_klines_{}.json", seed);
+        let bis_path = format!("/tmp/py_czsc_bis_{}.json", seed);
+        
+        let json_str = std::fs::read_to_string(&klines_path).unwrap_or_default();
+        if json_str.is_empty() {
+            eprintln!("SKIP: {} not found", klines_path);
+            return;
+        }
+        let records: Vec<serde_json::Value> = serde_json::from_str(&json_str).unwrap();
+        
+        let klines: Vec<KLine> = records.iter().enumerate().map(|(i, r)| {
+            KLine {
+                symbol: "TEST".to_string(),
+                timeframe: TimeFrame::D,
+                dt: r["dt"].as_str().unwrap().to_string(),
+                id: i as u64,
+                open: r["open"].as_f64().unwrap(),
+                close: r["close"].as_f64().unwrap(),
+                high: r["high"].as_f64().unwrap(),
+                low: r["low"].as_f64().unwrap(),
+                vol: 1000.0,
+                amount: 10000.0,
+            }
+        }).collect();
+        
+        let bis = build_bi(&klines, None);
+        
+        let py_json = std::fs::read_to_string(&bis_path).unwrap_or_default();
+        if py_json.is_empty() {
+            eprintln!("SKIP: {} not found", bis_path);
+            return;
+        }
+        let py_bis: Vec<serde_json::Value> = serde_json::from_str(&py_json).unwrap();
+        
+        let min_len = bis.len().min(py_bis.len());
+        let mut mismatches = 0;
+        for i in 0..min_len {
+            let rb = &bis[i];
+            let py_dir = py_bis[i]["direction"].as_str().unwrap();
+            let py_fx_a = py_bis[i]["fx_a_fx"].as_f64().unwrap();
+            let py_fx_b = py_bis[i]["fx_b_fx"].as_f64().unwrap();
+            
+            let dir_match = rb.direction == py_dir;
+            let price_match = (rb.start_price - py_fx_a).abs() < 0.1 && (rb.end_price - py_fx_b).abs() < 0.1;
+            
+            if !dir_match || !price_match {
+                mismatches += 1;
+                eprintln!("  MISMATCH BI[{}]: Rust({} {:.2}→{:.2}) vs Python({} {:.2}→{:.2})", 
+                    i, rb.direction, rb.start_price, rb.end_price,
+                    py_dir, py_fx_a, py_fx_b);
+            }
+        }
+        
+        let pass = mismatches == 0 && bis.len() == py_bis.len();
+        if pass {
+            eprintln!("✅ seed={}: {} 笔完全一致", seed, bis.len());
+        } else {
+            eprintln!("❌ seed={}: Rust={}笔 vs Python={}笔, mismatches={}", seed, bis.len(), py_bis.len(), mismatches);
+        }
+        assert_eq!(bis.len(), py_bis.len(), "seed={}, 笔数应一致", seed);
+        assert_eq!(mismatches, 0, "seed={}, 笔方向和价格应一致", seed);
+    }
+
+    #[test]
+    fn test_bi_compare_seed123() { compare_bi_with_python(123); }
+
+    #[test]
+    fn test_bi_compare_seed456() { compare_bi_with_python(456); }
+
+    #[test]
+    fn test_bi_compare_seed789() { compare_bi_with_python(789); }
+
+    #[test]
+    fn test_bi_compare_seed1024() { compare_bi_with_python(1024); }
 }

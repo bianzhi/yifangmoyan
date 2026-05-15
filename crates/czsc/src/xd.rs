@@ -55,19 +55,17 @@ impl FeatureElement {
     }
 }
 
-// ─── 特征序列包含处理 ─────────────────────────────────
-
 /// 对特征序列做包含处理
 ///
-/// **关键：包含处理方向由线段方向决定，而非特征序列自身的趋势方向。**
+/// **关键：包含处理方向由线段方向决定。**
 ///
 /// 缠论原文（第71课）：
-/// - 向上线段的特征序列（下降笔）：按**下降方向**处理包含
-///   下降方向合并：high = min(h1,h2), low = min(l1,l2)
-///   效果：合并后范围缩小（保留更低的区间），与K线下降趋势包含处理一致
-/// - 向下线段的特征序列（上升笔）：按**上升方向**处理包含
+/// - 向上线段的特征序列（下降笔）：按**上升方向**处理包含
 ///   上升方向合并：high = max(h1,h2), low = max(l1,l2)
-///   效果：合并后范围扩大（保留更高的区间），与K线上升趋势包含处理一致
+///   效果：保留高点信息，帮助识别顶分型
+/// - 向下线段的特征序列（上升笔）：按**下降方向**处理包含
+///   下降方向合并：high = min(h1,h2), low = min(l1,l2)
+///   效果：保留低点信息，帮助识别底分型
 fn contain_feature_sequence(
     elements: &[FeatureElement],
     is_xd_up: bool,
@@ -89,17 +87,17 @@ fn contain_feature_sequence(
         if has_include {
             let last = result.last_mut().unwrap();
             if is_xd_up {
-                // 向上线段的特征序列（下降笔）：按下降方向处理包含
-                // 下降方向：取低低=min(h1,h2)、高低=min(l1,l2)
-                // 等价于K线包含处理中的下降方向合并
-                last.high = last.high.min(curr.high);
-                last.low = last.low.min(curr.low);
-            } else {
-                // 向下线段的特征序列（上升笔）：按上升方向处理包含
+                // 向上线段：特征序列按上升方向处理包含
                 // 上升方向：取高高=max(h1,h2)、低高=max(l1,l2)
-                // 等价于K线包含处理中的上升方向合并
+                // 保留高点信息，帮助识别顶分型
                 last.high = last.high.max(curr.high);
                 last.low = last.low.max(curr.low);
+            } else {
+                // 向下线段：特征序列按下降方向处理包含
+                // 下降方向：取低低=min(h1,h2)、高低=min(l1,l2)
+                // 保留低点信息，帮助识别底分型
+                last.high = last.high.min(curr.high);
+                last.low = last.low.min(curr.low);
             }
         } else {
             result.push(curr.clone());
@@ -120,18 +118,16 @@ enum FenxingType {
 
 /// 检测特征序列三个相邻元素是否形成分型
 ///
-/// 顶分型：中间元素的高点和低点都高于两侧
-/// 底分型：中间元素的高点和低点都低于两侧
+/// 缠论第71课：特征序列的分型和K线分型一样。
+/// 特征序列元素=笔的价格区间[low, high]。
+///
+/// 顶分型：中间元素的 high 高于两侧元素的 high
+///   （中间元素的"峰"比两侧高 → 转折极值点）
+/// 底分型：中间元素的 low 低于两侧元素的 low
+///   （中间元素的"谷"比两侧低 → 转折极值点）
 fn check_fenxing(prev: &FeatureElement, curr: &FeatureElement, next: &FeatureElement) -> Option<FenxingType> {
-    let is_top = prev.high < curr.high
-        && curr.high > next.high
-        && prev.low < curr.low
-        && curr.low > next.low;
-
-    let is_bottom = prev.low > curr.low
-        && curr.low < next.low
-        && prev.high > curr.high
-        && curr.high < next.high;
+    let is_top = prev.high < curr.high && curr.high > next.high;
+    let is_bottom = prev.low > curr.low && curr.low < next.low;
 
     if is_top {
         Some(FenxingType::Top)
@@ -196,16 +192,22 @@ fn check_overlap_of_first_3(bis: &[Bi], start: usize) -> bool {
 
 /// 特征序列法构建线段
 ///
-/// 步骤：
+/// 核心逻辑：
 /// 1. 从第一个笔确定线段方向
 /// 2. 检查前三笔重叠（线段成立硬条件）
 /// 3. 提取特征序列（与线段方向相反的笔）
 /// 4. 对特征序列做包含处理（包含方向由线段方向决定）
-/// 5. 在标准特征序列上找分型：
-///    - 无缺口分型 → 直接确认线段终结
-///    - 有缺口分型 → 需要二次确认
-/// 6. 下一线段从终结处开始，方向交替
+/// 5. 在标准特征序列上找分型（笔破坏预警）：
+///    - 无缺口分型 → 预警待确认
+///    - 有缺口分型 → 预警待确认（需二次确认）
+/// 6. 预警后，检查后续同向笔是否创新值：
+///    - 创新值 → 预警取消，线段延续
+///    - 未创新值 → 确认线段终结
 fn build_xd_by_feature_sequence(bis: &[Bi], min_len: usize) -> Vec<XianDuan> {
+    if bis.len() < min_len {
+        return Vec::new();
+    }
+
     let mut xds = Vec::new();
     let mut start_bi_idx: usize = 0;
 
@@ -216,11 +218,17 @@ fn build_xd_by_feature_sequence(bis: &[Bi], min_len: usize) -> Vec<XianDuan> {
 
         // 前三笔重叠检查（线段成立硬条件）
         if !check_overlap_of_first_3(bis, start_bi_idx) {
-            // 前三笔无重叠，不能构成线段
-            // 尝试从下一笔开始
             start_bi_idx += 1;
             continue;
         }
+
+        // 线段当前极值点：上升线段跟踪最高点，下降线段跟踪最低点
+        // 在线段起始到破坏点之间，跟踪所有同向笔的极值
+        let mut xd_extreme = if is_xd_up {
+            bis[start_bi_idx].start_price.max(bis[start_bi_idx].end_price)
+        } else {
+            bis[start_bi_idx].start_price.min(bis[start_bi_idx].end_price)
+        };
 
         // 提取特征序列：与线段方向相反的笔
         let feature_indices: Vec<usize> = (start_bi_idx..bis.len())
@@ -228,7 +236,6 @@ fn build_xd_by_feature_sequence(bis: &[Bi], min_len: usize) -> Vec<XianDuan> {
             .collect();
 
         if feature_indices.len() < 3 {
-            // 特征序列不足3个元素，无法形成分型
             break;
         }
 
@@ -241,7 +248,7 @@ fn build_xd_by_feature_sequence(bis: &[Bi], min_len: usize) -> Vec<XianDuan> {
         // 对特征序列做包含处理（方向由线段方向决定）
         let contained = contain_feature_sequence(&elements, is_xd_up);
 
-        // 在包含处理后的特征序列上找分型
+        // 在包含处理后的特征序列上找分型（笔破坏预警）
         let mut found_break = false;
 
         for i in 1..contained.len().saturating_sub(1) {
@@ -260,8 +267,6 @@ fn build_xd_by_feature_sequence(bis: &[Bi], min_len: usize) -> Vec<XianDuan> {
 
             if is_break {
                 let gap = has_gap(prev, curr, is_xd_up);
-
-                // 终结笔索引 = curr 对应的原始笔索引
                 let break_bi_idx = curr.bi_index;
 
                 // 至少 min_len 笔构成线段
@@ -269,9 +274,45 @@ fn build_xd_by_feature_sequence(bis: &[Bi], min_len: usize) -> Vec<XianDuan> {
                     continue;
                 }
 
+                // 更新极值到破坏点（含线段内所有同向笔）
+                for j in start_bi_idx..=break_bi_idx {
+                    if bis[j].direction == xd_direction {
+                        let bi_high = bis[j].start_price.max(bis[j].end_price);
+                        let bi_low = bis[j].start_price.min(bis[j].end_price);
+                        if is_xd_up {
+                            xd_extreme = xd_extreme.max(bi_high);
+                        } else {
+                            xd_extreme = xd_extreme.min(bi_low);
+                        }
+                    }
+                }
+
+                // ── 检查后续同向笔是否创新值 ──
+                // 上升线段：后续向上笔是否创新高（超过线段最高点）
+                // 下降线段：后续向下笔是否创新低（低于线段最低点）
+                let mut innovation_after_break = false;
+                for j in (break_bi_idx + 1)..bis.len() {
+                    if bis[j].direction == xd_direction {
+                        let bi_high = bis[j].start_price.max(bis[j].end_price);
+                        let bi_low = bis[j].start_price.min(bis[j].end_price);
+                        if is_xd_up && bi_high > xd_extreme {
+                            innovation_after_break = true;
+                            break;
+                        }
+                        if !is_xd_up && bi_low < xd_extreme {
+                            innovation_after_break = true;
+                            break;
+                        }
+                    }
+                }
+
+                if innovation_after_break {
+                    // 预警取消：后续同向笔创新值，线段延续
+                    continue;
+                }
+
                 if gap {
                     // ── 有缺口：需要二次确认 ──
-                    // 必须后续形成反向线段的特征序列分型
                     let confirmed = confirm_gap_break(
                         bis, break_bi_idx, is_xd_up, &contained, i, min_len,
                     );
@@ -282,7 +323,6 @@ fn build_xd_by_feature_sequence(bis: &[Bi], min_len: usize) -> Vec<XianDuan> {
                         found_break = true;
                         break;
                     }
-                    // 未确认，继续寻找下一个分型
                 } else {
                     // ── 无缺口：直接确认 ──
                     push_xd(&mut xds, bis, start_bi_idx, break_bi_idx, true);
@@ -294,7 +334,6 @@ fn build_xd_by_feature_sequence(bis: &[Bi], min_len: usize) -> Vec<XianDuan> {
         }
 
         if !found_break {
-            // 没有找到破坏分型，线段延续到末尾
             break;
         }
     }
@@ -304,7 +343,6 @@ fn build_xd_by_feature_sequence(bis: &[Bi], min_len: usize) -> Vec<XianDuan> {
         let start_bi = &bis[start_bi_idx];
         let end_bi = &bis[bis.len() - 1];
 
-        // 最后一段也需要前三笔重叠
         if check_overlap_of_first_3(bis, start_bi_idx) || bis.len() - start_bi_idx < 3 {
             xds.push(XianDuan {
                 direction: start_bi.direction.clone(),
@@ -321,10 +359,6 @@ fn build_xd_by_feature_sequence(bis: &[Bi], min_len: usize) -> Vec<XianDuan> {
 
     xds
 }
-
-/// 有缺口时的二次确认
-///
-/// 当特征序列分型的第一元素和第二元素之间有缺口时，
 /// 需要后续形成反向特征序列的分型才能确认原线段终结。
 ///
 /// 具体做法：
@@ -461,13 +495,13 @@ mod tests {
 
     #[test]
     fn test_fenxing_detection() {
-        // 顶分型：中间高点和低点都最高
+        // 顶分型：中间元素的 high 高于两侧
         let prev = FeatureElement { high: 15.0, low: 10.0, bi_index: 0 };
         let curr = FeatureElement { high: 20.0, low: 15.0, bi_index: 1 };
         let next = FeatureElement { high: 17.0, low: 13.0, bi_index: 2 };
         assert_eq!(check_fenxing(&prev, &curr, &next), Some(FenxingType::Top));
 
-        // 底分型：中间高点和低点都最低
+        // 底分型：中间元素的 low 低于两侧
         let prev2 = FeatureElement { high: 17.0, low: 13.0, bi_index: 0 };
         let curr2 = FeatureElement { high: 12.0, low: 8.0, bi_index: 1 };
         let next2 = FeatureElement { high: 15.0, low: 10.0, bi_index: 2 };
@@ -502,7 +536,7 @@ mod tests {
 
     #[test]
     fn test_contain_feature_sequence_up_xd() {
-        // 向上线段 → 特征序列按下降方向处理包含 (min+min)
+        // 向上线段 → 特征序列按上升方向处理包含 (max+max)
         // 不包含的例子
         let elements = vec![
             FeatureElement { high: 15.0, low: 10.0, bi_index: 0 },
@@ -517,21 +551,21 @@ mod tests {
         ];
         let result = contain_feature_sequence(&elements2, true);
         assert_eq!(result.len(), 1);
-        assert_eq!(result[0].high, 18.0); // min(20,18)
-        assert_eq!(result[0].low, 15.0);  // min(15,16)
+        assert_eq!(result[0].high, 20.0); // max(20,18)
+        assert_eq!(result[0].low, 16.0);  // max(15,16)
     }
 
     #[test]
     fn test_contain_feature_sequence_down_xd() {
-        // 向下线段 → 特征序列按上升方向处理包含 (max+max)
+        // 向下线段 → 特征序列按下降方向处理包含 (min+min)
         let elements = vec![
             FeatureElement { high: 18.0, low: 12.0, bi_index: 0 },
             FeatureElement { high: 16.0, low: 14.0, bi_index: 1 },
         ];
         let result = contain_feature_sequence(&elements, false);
         assert_eq!(result.len(), 1);
-        assert_eq!(result[0].high, 18.0); // max(18,16)
-        assert_eq!(result[0].low, 14.0);  // max(12,14)
+        assert_eq!(result[0].high, 16.0); // min(18,16)
+        assert_eq!(result[0].low, 12.0);  // min(12,14)
     }
 
     // ─── 线段构建测试 ──────────────────────────────────
@@ -604,6 +638,9 @@ mod tests {
     #[test]
     fn test_xd_alternating_directions() {
         // 上升→下降交替
+        // 上升线段从BI[0]开始，特征序列顶分型在[0,1,2]
+        // 但BI[4]和BI[6]高点都较高，BI[6]h=28>线段极值25→创新值
+        // 所以上升线段不会在BI[2]处终结
         let bis = vec![
             make_bi(0, "up", 10.0, 20.0, 0, 3),
             make_bi(1, "down", 20.0, 10.0, 3, 6),
@@ -615,15 +652,11 @@ mod tests {
             make_bi(7, "down", 28.0, 20.0, 21, 24),
         ];
         let xds = build_xd(&bis);
+        // BI[6]创新高28，上升线段不终结
         assert!(xds.len() >= 1);
         assert_eq!(xds[0].direction, "up");
-        assert!(xds[0].is_finished);
-        assert_eq!(xds[0].end_price, 25.0);
-
-        if xds.len() >= 2 {
-            assert_eq!(xds[1].direction, "down");
-            assert!(xds[1].start_price >= xds[1].end_price);
-        }
+        // 上升线段延续（未终结），因为BI[6]创新高28
+        assert!(!xds[0].is_finished);
     }
 
     #[test]
@@ -679,6 +712,100 @@ mod tests {
         assert_eq!(xds[1].direction, "down");
         if xds[1].is_finished {
             assert_eq!(xds[1].end_price, 8.0);
+            }
+    }
+
+    #[test]
+    fn test_xd_innovation_cancels_break() {
+        // 上升线段：特征序列出现顶分型，但后续向上笔创新高，预警取消
+        // BI[0]↑10→20, BI[1]↓20→10, BI[2]↑10→25
+        // BI[3]↓25→18, BI[4]↑18→22, BI[5]↓22→15
+        // BI[6]↑15→30(创新高！)
+        // 特征序列(上升方向max+max): [20/10, 25/18, 22/15] → 顶分型
+        // 但 BI[6] h=30 > xd_extreme=25 → 创新值 → 预警取消
+        let bis = vec![
+            make_bi(0, "up", 10.0, 20.0, 0, 3),
+            make_bi(1, "down", 20.0, 10.0, 3, 6),
+            make_bi(2, "up", 10.0, 25.0, 6, 9),
+            make_bi(3, "down", 25.0, 18.0, 9, 12),
+            make_bi(4, "up", 18.0, 22.0, 12, 15),
+            make_bi(5, "down", 22.0, 15.0, 15, 18),
+            make_bi(6, "up", 15.0, 30.0, 18, 21),
+        ];
+        let xds = build_xd(&bis);
+        assert!(xds.len() >= 1);
+        assert_eq!(xds[0].direction, "up");
+        assert!(!xds[0].is_finished, "线段应延续（BI[6]创新高30>25）");
+    }
+
+    #[test]
+    fn test_xd_no_innovation_confirms_break() {
+        // 上升线段：特征序列出现顶分型，后续向上笔不创新高，确认终结
+        // BI[0]↑10→20, BI[1]↓20→10, BI[2]↑10→25
+        // BI[3]↓25→18, BI[4]↑18→22, BI[5]↓22→15
+        // BI[6]↑15→23(未创新高23<25)
+        // 特征序列(上升方向max+max): [20/10, 25/18, 22/15] → 顶分型
+        // BI[6] h=23 < xd_extreme=25 → 不创新值 → 确认终结
+        let bis = vec![
+            make_bi(0, "up", 10.0, 20.0, 0, 3),
+            make_bi(1, "down", 20.0, 10.0, 3, 6),
+            make_bi(2, "up", 10.0, 25.0, 6, 9),
+            make_bi(3, "down", 25.0, 18.0, 9, 12),
+            make_bi(4, "up", 18.0, 22.0, 12, 15),
+            make_bi(5, "down", 22.0, 15.0, 15, 18),
+            make_bi(6, "up", 15.0, 23.0, 18, 21),
+            make_bi(7, "down", 23.0, 14.0, 21, 24),
+        ];
+        let xds = build_xd(&bis);
+        assert!(xds.len() >= 1);
+        assert_eq!(xds[0].direction, "up");
+        assert!(xds[0].is_finished, "线段应终结（BI[6]未创新高23<25）");
+    }
+}
+
+#[cfg(test)]
+mod test_000001 {
+    use super::*;
+    use yifang_data::{KLine, TimeFrame};
+    use serde_json;
+
+    #[test]
+    fn test_000001_xd_debug() {
+        let json_str = std::fs::read_to_string("/tmp/000001_daily.json").unwrap_or_default();
+        if json_str.is_empty() {
+            eprintln!("SKIP: /tmp/000001_daily.json not found");
+            return;
+        }
+        let records: Vec<serde_json::Value> = serde_json::from_str(&json_str).unwrap();
+        
+        let klines: Vec<KLine> = records.iter().enumerate().map(|(i, r)| {
+            KLine {
+                symbol: "000001".to_string(),
+                timeframe: TimeFrame::D,
+                dt: r["dt"].as_str().unwrap().to_string(),
+                id: i as u64,
+                open: r["open"].as_f64().unwrap(),
+                close: r["close"].as_f64().unwrap(),
+                high: r["high"].as_f64().unwrap(),
+                low: r["low"].as_f64().unwrap(),
+                vol: r["vol"].as_f64().unwrap(),
+                amount: 0.0,
+            }
+        }).collect();
+        
+        let bis = crate::bi::build_bi(&klines, None);
+        let xds = build_xd(&bis);
+        
+        eprintln!("000001日线: {}笔, {}线段", bis.len(), xds.len());
+        for (i, xd) in xds.iter().enumerate() {
+            eprintln!("  XD[{}] {} {}({:.2}) → {}({:.2}) finished={}", 
+                i, xd.direction, xd.start_dt, xd.start_price, xd.end_dt, xd.end_price, xd.is_finished);
+        }
+        
+        // 验证线段方向交替
+        for i in 1..xds.len() {
+            assert_ne!(xds[i].direction, xds[i-1].direction,
+                "线段[{}]和[{}]方向相同", i, i-1);
         }
     }
 }

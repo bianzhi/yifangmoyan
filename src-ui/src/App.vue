@@ -156,10 +156,9 @@ const subLevelPanel = ref<{
 } | null>(null);
 
 // ===== 右栏窗格拖拽 =====
-/** 三个窗格的像素高度（缠论信号 / 威科夫信号 / 设置） */
+/** 两个窗格的像素高度（缠论信号 / 威科夫信号）；设置窗格自动填充剩余高度 */
 const czscPaneH = ref(200);
 const wyckoffPaneH = ref(200);
-const settingsPaneH = ref(200);
 
 /** 正在拖拽的分隔线：'czsc-wy' 或 'wy-settings' */
 const draggingDivider = ref<string | null>(null);
@@ -176,24 +175,22 @@ function startDividerDrag(e: MouseEvent, divider: string) {
   if (divider === "czsc-wy") {
     dragStartHeights.value = { a: czscPaneH.value, b: wyckoffPaneH.value };
   } else {
-    dragStartHeights.value = { a: wyckoffPaneH.value, b: settingsPaneH.value };
+    // 仅记录 wyckoff 高度，设置窗格由 flex:1 自动填充
+    dragStartHeights.value = { a: wyckoffPaneH.value, b: 0 };
   }
   const onMove = (ev: MouseEvent) => {
     if (!draggingDivider.value) return;
     const delta = ev.clientY - dragStartY.value;
     let newA = dragStartHeights.value.a + delta;
-    let newB = dragStartHeights.value.b - delta;
-    // 限制最小高度
-    if (newA < MIN_PANE_H) { newB -= MIN_PANE_H - newA; newA = MIN_PANE_H; }
-    if (newB < MIN_PANE_H) { newA -= MIN_PANE_H - newB; newB = MIN_PANE_H; }
     newA = Math.max(MIN_PANE_H, newA);
-    newB = Math.max(MIN_PANE_H, newB);
     if (draggingDivider.value === "czsc-wy") {
+      let newB = dragStartHeights.value.b - delta;
+      newB = Math.max(MIN_PANE_H, newB);
       czscPaneH.value = newA;
       wyckoffPaneH.value = newB;
     } else {
       wyckoffPaneH.value = newA;
-      settingsPaneH.value = newB;
+      // 设置窗格由 flex:1 自动填充剩余空间
     }
   };
   const onUp = () => {
@@ -1524,8 +1521,8 @@ watch(currentView, (val) => {
             <div class="w-6 h-0.5 rounded-full bg-[#9e9e9e]/30"></div>
           </div>
 
-          <!-- 设置窗格 -->
-          <div class="flex flex-col min-h-0 overflow-hidden" :style="{ height: settingsPaneH + 'px' }">
+          <!-- 设置窗格（自动填充剩余高度） -->
+          <div class="flex flex-col min-h-0 flex-1 overflow-hidden">
             <div class="shrink-0 px-3 py-1.5 border-b border-[#2a2a4a]/50 flex items-center gap-1.5">
               <span class="w-2 h-2 rounded-full bg-[#b388ff]"></span>
               <span class="text-[10px] font-bold text-[#b388ff] uppercase tracking-wider">设置</span>

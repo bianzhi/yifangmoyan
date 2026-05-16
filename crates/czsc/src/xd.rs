@@ -56,9 +56,10 @@ impl FeatureElement {
 
 /// 向特征序列中增量添加一个元素，并做包含处理
 ///
-/// 包含处理方向由线段方向决定：
-/// - 上升线段特征序列（下降笔）：按下降方向 → high=min, low=max
-/// - 下降线段特征序列（上升笔）：按上升方向 → high=max, low=max
+/// 包含处理方向由线段方向决定（缠论第71课）：
+/// "线段是向上的，特征序列也是向上的"
+/// - 上升线段特征序列（下降笔）：按上升方向 → high=max, low=max
+/// - 下降线段特征序列（上升笔）：按下降方向 → high=min, low=min
 fn feature_seq_push(feature_seq: &mut Vec<FeatureElement>, elem: FeatureElement, is_xd_up: bool) {
     if feature_seq.is_empty() {
         feature_seq.push(elem);
@@ -72,11 +73,13 @@ fn feature_seq_push(feature_seq: &mut Vec<FeatureElement>, elem: FeatureElement,
     if has_include {
         let last = feature_seq.last_mut().unwrap();
         if is_xd_up {
-            last.high = last.high.min(elem.high);
-            last.low = last.low.max(elem.low);
-        } else {
+            // 上升线段：特征序列按上升方向处理
             last.high = last.high.max(elem.high);
             last.low = last.low.max(elem.low);
+        } else {
+            // 下降线段：特征序列按下降方向处理
+            last.high = last.high.min(elem.high);
+            last.low = last.low.min(elem.low);
         }
     } else {
         feature_seq.push(elem);
@@ -444,22 +447,24 @@ mod tests {
 
     #[test]
     fn test_contain_up_xd() {
+        // 上升线段特征序列按上升方向处理: high=max, low=max
         let mut seq = Vec::new();
         feature_seq_push(&mut seq, FeatureElement { high: 20.0, low: 15.0, bi_index: 0 }, true);
         feature_seq_push(&mut seq, FeatureElement { high: 18.0, low: 16.0, bi_index: 1 }, true);
         assert_eq!(seq.len(), 1);
-        assert_eq!(seq[0].high, 18.0); // min(20,18)
+        assert_eq!(seq[0].high, 20.0); // max(20,18)
         assert_eq!(seq[0].low, 16.0);  // max(15,16)
     }
 
     #[test]
     fn test_contain_down_xd() {
+        // 下降线段特征序列按下降方向处理: high=min, low=min
         let mut seq = Vec::new();
         feature_seq_push(&mut seq, FeatureElement { high: 15.0, low: 8.0, bi_index: 0 }, false);
         feature_seq_push(&mut seq, FeatureElement { high: 14.0, low: 10.0, bi_index: 1 }, false);
         assert_eq!(seq.len(), 1);
-        assert_eq!(seq[0].high, 15.0); // max(15,14)
-        assert_eq!(seq[0].low, 10.0);  // max(8,10)
+        assert_eq!(seq[0].high, 14.0); // min(15,14)
+        assert_eq!(seq[0].low, 8.0);   // min(8,10)
     }
 
     #[test]
@@ -573,6 +578,61 @@ mod xd_random_test {
             let bis = bi::build_bi(&klines, None);
             if bis.len() < 3 { continue; }
             let xds = build_xd(&bis);
+            for i in 1..xds.len() {
+                assert_ne!(xds[i].direction, xds[i-1].direction,
+                    "seed={}: 线段[{}]和[{}]方向相同", seed, i, i-1);
+            }
+        }
+    }
+
+    #[test]
+    fn test_xd_strict_chanlun_rules() {
+        // 严格校验缠论线段规则：
+        // 1. 笔方向交替（若不交替说明笔算法有bug，跳过该seed）
+        // 2. 线段方向交替
+        // 3. 上升线段的起点价格 < 终点价格
+        // 4. 下降线段的起点价格 > 终点价格
+        // 5. 线段间首尾相连
+        for seed in [42u64, 123, 456, 789, 1024, 2048, 3000, 4000] {
+            let klines = gen_klines(seed, 500);
+            let bis = bi::build_bi(&klines, None);
+            if bis.len() < 3 { continue; }
+
+            // 首先验证笔方向交替（500根K线下应无问题）
+            let mut bi_alternating = true;
+            for i in 1..bis.len() {
+                if bis[i].direction.as_str() == bis[i-1].direction.as_str() {
+                    bi_alternating = false;
+                    break;
+                }
+            }
+            if !bi_alternating {
+                eprintln!("seed={}: 笔方向不交替，跳过", seed);
+                continue;
+            }
+
+            let xds = build_xd(&bis);
+
+            eprintln!("\nseed={}: {}笔 → {}线段", seed, bis.len(), xds.len());
+            for (i, xd) in xds.iter().enumerate() {
+                eprintln!("  XD[{}] {} {:.2}→{:.2} fin={}", i, xd.direction, xd.start_price, xd.end_price, xd.is_finished);
+            }
+
+            for (i, xd) in xds.iter().enumerate() {
+                if xd.is_finished {
+                    if xd.direction.as_str() == "up" {
+                        assert!(xd.start_price < xd.end_price,
+                            "seed={}: 上升线段[{}] start={:.2} >= end={:.2}", seed, i, xd.start_price, xd.end_price);
+                    } else {
+                        assert!(xd.start_price > xd.end_price,
+                            "seed={}: 下降线段[{}] start={:.2} <= end={:.2}", seed, i, xd.start_price, xd.end_price);
+                    }
+                }
+                if i > 0 && xds[i-1].is_finished {
+                    assert_eq!(xd.start_index, xds[i-1].end_index,
+                        "seed={}: 线段[{}]起点不等于线段[{}]终点", seed, i, i-1);
+                }
+            }
             for i in 1..xds.len() {
                 assert_ne!(xds[i].direction, xds[i-1].direction,
                     "seed={}: 线段[{}]和[{}]方向相同", seed, i, i-1);

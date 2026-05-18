@@ -312,6 +312,8 @@ function renderChart() {
   }
   const data = chartData.value;
 
+  // autoSize: true 模式下，图表会自动追踪容器尺寸
+  // 但首次渲染时容器可能还没完成布局，需要确保有尺寸
   const containerWidth = chartContainer.value.clientWidth;
   const containerHeight = chartContainer.value.clientHeight;
   diagLog("容器尺寸: " + containerWidth + "x" + containerHeight + " K线数:" + data.klines?.length);
@@ -327,6 +329,7 @@ function renderChart() {
   }
 
   mainChart = createChart(chartContainer.value, {
+    autoSize: true,
     layout: {
       background: { type: ColorType.Solid, color: "#1a1a2e" },
       textColor: "#9e9e9e",
@@ -350,8 +353,6 @@ function renderChart() {
       timeVisible: true,
       secondsVisible: false,
     },
-    width: chartContainer.value.clientWidth,
-    height: chartContainer.value.clientHeight,
   });
 
   // K 线数据（性能优化：超过阈值截断）
@@ -1309,28 +1310,11 @@ onMounted(async () => {
     // 自动同步启动失败不影响主流程
   }
 
-  // 响应窗口大小变化（ResizeObserver 通常够用，window resize 作为全屏切换等场景的兜底）
-  const resizeObserver = new ResizeObserver(() => {
-    if (mainChart && chartContainer.value) {
-      mainChart.applyOptions({
-        width: chartContainer.value.clientWidth,
-        height: chartContainer.value.clientHeight,
-      });
-    }
-  });
-  if (chartContainer.value) {
-    resizeObserver.observe(chartContainer.value);
-  }
+  // autoSize: true 会自动追踪容器大小，无需手动 ResizeObserver
+  // 仅在 autoSize 不生效时作为兜底
   const onWindowResize = () => {
     if (mainChart && chartContainer.value) {
-      requestAnimationFrame(() => {
-        if (mainChart && chartContainer.value) {
-          mainChart.applyOptions({
-            width: chartContainer.value.clientWidth,
-            height: chartContainer.value.clientHeight,
-          });
-        }
-      });
+      // autoSize 模式下无需手动设置 size
     }
   };
   window.addEventListener("resize", onWindowResize);
@@ -1345,15 +1329,18 @@ watch(timeframe, () => loadData());
 // 监听视图切换回图表时，重新渲染
 watch(currentView, (val) => {
   if (val === "chart" && chartData.value) {
-    // 视图切换回来时，chartContainer 可能刚从 display:none 恢复，需要延迟重绘
+    // 视图切换回来时，chartContainer 刚恢复显示，autoSize 会自动处理尺寸
+    // 但需要延迟让 DOM 完成 reflow
     nextTick(() => {
       requestAnimationFrame(() => {
         if (mainChart && chartContainer.value) {
-          // 图表已存在，只需调整尺寸
-          mainChart.applyOptions({
-            width: chartContainer.value.clientWidth,
-            height: chartContainer.value.clientHeight,
-          });
+          // autoSize 模式下，通过 resize 触发重新计算
+          // 直接调用内部 resize 逻辑
+          try {
+            (mainChart as any).resize?.();
+          } catch {}
+          // 如果 resize 不可用，重新创建图表
+          renderChart();
         } else {
           // 图表不存在，重新创建
           renderChart();
@@ -1506,7 +1493,7 @@ watch(currentView, (val) => {
 
         <!-- K 线图区域 -->
         <div class="flex-1 flex flex-col relative">
-          <div ref="chartContainer" class="flex-1 min-h-0"></div>
+          <div ref="chartContainer" class="flex-1 min-h-0" style="will-change: transform; -webkit-transform: translateZ(0);">
           <!-- 诊断日志面板（不用 devtools 就能看到） -->
           <div v-if="diagLogs.length > 0" class="absolute bottom-0 left-0 right-0 max-h-40 overflow-y-auto bg-black/90 text-[10px] text-lime-400 font-mono p-1 z-50 select-text cursor-text">
             <div v-for="(log, i) in diagLogs" :key="i">{{ log }}</div>
@@ -1597,6 +1584,7 @@ watch(currentView, (val) => {
             <div v-else class="flex-1 flex items-center justify-center text-[#666] text-xs">
               暂无次级别数据
             </div>
+          </div>
           </div>
         </div>
 

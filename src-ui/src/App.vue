@@ -131,6 +131,15 @@ timeframe.value = persistedTf.value;
 const persistedSymbol = usePersistedSettings<string>("symbol", "000001");
 symbol.value = persistedSymbol.value;
 
+// ===== 诊断日志（直接显示在页面上，不需要 devtools） =====
+const diagLogs = ref<string[]>([]);
+function diagLog(msg: string) {
+  const t = new Date().toLocaleTimeString();
+  diagLogs.value.push(`[${t}] ${msg}`);
+  if (diagLogs.value.length > 20) diagLogs.value.shift();
+  console.log("[DIAG]", msg);
+}
+
 // ===== 图表引用 =====
 const chartContainer = ref<HTMLDivElement>();
 let mainChart: IChartApi | null = null;
@@ -242,10 +251,16 @@ async function loadData() {
       true    // 始终获取威科夫数据，以便设置面板控制显示
     );
     chartData.value = data;
+    diagLog("数据加载完成: K线=" + data.klines?.length + " 笔=" + data.czsc?.bi?.length + " 线段=" + data.czsc?.xd?.length);
     await nextTick();
-    renderChart();
+    try {
+      renderChart();
+    } catch (renderErr) {
+      diagLog("renderChart 异常: " + (renderErr instanceof Error ? renderErr.message + "\n" + renderErr.stack : String(renderErr)));
+    }
   } catch (e: any) {
     error.value = e.toString();
+    diagLog("loadData 异常: " + e.toString());
   } finally {
     loading.value = false;
   }
@@ -268,15 +283,17 @@ function toTime(dt: string): Time {
 const MAX_VISIBLE_KLINES = 5000; // 性能阈值：超过此数量截断
 
 function renderChart() {
-  if (!chartData.value || !chartContainer.value) return;
+  if (!chartData.value || !chartContainer.value) {
+    diagLog("renderChart 跳过: chartData=" + !!chartData.value + " container=" + !!chartContainer.value);
+    return;
+  }
   const data = chartData.value;
 
   const containerWidth = chartContainer.value.clientWidth;
   const containerHeight = chartContainer.value.clientHeight;
-  console.log("[renderChart] klines:", data.klines?.length, "container:", containerWidth, "x", containerHeight,
-    "firstKline:", data.klines?.[0], "lastKline:", data.klines?.[data.klines.length - 1]);
+  diagLog("容器尺寸: " + containerWidth + "x" + containerHeight + " K线数:" + data.klines?.length);
   if (containerWidth === 0 || containerHeight === 0) {
-    // 容器可能被 display:none 隐藏（v-show），延迟重试
+    diagLog("容器尺寸为0，延迟重试");
     setTimeout(() => renderChart(), 100);
     return;
   }
@@ -329,6 +346,19 @@ function renderChart() {
     close: k.close,
   }));
 
+  // 检查数据有效性
+  let invalidCount = 0;
+  for (let i = 0; i < candleData.length; i++) {
+    const c = candleData[i];
+    if (!isFinite(c.open) || !isFinite(c.high) || !isFinite(c.low) || !isFinite(c.close)) {
+      invalidCount++;
+    }
+    if (i > 0 && candleData[i].time === candleData[i - 1].time) {
+      diagLog("重复时间: i=" + i + " time=" + String(candleData[i].time));
+    }
+  }
+  if (invalidCount > 0) diagLog("无效K线数据: " + invalidCount + "条");
+
   candleSeries = mainChart.addCandlestickSeries({
     upColor: "#ef5350",
     downColor: "#26a69a",
@@ -337,8 +367,7 @@ function renderChart() {
     wickUpColor: "#ef5350",
     wickDownColor: "#26a69a",
   });
-  console.log("[renderChart] candleData count:", candleData.length,
-    "first:", candleData[0], "last:", candleData[candleData.length - 1]);
+  diagLog("candleData: " + candleData.length + "条, first=" + JSON.stringify(candleData[0]));
   candleSeries.setData(candleData);
 
   // 成交量（与 K 线使用同一份截断数据，保证时间对齐）
@@ -421,9 +450,10 @@ function renderChart() {
   // 缠论覆盖层（try-catch 隔离，避免覆盖层异常导致K线不显示）
   if (data.czsc) {
     try {
-      renderCzscOverlays(data, startIdx0);
+      renderCzscOverlays(data);
     } catch (e) {
       console.error("[缠论覆盖层渲染异常]", e);
+      diagLog("缠论覆盖层异常: " + (e instanceof Error ? e.message : String(e)));
     }
   }
 
@@ -433,6 +463,7 @@ function renderChart() {
       renderWyckoffOverlays(data);
     } catch (e) {
       console.error("[威科夫覆盖层渲染异常]", e);
+      diagLog("威科夫覆盖层异常: " + (e instanceof Error ? e.message : String(e)));
     }
   }
 
@@ -442,10 +473,14 @@ function renderChart() {
       renderFusionOverlays(data);
     } catch (e) {
       console.error("[融合覆盖层渲染异常]", e);
+      diagLog("融合覆盖层异常: " + (e instanceof Error ? e.message : String(e)));
     }
   }
 
   mainChart.timeScale().fitContent();
+  diagLog("fitContent 完成");
+
+  // 悬停事件
 
   // 悬停事件
   mainChart.subscribeCrosshairMove((param) => {
@@ -518,7 +553,7 @@ function renderChart() {
 }
 
 // ===== 缠论覆盖层 =====
-function renderCzscOverlays(data: ChartData, klineOffset: number = 0) {
+function renderCzscOverlays(data: ChartData) {
   const czsc = data.czsc!;
   const allMarkers: any[] = [];
 
@@ -538,7 +573,7 @@ function renderCzscOverlays(data: ChartData, klineOffset: number = 0) {
     }
   }
 
-  // 笔 — 上升红/下降蓝 折线
+  // 笔 — 上升红/下降蓝 折线（overlay 模式，不影响 K 线价格轴）
   if (settings.value.czsc.showBi && czsc.bi.length > 0) {
     try {
     const biStyle = settings.value.styles.bi;
@@ -548,14 +583,13 @@ function renderCzscOverlays(data: ChartData, klineOffset: number = 0) {
       priceLineVisible: false,
       lastValueVisible: false,
       crosshairMarkerVisible: false,
+      priceScaleId: "right",  // 与 K 线共用价格轴
     });
 
     const biData: LineData<Time>[] = [];
     for (const bi of czsc.bi) {
-      const startIdx = bi.start_index - klineOffset;
-      const endIdx = bi.end_index - klineOffset;
-      const startK = startIdx >= 0 && startIdx < data.klines.length ? data.klines[startIdx] : null;
-      const endK = endIdx >= 0 && endIdx < data.klines.length ? data.klines[endIdx] : null;
+      const startK = bi.start_index >= 0 && bi.start_index < data.klines.length ? data.klines[bi.start_index] : null;
+      const endK = bi.end_index >= 0 && bi.end_index < data.klines.length ? data.klines[bi.end_index] : null;
       if (!startK || !endK) continue;
       // 过滤异常值（NaN/Infinity/0），避免 LightweightCharts 崩溃
       if (!isFinite(bi.start_price) || !isFinite(bi.end_price) ||
@@ -587,14 +621,13 @@ function renderCzscOverlays(data: ChartData, klineOffset: number = 0) {
       priceLineVisible: false,
       lastValueVisible: false,
       crosshairMarkerVisible: false,
+      priceScaleId: "right",  // 与 K 线共用价格轴
     });
 
     const xdData: LineData<Time>[] = [];
     for (const xd of czsc.xd) {
-      const startIdx2 = xd.start_index - klineOffset;
-      const endIdx2 = xd.end_index - klineOffset;
-      const startK = startIdx2 >= 0 && startIdx2 < data.klines.length ? data.klines[startIdx2] : null;
-      const endK = endIdx2 >= 0 && endIdx2 < data.klines.length ? data.klines[endIdx2] : null;
+      const startK = xd.start_index >= 0 && xd.start_index < data.klines.length ? data.klines[xd.start_index] : null;
+      const endK = xd.end_index >= 0 && xd.end_index < data.klines.length ? data.klines[xd.end_index] : null;
       if (!startK || !endK) continue;
       // 过滤异常值（NaN/Infinity/0），避免 LightweightCharts 崩溃
       if (!isFinite(xd.start_price) || !isFinite(xd.end_price) ||
@@ -1420,6 +1453,10 @@ watch(currentView, (val) => {
         <!-- K 线图区域 -->
         <div class="flex-1 flex flex-col relative">
           <div ref="chartContainer" class="flex-1 min-h-0"></div>
+          <!-- 诊断日志面板（不用 devtools 就能看到） -->
+          <div v-if="diagLogs.length > 0" class="absolute bottom-0 left-0 right-0 max-h-40 overflow-y-auto bg-black/80 text-[10px] text-lime-400 font-mono p-1 z-50 pointer-events-none">
+            <div v-for="(log, i) in diagLogs" :key="i">{{ log }}</div>
+          </div>
           <!-- 加载/错误/空数据提示 -->
           <div v-if="loading" class="absolute inset-0 flex items-center justify-center bg-[#1a1a2e]/80 z-10">
             <div class="text-[#9e9e9e] animate-pulse">加载中...</div>

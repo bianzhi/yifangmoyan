@@ -17,7 +17,7 @@ use anyhow::{Context, Result};
 use chrono::NaiveDate;
 use polars::prelude::*;
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::types::TimeFrame;
 
@@ -1452,7 +1452,7 @@ fn fetch_kline_multi_source(
         None => return Ok(FetchResult { records: Vec::new(), source: "none".into() }),
     };
 
-    let is_daily_or_above = matches!(tf, TimeFrame::M | TimeFrame::W | TimeFrame::D);
+    let _is_daily_or_above = matches!(tf, TimeFrame::M | TimeFrame::W | TimeFrame::D);
     let is_minute = matches!(tf, TimeFrame::F60 | TimeFrame::F30 | TimeFrame::F15 | TimeFrame::F5 | TimeFrame::F1);
 
     if is_minute {
@@ -1872,7 +1872,7 @@ pub fn validate_stock_level(
     // ─── 2. 日期连续性校验（日线/周线） ───
     if matches!(tf, TimeFrame::D | TimeFrame::W) && records.len() > 1 {
         // 简化的连续性检查：检测连续两个日期之间是否跳过了异常多的交易日
-        let consecutive_gaps: Vec<(usize, &KlineRecord, &KlineRecord)> = records.windows(2)
+        let _consecutive_gaps: Vec<(usize, &KlineRecord, &KlineRecord)> = records.windows(2)
             .enumerate()
             .filter_map(|(i, w)| {
                 let d1 = parse_date_str(&w[0].datetime);

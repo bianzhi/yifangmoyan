@@ -279,7 +279,7 @@ fn build_xd_impl(bis: &[Bi], min_len: usize) -> Vec<XianDuan> {
 /// 检查从 break_bi_idx 开始，反向线段是否创新低/高
 /// 返回 true = 反向创新了，说明原线段延续（缺口被补，不能终结）
 fn check_reverse_innovation(bis: &[Bi], break_bi_idx: usize, reverse_is_xd_up: bool) -> bool {
-    let reverse_dir = if reverse_is_xd_up { "up" } else { "down" };
+    let _reverse_dir = if reverse_is_xd_up { "up" } else { "down" };
 
     // 上升线段创新高 = 高点超过 break_bi_idx 处的高点
     // 下降线段创新低 = 低点低于 break_bi_idx 处的低点

@@ -14,7 +14,7 @@
 //! 3. check_bi：取 fxs[0] 为 fx_a，找最极端的反向分型 fx_b，
 //!    检查成笔条件（无包含 + 长度 >= min_bi_len）
 
-use crate::fenxing::{FxMark, FxResult, check_fxs};
+use crate::fenxing::{FxMark, check_fxs};
 use crate::include::NewBar;
 use yifang_data::Bi;
 

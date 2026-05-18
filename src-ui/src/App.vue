@@ -391,7 +391,27 @@ function renderChart() {
     wickDownColor: "#26a69a",
   });
   diagLog("candleData: " + candleData.length + "条, first=" + JSON.stringify(candleData[0]));
-  candleSeries.setData(candleData);
+  diagLog("candleData last=" + JSON.stringify(candleData[candleData.length - 1]));
+  diagLog("time type: first=" + typeof candleData[0].time + " value=" + String(candleData[0].time));
+  try {
+    candleSeries.setData(candleData);
+    diagLog("setData OK, bars=" + candleSeries.data().length);
+  } catch (e: any) {
+    diagLog("setData ERROR: " + (e?.message || String(e)));
+  }
+  
+  // 检查 candle series 的实际价格范围
+  const bars = candleSeries.data();
+  if (bars.length > 0) {
+    let minP = Infinity, maxP = -Infinity;
+    for (const b of bars) {
+      if ('low' in b) {
+        if (b.low < minP) minP = b.low;
+        if (b.high > maxP) maxP = b.high;
+      }
+    }
+    diagLog("priceRange: " + minP + " ~ " + maxP);
+  }
 
   // 成交量（与 K 线使用同一份截断数据，保证时间对齐）
   const volumeData: HistogramData<Time>[] = visibleKlines.map((k) => ({
@@ -502,6 +522,17 @@ function renderChart() {
 
   mainChart.timeScale().fitContent();
   diagLog("fitContent 完成");
+  // 关键诊断：检查 canvas 元素
+  const canvas = chartContainer.value?.querySelector('canvas');
+  diagLog("canvas: " + (canvas ? canvas.width + "x" + canvas.height + " display=" + getComputedStyle(canvas).display : "NOT FOUND"));
+  // 诊断：检查 visible logical range 以及 bars 数量
+  try {
+    const vr = mainChart.timeScale().getVisibleLogicalRange();
+    diagLog("visibleLogicalRange: " + JSON.stringify(vr));
+    diagLog("candleSeries bars: " + (candleSeries?.data()?.length ?? "null"));
+  } catch(e: any) {
+    diagLog("range check error: " + (e?.message || String(e)));
+  }
 
   // 悬停事件
 

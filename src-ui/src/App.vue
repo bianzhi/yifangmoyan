@@ -414,19 +414,31 @@ function renderChart() {
     });
   }
 
-  // 缠论覆盖层
+  // 缠论覆盖层（try-catch 隔离，避免覆盖层异常导致K线不显示）
   if (data.czsc) {
-    renderCzscOverlays(data);
+    try {
+      renderCzscOverlays(data);
+    } catch (e) {
+      console.error("[缠论覆盖层渲染异常]", e);
+    }
   }
 
   // 威科夫覆盖层
   if (data.wyckoff) {
-    renderWyckoffOverlays(data);
+    try {
+      renderWyckoffOverlays(data);
+    } catch (e) {
+      console.error("[威科夫覆盖层渲染异常]", e);
+    }
   }
 
   // 融合标记
   if (data.fusion && settings.value.fusion.showFusion) {
-    renderFusionOverlays(data);
+    try {
+      renderFusionOverlays(data);
+    } catch (e) {
+      console.error("[融合覆盖层渲染异常]", e);
+    }
   }
 
   mainChart.timeScale().fitContent();
@@ -538,14 +550,23 @@ function renderCzscOverlays(data: ChartData) {
       const startK = data.klines[bi.start_index];
       const endK = data.klines[Math.min(bi.end_index, data.klines.length - 1)];
       if (startK && endK) {
+        // 过滤异常值（NaN/Infinity/0），避免 LightweightCharts 崩溃
+        if (!isFinite(bi.start_price) || !isFinite(bi.end_price) ||
+            bi.start_price === 0 || bi.end_price === 0) continue;
         const startTime = toTime(startK.dt);
         if (biData.length === 0 || biData[biData.length - 1].time !== startTime) {
           biData.push({ time: startTime, value: bi.start_price });
         }
-        biData.push({ time: toTime(endK.dt), value: bi.end_price });
+        const endTime = toTime(endK.dt);
+        // 避免同一时间插入两个不同 value（LightweightCharts 不允许）
+        if (biData.length > 0 && biData[biData.length - 1].time === endTime) {
+          biData[biData.length - 1].value = bi.end_price;
+        } else {
+          biData.push({ time: endTime, value: bi.end_price });
+        }
       }
     }
-    biSeries.setData(biData);
+    if (biData.length >= 2) biSeries.setData(biData);
   }
 
   // 线段 — 使用样式配置
@@ -565,14 +586,23 @@ function renderCzscOverlays(data: ChartData) {
       const startK = data.klines[xd.start_index];
       const endK = data.klines[Math.min(xd.end_index, data.klines.length - 1)];
       if (startK && endK) {
+        // 过滤异常值（NaN/Infinity/0），避免 LightweightCharts 崩溃
+        if (!isFinite(xd.start_price) || !isFinite(xd.end_price) ||
+            xd.start_price === 0 || xd.end_price === 0) continue;
         const startTime = toTime(startK.dt);
         if (xdData.length === 0 || xdData[xdData.length - 1].time !== startTime) {
           xdData.push({ time: startTime, value: xd.start_price });
         }
-        xdData.push({ time: toTime(endK.dt), value: xd.end_price });
+        // 避免同一时间插入两个不同 value
+        const endTime = toTime(endK.dt);
+        if (xdData.length > 0 && xdData[xdData.length - 1].time === endTime) {
+          xdData[xdData.length - 1].value = xd.end_price;
+        } else {
+          xdData.push({ time: endTime, value: xd.end_price });
+        }
       }
     }
-    xdSeries.setData(xdData);
+    if (xdData.length >= 2) xdSeries.setData(xdData);
   }
 
   // 买卖点标记 — 圆形图标+文字

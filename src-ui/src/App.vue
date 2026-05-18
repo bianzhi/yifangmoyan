@@ -272,10 +272,17 @@ function hasAnyCzscEnabled(): boolean {
 
 // ===== 时间格式化 =====
 function toTime(dt: string): Time {
-  const match = dt.match(/^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2})/);
-  if (match && match[2] !== "00:00") {
-    return `${match[1]} ${match[2]}` as Time;
+  // lightweight-charts v4 的 Time 类型只接受：
+  //   1. UTCTimestamp (Unix 秒数，number)
+  //   2. BusinessDay 字符串 "YYYY-MM-DD"（仅日线及以上）
+  //   3. BusinessDay 对象 { year, month, day }
+  // "YYYY-MM-DD HH:MM" 格式不被识别，会导致 K 线不渲染。
+  // 因此统一转换为 UTCTimestamp（Unix 秒数）以确保日线和分钟线都能正常显示。
+  const ms = Date.parse(dt);
+  if (!isNaN(ms)) {
+    return (ms / 1000) as Time;
   }
+  // 兜底：仅日期格式
   return dt.slice(0, 10) as Time;
 }
 

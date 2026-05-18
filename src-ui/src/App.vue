@@ -131,14 +131,6 @@ timeframe.value = persistedTf.value;
 const persistedSymbol = usePersistedSettings<string>("symbol", "000001");
 symbol.value = persistedSymbol.value;
 
-// ===== 诊断日志（直接显示在页面上，不需要 devtools） =====
-const diagLogs = ref<string[]>([]);
-function diagLog(msg: string) {
-  const t = new Date().toLocaleTimeString();
-  diagLogs.value.push(`[${t}] ${msg}`);
-  if (diagLogs.value.length > 20) diagLogs.value.shift();
-  console.log("[DIAG]", msg);
-}
 
 // ===== 图表引用 =====
 const chartContainer = ref<HTMLDivElement>();
@@ -251,16 +243,14 @@ async function loadData() {
       true    // 始终获取威科夫数据，以便设置面板控制显示
     );
     chartData.value = data;
-    diagLog("数据加载完成: K线=" + data.klines?.length + " 笔=" + data.czsc?.bi?.length + " 线段=" + data.czsc?.xd?.length);
     await nextTick();
     try {
       renderChart();
     } catch (renderErr) {
-      diagLog("renderChart 异常: " + (renderErr instanceof Error ? renderErr.message + "\n" + renderErr.stack : String(renderErr)));
+      console.error("renderChart error:", renderErr);
     }
   } catch (e: any) {
     error.value = e.toString();
-    diagLog("loadData 异常: " + e.toString());
   } finally {
     loading.value = false;
   }
@@ -307,7 +297,6 @@ const MAX_VISIBLE_KLINES = 5000; // 性能阈值：超过此数量截断
 
 function renderChart() {
   if (!chartData.value || !chartContainer.value) {
-    diagLog("renderChart 跳过: chartData=" + !!chartData.value + " container=" + !!chartContainer.value);
     return;
   }
   const data = chartData.value;
@@ -316,9 +305,7 @@ function renderChart() {
   // 但首次渲染时容器可能还没完成布局，需要确保有尺寸
   const containerWidth = chartContainer.value.clientWidth;
   const containerHeight = chartContainer.value.clientHeight;
-  diagLog("容器尺寸: " + containerWidth + "x" + containerHeight + " K线数:" + data.klines?.length);
   if (containerWidth === 0 || containerHeight === 0) {
-    diagLog("容器尺寸为0，延迟重试");
     setTimeout(() => renderChart(), 100);
     return;
   }
@@ -371,17 +358,11 @@ function renderChart() {
   }));
 
   // 检查数据有效性
-  let invalidCount = 0;
-  for (let i = 0; i < candleData.length; i++) {
-    const c = candleData[i];
-    if (!isFinite(c.open) || !isFinite(c.high) || !isFinite(c.low) || !isFinite(c.close)) {
-      invalidCount++;
-    }
-    if (i > 0 && candleData[i].time === candleData[i - 1].time) {
-      diagLog("重复时间: i=" + i + " time=" + String(candleData[i].time));
+  for (let i = 1; i < candleData.length; i++) {
+    if (candleData[i].time === candleData[i - 1].time) {
+      console.warn("重复时间: i=" + i + " time=" + String(candleData[i].time));
     }
   }
-  if (invalidCount > 0) diagLog("无效K线数据: " + invalidCount + "条");
 
   candleSeries = mainChart.addCandlestickSeries({
     upColor: "#ef5350",
@@ -391,28 +372,7 @@ function renderChart() {
     wickUpColor: "#ef5350",
     wickDownColor: "#26a69a",
   });
-  diagLog("candleData: " + candleData.length + "条, first=" + JSON.stringify(candleData[0]));
-  diagLog("candleData last=" + JSON.stringify(candleData[candleData.length - 1]));
-  diagLog("time type: first=" + typeof candleData[0].time + " value=" + String(candleData[0].time));
-  try {
-    candleSeries.setData(candleData);
-    diagLog("setData OK, bars=" + candleSeries.data().length);
-  } catch (e: any) {
-    diagLog("setData ERROR: " + (e?.message || String(e)));
-  }
-  
-  // 检查 candle series 的实际价格范围
-  const bars = candleSeries.data();
-  if (bars.length > 0) {
-    let minP = Infinity, maxP = -Infinity;
-    for (const b of bars) {
-      if ('low' in b) {
-        if (b.low < minP) minP = b.low;
-        if (b.high > maxP) maxP = b.high;
-      }
-    }
-    diagLog("priceRange: " + minP + " ~ " + maxP);
-  }
+  candleSeries.setData(candleData);
 
   // 成交量（与 K 线使用同一份截断数据，保证时间对齐）
   const volumeData: HistogramData<Time>[] = visibleKlines.map((k) => ({
@@ -497,7 +457,6 @@ function renderChart() {
       renderCzscOverlays(data);
     } catch (e) {
       console.error("[缠论覆盖层渲染异常]", e);
-      diagLog("缠论覆盖层异常: " + (e instanceof Error ? e.message : String(e)));
     }
   }
 
@@ -507,7 +466,6 @@ function renderChart() {
       renderWyckoffOverlays(data);
     } catch (e) {
       console.error("[威科夫覆盖层渲染异常]", e);
-      diagLog("威科夫覆盖层异常: " + (e instanceof Error ? e.message : String(e)));
     }
   }
 
@@ -517,25 +475,10 @@ function renderChart() {
       renderFusionOverlays(data);
     } catch (e) {
       console.error("[融合覆盖层渲染异常]", e);
-      diagLog("融合覆盖层异常: " + (e instanceof Error ? e.message : String(e)));
     }
   }
 
   mainChart.timeScale().fitContent();
-  diagLog("fitContent 完成");
-  // 关键诊断：检查 canvas 元素
-  const canvas = chartContainer.value?.querySelector('canvas');
-  diagLog("canvas: " + (canvas ? canvas.width + "x" + canvas.height + " display=" + getComputedStyle(canvas).display : "NOT FOUND"));
-  // 诊断：检查 visible logical range 以及 bars 数量
-  try {
-    const vr = mainChart.timeScale().getVisibleLogicalRange();
-    diagLog("visibleLogicalRange: " + JSON.stringify(vr));
-    diagLog("candleSeries bars: " + (candleSeries?.data()?.length ?? "null"));
-  } catch(e: any) {
-    diagLog("range check error: " + (e?.message || String(e)));
-  }
-
-  // 悬停事件
 
   // 悬停事件
   mainChart.subscribeCrosshairMove((param) => {
@@ -1493,11 +1436,7 @@ watch(currentView, (val) => {
 
         <!-- K 线图区域 -->
         <div class="flex-1 flex flex-col relative">
-          <div ref="chartContainer" class="flex-1 min-h-0" style="will-change: transform; -webkit-transform: translateZ(0);">
-          <!-- 诊断日志面板（不用 devtools 就能看到） -->
-          <div v-if="diagLogs.length > 0" class="absolute bottom-0 left-0 right-0 max-h-40 overflow-y-auto bg-black/90 text-[10px] text-lime-400 font-mono p-1 z-50 select-text cursor-text">
-            <div v-for="(log, i) in diagLogs" :key="i">{{ log }}</div>
-          </div>
+          <div ref="chartContainer" class="flex-1 min-h-0 relative"></div>
           <!-- 加载/错误/空数据提示 -->
           <div v-if="loading" class="absolute inset-0 flex items-center justify-center bg-[#1a1a2e]/80 z-10">
             <div class="text-[#9e9e9e] animate-pulse">加载中...</div>
@@ -1584,7 +1523,6 @@ watch(currentView, (val) => {
             <div v-else class="flex-1 flex items-center justify-center text-[#666] text-xs">
               暂无次级别数据
             </div>
-          </div>
           </div>
         </div>
 

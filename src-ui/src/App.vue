@@ -336,7 +336,7 @@ function renderChart() {
     ? data.klines.length - MAX_VISIBLE_KLINES
     : 0;
   const visibleKlines = data.klines.slice(startIdx);
-  const startIdx0 = startIdx; // offset 用于后续缠论/威科夫 overlay 的 index 对齐
+
 
   const candleData: CandlestickData<Time>[] = visibleKlines.map((k) => ({
     time: toTime(k.dt),

@@ -5,6 +5,7 @@ mod state;
 mod fusion;
 
 use state::AppState;
+use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -12,6 +13,15 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState::new())
+        .setup(|app| {
+            // 开发模式启用 devtools（右键 → 检查元素）
+            #[cfg(debug_assertions)]
+            {
+                let window = app.get_webview_window("main").unwrap();
+                window.open_devtools();
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             commands::get_klines,
             commands::get_chart_data,

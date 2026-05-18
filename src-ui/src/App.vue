@@ -273,6 +273,8 @@ function renderChart() {
 
   const containerWidth = chartContainer.value.clientWidth;
   const containerHeight = chartContainer.value.clientHeight;
+  console.log("[renderChart] klines:", data.klines?.length, "container:", containerWidth, "x", containerHeight,
+    "firstKline:", data.klines?.[0], "lastKline:", data.klines?.[data.klines.length - 1]);
   if (containerWidth === 0 || containerHeight === 0) {
     // 容器可能被 display:none 隐藏（v-show），延迟重试
     setTimeout(() => renderChart(), 100);
@@ -317,7 +319,7 @@ function renderChart() {
     ? data.klines.length - MAX_VISIBLE_KLINES
     : 0;
   const visibleKlines = data.klines.slice(startIdx);
-  // offset 用于后续剪裁缠论/威科夫 overlay 的 index 对齐
+  const startIdx0 = startIdx; // offset 用于后续缠论/威科夫 overlay 的 index 对齐
 
   const candleData: CandlestickData<Time>[] = visibleKlines.map((k) => ({
     time: toTime(k.dt),
@@ -335,6 +337,8 @@ function renderChart() {
     wickUpColor: "#ef5350",
     wickDownColor: "#26a69a",
   });
+  console.log("[renderChart] candleData count:", candleData.length,
+    "first:", candleData[0], "last:", candleData[candleData.length - 1]);
   candleSeries.setData(candleData);
 
   // 成交量（与 K 线使用同一份截断数据，保证时间对齐）
@@ -417,7 +421,7 @@ function renderChart() {
   // 缠论覆盖层（try-catch 隔离，避免覆盖层异常导致K线不显示）
   if (data.czsc) {
     try {
-      renderCzscOverlays(data);
+      renderCzscOverlays(data, startIdx0);
     } catch (e) {
       console.error("[缠论覆盖层渲染异常]", e);
     }
@@ -514,7 +518,7 @@ function renderChart() {
 }
 
 // ===== 缠论覆盖层 =====
-function renderCzscOverlays(data: ChartData) {
+function renderCzscOverlays(data: ChartData, klineOffset: number = 0) {
   const czsc = data.czsc!;
   const allMarkers: any[] = [];
 
@@ -536,6 +540,7 @@ function renderCzscOverlays(data: ChartData) {
 
   // 笔 — 上升红/下降蓝 折线
   if (settings.value.czsc.showBi && czsc.bi.length > 0) {
+    try {
     const biStyle = settings.value.styles.bi;
     const biSeries = mainChart!.addLineSeries({
       color: biStyle.color,
@@ -547,30 +552,33 @@ function renderCzscOverlays(data: ChartData) {
 
     const biData: LineData<Time>[] = [];
     for (const bi of czsc.bi) {
-      const startK = data.klines[bi.start_index];
-      const endK = data.klines[Math.min(bi.end_index, data.klines.length - 1)];
-      if (startK && endK) {
-        // 过滤异常值（NaN/Infinity/0），避免 LightweightCharts 崩溃
-        if (!isFinite(bi.start_price) || !isFinite(bi.end_price) ||
-            bi.start_price === 0 || bi.end_price === 0) continue;
-        const startTime = toTime(startK.dt);
-        if (biData.length === 0 || biData[biData.length - 1].time !== startTime) {
-          biData.push({ time: startTime, value: bi.start_price });
-        }
-        const endTime = toTime(endK.dt);
-        // 避免同一时间插入两个不同 value（LightweightCharts 不允许）
-        if (biData.length > 0 && biData[biData.length - 1].time === endTime) {
-          biData[biData.length - 1].value = bi.end_price;
-        } else {
-          biData.push({ time: endTime, value: bi.end_price });
-        }
+      const startIdx = bi.start_index - klineOffset;
+      const endIdx = bi.end_index - klineOffset;
+      const startK = startIdx >= 0 && startIdx < data.klines.length ? data.klines[startIdx] : null;
+      const endK = endIdx >= 0 && endIdx < data.klines.length ? data.klines[endIdx] : null;
+      if (!startK || !endK) continue;
+      // 过滤异常值（NaN/Infinity/0），避免 LightweightCharts 崩溃
+      if (!isFinite(bi.start_price) || !isFinite(bi.end_price) ||
+          bi.start_price === 0 || bi.end_price === 0) continue;
+      const startTime = toTime(startK.dt);
+      if (biData.length === 0 || biData[biData.length - 1].time !== startTime) {
+        biData.push({ time: startTime, value: bi.start_price });
+      }
+      const endTime = toTime(endK.dt);
+      // 避免同一时间插入两个不同 value（LightweightCharts 不允许）
+      if (biData.length > 0 && biData[biData.length - 1].time === endTime) {
+        biData[biData.length - 1].value = bi.end_price;
+      } else {
+        biData.push({ time: endTime, value: bi.end_price });
       }
     }
     if (biData.length >= 2) biSeries.setData(biData);
+    } catch (e) { console.error("[笔渲染异常]", e); }
   }
 
   // 线段 — 使用样式配置
   if (settings.value.czsc.showXd && czsc.xd.length > 0) {
+    try {
     const xdStyle = settings.value.styles.xd;
     const xdSeries = mainChart!.addLineSeries({
       color: xdStyle.color,
@@ -583,26 +591,28 @@ function renderCzscOverlays(data: ChartData) {
 
     const xdData: LineData<Time>[] = [];
     for (const xd of czsc.xd) {
-      const startK = data.klines[xd.start_index];
-      const endK = data.klines[Math.min(xd.end_index, data.klines.length - 1)];
-      if (startK && endK) {
-        // 过滤异常值（NaN/Infinity/0），避免 LightweightCharts 崩溃
-        if (!isFinite(xd.start_price) || !isFinite(xd.end_price) ||
-            xd.start_price === 0 || xd.end_price === 0) continue;
-        const startTime = toTime(startK.dt);
-        if (xdData.length === 0 || xdData[xdData.length - 1].time !== startTime) {
-          xdData.push({ time: startTime, value: xd.start_price });
-        }
-        // 避免同一时间插入两个不同 value
-        const endTime = toTime(endK.dt);
-        if (xdData.length > 0 && xdData[xdData.length - 1].time === endTime) {
-          xdData[xdData.length - 1].value = xd.end_price;
-        } else {
-          xdData.push({ time: endTime, value: xd.end_price });
-        }
+      const startIdx2 = xd.start_index - klineOffset;
+      const endIdx2 = xd.end_index - klineOffset;
+      const startK = startIdx2 >= 0 && startIdx2 < data.klines.length ? data.klines[startIdx2] : null;
+      const endK = endIdx2 >= 0 && endIdx2 < data.klines.length ? data.klines[endIdx2] : null;
+      if (!startK || !endK) continue;
+      // 过滤异常值（NaN/Infinity/0），避免 LightweightCharts 崩溃
+      if (!isFinite(xd.start_price) || !isFinite(xd.end_price) ||
+          xd.start_price === 0 || xd.end_price === 0) continue;
+      const startTime = toTime(startK.dt);
+      if (xdData.length === 0 || xdData[xdData.length - 1].time !== startTime) {
+        xdData.push({ time: startTime, value: xd.start_price });
+      }
+      // 避免同一时间插入两个不同 value
+      const endTime = toTime(endK.dt);
+      if (xdData.length > 0 && xdData[xdData.length - 1].time === endTime) {
+        xdData[xdData.length - 1].value = xd.end_price;
+      } else {
+        xdData.push({ time: endTime, value: xd.end_price });
       }
     }
     if (xdData.length >= 2) xdSeries.setData(xdData);
+    } catch (e) { console.error("[线段渲染异常]", e); }
   }
 
   // 买卖点标记 — 圆形图标+文字

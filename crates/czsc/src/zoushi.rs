@@ -200,8 +200,8 @@ fn build_xd_zs_for_zoushi(xds: &[XianDuan]) -> Vec<ZhongShu> {
         let h3 = xd_high(&xds[i + 2]);
         let l3 = xd_low(&xds[i + 2]);
 
-        let zg = h1.min(h2).min(h3);
-        let zd = l1.max(l2).max(l3);
+        let mut zg = h1.min(h2).min(h3);
+        let mut zd = l1.max(l2).max(l3);
 
         if zg < zd {
             i += 1;
@@ -216,15 +216,16 @@ fn build_xd_zs_for_zoushi(xds: &[XianDuan]) -> Vec<ZhongShu> {
             let j_high = xd_high(&xds[j]);
             let j_low = xd_low(&xds[j]);
 
-            let has_overlap = (zd <= j_high && j_high <= zg)
-                || (zd <= j_low && j_low <= zg)
-                || (j_low <= zd && j_high >= zg);
-
-            if has_overlap {
+            // 严格缠论：检查段与当前 [zd, zg] 是否有交集
+            if j_low <= zg && j_high >= zd {
+                // 归入中枢，动态更新所有段的交集
+                zg = zg.min(j_high);
+                zd = zd.max(j_low);
                 gg = gg.max(j_high);
                 dd = dd.min(j_low);
                 end_i = j;
             } else {
+                // 脱离中枢
                 break;
             }
         }

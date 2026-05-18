@@ -486,98 +486,45 @@ function renderChart() {
         priceLineVisible: false,
         lastValueVisible: false,
         crosshairMarkerVisible: false,
-        priceScaleId: "bi_scale",
       });
 
       const biData: LineData<Time>[] = [];
-      const minVisibleTime = candleData.length > 0 ? candleData[0].time : null;
-      const maxVisibleTime = candleData.length > 0 ? candleData[candleData.length - 1].time : null;
       for (const bi of czsc.bi) {
-        const startK = bi.start_index >= 0 && bi.start_index < data.klines.length ? data.klines[bi.start_index] : null;
-        const endK = bi.end_index >= 0 && bi.end_index < data.klines.length ? data.klines[bi.end_index] : null;
-        if (!startK || !endK) continue;
-        if (!isFinite(bi.start_price) || !isFinite(bi.end_price) ||
-            bi.start_price === 0 || bi.end_price === 0) continue;
-        const startTime = toTime(startK.dt);
-        const endTime = toTime(endK.dt);
-        // 跳过完全在可见范围之外的笔
-        if (minVisibleTime !== null && endTime < minVisibleTime) continue;
-        if (maxVisibleTime !== null && startTime > maxVisibleTime) continue;
-        if (biData.length === 0 || biData[biData.length - 1].time !== startTime) {
-          biData.push({ time: startTime, value: bi.start_price });
-        }
-        if (biData.length > 0 && biData[biData.length - 1].time === endTime) {
-          biData[biData.length - 1].value = bi.end_price;
-        } else {
-          biData.push({ time: endTime, value: bi.end_price });
+        const startK = data.klines[bi.start_index];
+        const endK = data.klines[Math.min(bi.end_index, data.klines.length - 1)];
+        if (startK && endK) {
+          if (biData.length === 0 || biData.length > 0 && biData[biData.length - 1].time !== (toTime(startK.dt))) {
+            biData.push({ time: toTime(startK.dt), value: bi.start_price });
+          }
+          biData.push({ time: toTime(endK.dt), value: bi.end_price });
         }
       }
-      if (biData.length >= 2) {
-        // 追加K线的全局价格范围锚点，确保 overlay 价格轴与K线价格轴对齐
-        const kLow = Math.min(...visibleKlines.map(k => k.low));
-        const kHigh = Math.max(...visibleKlines.map(k => k.high));
-        biData.unshift({ time: biData[0].time, value: kLow });
-        biData.push({ time: biData[biData.length - 1].time, value: kHigh });
-        biSeries.setData(biData);
-        // 独立价格轴与K线同区域，自动缩放，隐藏刻度
-        mainChart!.priceScale("bi_scale").applyOptions({
-          scaleMargins: { top: 0.05, bottom: 0.35 },
-          visible: false,
-        });
-      }
+      biSeries.setData(biData);
       } catch (e) { console.error("[笔渲染异常]", e); }
     }
 
-    // 3) 线段
+    // 3) 线段 — 每条线段用独立的 LineSeries（因为线段时间可能重叠，不能合并）
     _diagnosePhase = "线段";
     if (settings.value.czsc.showXd && czsc.xd.length > 0) {
       try {
       const xdStyle = settings.value.styles.xd;
-      const xdSeries = mainChart!.addLineSeries({
-        color: xdStyle.color,
-        lineWidth: xdStyle.lineWidth as 1 | 2 | 3 | 4,
-        lineStyle: 2,
-        priceLineVisible: false,
-        lastValueVisible: false,
-        crosshairMarkerVisible: false,
-        priceScaleId: "xd_scale",
-      });
-
-      const xdData: LineData<Time>[] = [];
-      const minVisibleTime = candleData.length > 0 ? candleData[0].time : null;
-      const maxVisibleTime = candleData.length > 0 ? candleData[candleData.length - 1].time : null;
       for (const xd of czsc.xd) {
-        const startK = xd.start_index >= 0 && xd.start_index < data.klines.length ? data.klines[xd.start_index] : null;
-        const endK = xd.end_index >= 0 && xd.end_index < data.klines.length ? data.klines[xd.end_index] : null;
-        if (!startK || !endK) continue;
-        if (!isFinite(xd.start_price) || !isFinite(xd.end_price) ||
-            xd.start_price === 0 || xd.end_price === 0) continue;
-        const startTime = toTime(startK.dt);
-        const endTime = toTime(endK.dt);
-        // 跳过完全在可见范围之外的线段
-        if (minVisibleTime !== null && endTime < minVisibleTime) continue;
-        if (maxVisibleTime !== null && startTime > maxVisibleTime) continue;
-        if (xdData.length === 0 || xdData[xdData.length - 1].time !== startTime) {
-          xdData.push({ time: startTime, value: xd.start_price });
+        const startK = data.klines[xd.start_index];
+        const endK = data.klines[Math.min(xd.end_index, data.klines.length - 1)];
+        if (startK && endK) {
+          const xdSeries = mainChart!.addLineSeries({
+            color: xdStyle.color,
+            lineWidth: xdStyle.lineWidth as 1 | 2 | 3 | 4,
+            lineStyle: 2,
+            priceLineVisible: false,
+            lastValueVisible: false,
+            crosshairMarkerVisible: false,
+          });
+          xdSeries.setData([
+            { time: toTime(startK.dt), value: xd.start_price },
+            { time: toTime(endK.dt), value: xd.end_price },
+          ]);
         }
-        if (xdData.length > 0 && xdData[xdData.length - 1].time === endTime) {
-          xdData[xdData.length - 1].value = xd.end_price;
-        } else {
-          xdData.push({ time: endTime, value: xd.end_price });
-        }
-      }
-      if (xdData.length >= 2) {
-        // 追加K线的全局价格范围锚点，确保 overlay 价格轴与K线价格轴对齐
-        const kLow = Math.min(...visibleKlines.map(k => k.low));
-        const kHigh = Math.max(...visibleKlines.map(k => k.high));
-        xdData.unshift({ time: xdData[0].time, value: kLow });
-        xdData.push({ time: xdData[xdData.length - 1].time, value: kHigh });
-        xdSeries.setData(xdData);
-        // 独立价格轴与K线同区域，自动缩放，隐藏刻度
-        mainChart!.priceScale("xd_scale").applyOptions({
-          scaleMargins: { top: 0.05, bottom: 0.35 },
-          visible: false,
-        });
       }
       } catch (e) { console.error("[线段渲染异常]", e); }
     }

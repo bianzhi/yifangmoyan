@@ -384,14 +384,30 @@ fn push_xd(
     let start_bi = &bis[start_bi_idx];
     let end_bi = &bis[end_bi_idx];
 
+    // 线段起点价格：必须与线段方向一致
+    // 如果第一笔方向 == 线段方向 → start_price = 第一笔的起点价格
+    // 如果第一笔方向 != 线段方向（共享端点场景）→ start_price = 第一笔的终点价格
+    let start_price = if is_xd_up == (start_bi.direction.as_str() == "up") {
+        start_bi.start_price
+    } else {
+        start_bi.end_price
+    };
+
+    // 线段终点价格：最后一笔方向一定与线段方向一致
+    let end_price = if is_xd_up == (end_bi.direction.as_str() == "up") {
+        end_bi.end_price
+    } else {
+        end_bi.start_price
+    };
+
     xds.push(XianDuan {
         direction: if is_xd_up { "up" } else { "down" }.to_string(),
         start_index: start_bi.start_index,
         end_index: end_bi.end_index,
         start_dt: start_bi.start_dt.clone(),
         end_dt: end_bi.end_dt.clone(),
-        start_price: start_bi.start_price,
-        end_price: end_bi.end_price,
+        start_price,
+        end_price,
         is_finished,
     });
 }

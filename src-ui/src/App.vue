@@ -451,14 +451,215 @@ function renderChart() {
     });
   }
 
-  // 缠论覆盖层（try-catch 隔离，避免覆盖层异常导致K线不显示）
+  // ===== 缠论覆盖层 =====
+  // 分步执行，精准定位问题
+  let _diagnosePhase = "";
   if (data.czsc) {
-    try {
-      renderCzscOverlays(data);
-    } catch (e) {
-      console.error("[缠论覆盖层渲染异常]", e);
+    const czsc = data.czsc;
+    const allMarkers: any[] = [];
+
+    // 1) 分型标记
+    _diagnosePhase = "分型";
+    if (settings.value.czsc.showFenxing && czsc.fenxing.length > 0) {
+      for (const fx of czsc.fenxing) {
+        const k = data.klines[fx.index];
+        if (!k) continue;
+        allMarkers.push({
+          time: toTime(k.dt),
+          position: fx.fx_type === "top" ? ("aboveBar" as const) : ("belowBar" as const),
+          color: fx.fx_type === "top" ? "#4caf50" : "#ffc107",
+          shape: fx.fx_type === "top" ? ("arrowUp" as const) : ("arrowDown" as const),
+          size: 0.5,
+          text: "",
+        });
+      }
     }
+
+    // 2) 笔
+    _diagnosePhase = "笔";
+    if (settings.value.czsc.showBi && czsc.bi.length > 0) {
+      try {
+      const biStyle = settings.value.styles.bi;
+      const biSeries = mainChart!.addLineSeries({
+        color: biStyle.color,
+        lineWidth: biStyle.lineWidth as 1 | 2 | 3 | 4,
+        priceLineVisible: false,
+        lastValueVisible: false,
+        crosshairMarkerVisible: false,
+        priceScaleId: "bi_scale",
+      });
+
+      const biData: LineData<Time>[] = [];
+      const minVisibleTime = candleData.length > 0 ? candleData[0].time : null;
+      const maxVisibleTime = candleData.length > 0 ? candleData[candleData.length - 1].time : null;
+      for (const bi of czsc.bi) {
+        const startK = bi.start_index >= 0 && bi.start_index < data.klines.length ? data.klines[bi.start_index] : null;
+        const endK = bi.end_index >= 0 && bi.end_index < data.klines.length ? data.klines[bi.end_index] : null;
+        if (!startK || !endK) continue;
+        if (!isFinite(bi.start_price) || !isFinite(bi.end_price) ||
+            bi.start_price === 0 || bi.end_price === 0) continue;
+        const startTime = toTime(startK.dt);
+        const endTime = toTime(endK.dt);
+        // 跳过完全在可见范围之外的笔
+        if (minVisibleTime !== null && endTime < minVisibleTime) continue;
+        if (maxVisibleTime !== null && startTime > maxVisibleTime) continue;
+        if (biData.length === 0 || biData[biData.length - 1].time !== startTime) {
+          biData.push({ time: startTime, value: bi.start_price });
+        }
+        if (biData.length > 0 && biData[biData.length - 1].time === endTime) {
+          biData[biData.length - 1].value = bi.end_price;
+        } else {
+          biData.push({ time: endTime, value: bi.end_price });
+        }
+      }
+      if (biData.length >= 2) {
+        // 追加K线的全局价格范围锚点，确保 overlay 价格轴与K线价格轴对齐
+        const kLow = Math.min(...visibleKlines.map(k => k.low));
+        const kHigh = Math.max(...visibleKlines.map(k => k.high));
+        biData.unshift({ time: biData[0].time, value: kLow });
+        biData.push({ time: biData[biData.length - 1].time, value: kHigh });
+        biSeries.setData(biData);
+        // 独立价格轴与K线同区域，自动缩放，隐藏刻度
+        mainChart!.priceScale("bi_scale").applyOptions({
+          scaleMargins: { top: 0.05, bottom: 0.35 },
+          visible: false,
+        });
+      }
+      } catch (e) { console.error("[笔渲染异常]", e); }
+    }
+
+    // 3) 线段
+    _diagnosePhase = "线段";
+    if (settings.value.czsc.showXd && czsc.xd.length > 0) {
+      try {
+      const xdStyle = settings.value.styles.xd;
+      const xdSeries = mainChart!.addLineSeries({
+        color: xdStyle.color,
+        lineWidth: xdStyle.lineWidth as 1 | 2 | 3 | 4,
+        lineStyle: 2,
+        priceLineVisible: false,
+        lastValueVisible: false,
+        crosshairMarkerVisible: false,
+        priceScaleId: "xd_scale",
+      });
+
+      const xdData: LineData<Time>[] = [];
+      const minVisibleTime = candleData.length > 0 ? candleData[0].time : null;
+      const maxVisibleTime = candleData.length > 0 ? candleData[candleData.length - 1].time : null;
+      for (const xd of czsc.xd) {
+        const startK = xd.start_index >= 0 && xd.start_index < data.klines.length ? data.klines[xd.start_index] : null;
+        const endK = xd.end_index >= 0 && xd.end_index < data.klines.length ? data.klines[xd.end_index] : null;
+        if (!startK || !endK) continue;
+        if (!isFinite(xd.start_price) || !isFinite(xd.end_price) ||
+            xd.start_price === 0 || xd.end_price === 0) continue;
+        const startTime = toTime(startK.dt);
+        const endTime = toTime(endK.dt);
+        // 跳过完全在可见范围之外的线段
+        if (minVisibleTime !== null && endTime < minVisibleTime) continue;
+        if (maxVisibleTime !== null && startTime > maxVisibleTime) continue;
+        if (xdData.length === 0 || xdData[xdData.length - 1].time !== startTime) {
+          xdData.push({ time: startTime, value: xd.start_price });
+        }
+        if (xdData.length > 0 && xdData[xdData.length - 1].time === endTime) {
+          xdData[xdData.length - 1].value = xd.end_price;
+        } else {
+          xdData.push({ time: endTime, value: xd.end_price });
+        }
+      }
+      if (xdData.length >= 2) {
+        // 追加K线的全局价格范围锚点，确保 overlay 价格轴与K线价格轴对齐
+        const kLow = Math.min(...visibleKlines.map(k => k.low));
+        const kHigh = Math.max(...visibleKlines.map(k => k.high));
+        xdData.unshift({ time: xdData[0].time, value: kLow });
+        xdData.push({ time: xdData[xdData.length - 1].time, value: kHigh });
+        xdSeries.setData(xdData);
+        // 独立价格轴与K线同区域，自动缩放，隐藏刻度
+        mainChart!.priceScale("xd_scale").applyOptions({
+          scaleMargins: { top: 0.05, bottom: 0.35 },
+          visible: false,
+        });
+      }
+      } catch (e) { console.error("[线段渲染异常]", e); }
+    }
+
+    // 4) 买卖点
+    _diagnosePhase = "买卖点";
+    if (settings.value.czsc.showBuySell && czsc.buy_sell.length > 0) {
+      for (const bs of czsc.buy_sell) {
+        const k = data.klines[bs.index];
+        if (!k) continue;
+        const isBuy = bs.bs_type.includes("buy");
+        const bsConf = CZSC_BS_COLORS[bs.bs_type] || {
+          color: isBuy ? "#00e676" : "#ff1744",
+          text: bs.bs_type,
+        };
+        allMarkers.push({
+          time: toTime(k.dt),
+          position: isBuy ? ("belowBar" as const) : ("aboveBar" as const),
+          color: bsConf.color,
+          shape: "circle" as const,
+          size: 2,
+          text: bsConf.text,
+        });
+      }
+    }
+
+    // 5) 笔中枢
+    _diagnosePhase = "笔中枢";
+    if (settings.value.czsc.showBiZs && czsc.bi_zs.length > 0) {
+      const zsStyle = settings.value.styles.biZs;
+      renderZhongShu(czsc.bi_zs, data, zsStyle);
+    }
+
+    // 6) 线段中枢
+    _diagnosePhase = "线段中枢";
+    if (settings.value.czsc.showXdZs && czsc.xd_zs.length > 0) {
+      const zsStyle = settings.value.styles.xdZs;
+      renderZhongShu(czsc.xd_zs, data, zsStyle);
+    }
+
+    // 7) 背驰
+    _diagnosePhase = "背驰";
+    if (settings.value.czsc.showBeichi && czsc.beichi.length > 0) {
+      for (const bc of czsc.beichi) {
+        const k = data.klines[bc.index];
+        if (!k) continue;
+        const isUp = bc.direction === "up";
+        let text = "⚡";
+        if (bc.bc_sub_type === "panzheng") text = "⚡盘整";
+        else if (bc.bc_type === "xd_beichi") text = "⚡线段";
+        else text = "⚡笔";
+        const bcColor = isUp ? "#ff5252" : "#69f0ae";
+        allMarkers.push({
+          time: toTime(k.dt),
+          position: isUp ? ("aboveBar" as const) : ("belowBar" as const),
+          color: bcColor,
+          shape: "circle" as const,
+          size: 1,
+          text,
+        });
+      }
+    }
+
+    // 设置所有 markers
+    _diagnosePhase = "markers排序";
+    if (allMarkers.length > 0) {
+      try {
+        candleSeries!.setMarkers(
+          allMarkers.sort((a, b) => {
+            const ta = typeof a.time === 'number' ? a.time : String(a.time);
+            const tb = typeof b.time === 'number' ? b.time : String(b.time);
+            return ta < tb ? -1 : ta > tb ? 1 : 0;
+          })
+        );
+      } catch (e) {
+        console.error("[setMarkers异常]", e, "markers_count=", allMarkers.length);
+      }
+    }
+    _diagnosePhase = "完成";
   }
+
+  console.log("[DIAG] 缠论覆盖层渲染完成, phase=", _diagnosePhase);
 
   // 威科夫覆盖层
   if (data.wyckoff) {
@@ -548,166 +749,6 @@ function renderChart() {
 
     tooltipInfo.value = info;
   });
-}
-
-// ===== 缠论覆盖层 =====
-function renderCzscOverlays(data: ChartData) {
-  const czsc = data.czsc!;
-  const allMarkers: any[] = [];
-
-  // 分型标记 — 小三角
-  if (settings.value.czsc.showFenxing && czsc.fenxing.length > 0) {
-    for (const fx of czsc.fenxing) {
-      const k = data.klines[fx.index];
-      if (!k) continue;
-      allMarkers.push({
-        time: toTime(k.dt),
-        position: fx.fx_type === "top" ? ("aboveBar" as const) : ("belowBar" as const),
-        color: fx.fx_type === "top" ? "#4caf50" : "#ffc107",
-        shape: fx.fx_type === "top" ? ("arrowUp" as const) : ("arrowDown" as const),
-        size: 0.5,
-        text: "",
-      });
-    }
-  }
-
-  // 笔 — 上升红/下降蓝 折线（overlay 模式，不影响 K 线价格轴）
-  if (settings.value.czsc.showBi && czsc.bi.length > 0) {
-    try {
-    const biStyle = settings.value.styles.bi;
-    const biSeries = mainChart!.addLineSeries({
-      color: biStyle.color,
-      lineWidth: biStyle.lineWidth as 1 | 2 | 3 | 4,
-      priceLineVisible: false,
-      lastValueVisible: false,
-      crosshairMarkerVisible: false,
-      priceScaleId: "right",  // 与 K 线共用价格轴
-    });
-
-    const biData: LineData<Time>[] = [];
-    for (const bi of czsc.bi) {
-      const startK = bi.start_index >= 0 && bi.start_index < data.klines.length ? data.klines[bi.start_index] : null;
-      const endK = bi.end_index >= 0 && bi.end_index < data.klines.length ? data.klines[bi.end_index] : null;
-      if (!startK || !endK) continue;
-      // 过滤异常值（NaN/Infinity/0），避免 LightweightCharts 崩溃
-      if (!isFinite(bi.start_price) || !isFinite(bi.end_price) ||
-          bi.start_price === 0 || bi.end_price === 0) continue;
-      const startTime = toTime(startK.dt);
-      if (biData.length === 0 || biData[biData.length - 1].time !== startTime) {
-        biData.push({ time: startTime, value: bi.start_price });
-      }
-      const endTime = toTime(endK.dt);
-      // 避免同一时间插入两个不同 value（LightweightCharts 不允许）
-      if (biData.length > 0 && biData[biData.length - 1].time === endTime) {
-        biData[biData.length - 1].value = bi.end_price;
-      } else {
-        biData.push({ time: endTime, value: bi.end_price });
-      }
-    }
-    if (biData.length >= 2) biSeries.setData(biData);
-    } catch (e) { console.error("[笔渲染异常]", e); }
-  }
-
-  // 线段 — 使用样式配置
-  if (settings.value.czsc.showXd && czsc.xd.length > 0) {
-    try {
-    const xdStyle = settings.value.styles.xd;
-    const xdSeries = mainChart!.addLineSeries({
-      color: xdStyle.color,
-      lineWidth: xdStyle.lineWidth as 1 | 2 | 3 | 4,
-      lineStyle: 2,
-      priceLineVisible: false,
-      lastValueVisible: false,
-      crosshairMarkerVisible: false,
-      priceScaleId: "right",  // 与 K 线共用价格轴
-    });
-
-    const xdData: LineData<Time>[] = [];
-    for (const xd of czsc.xd) {
-      const startK = xd.start_index >= 0 && xd.start_index < data.klines.length ? data.klines[xd.start_index] : null;
-      const endK = xd.end_index >= 0 && xd.end_index < data.klines.length ? data.klines[xd.end_index] : null;
-      if (!startK || !endK) continue;
-      // 过滤异常值（NaN/Infinity/0），避免 LightweightCharts 崩溃
-      if (!isFinite(xd.start_price) || !isFinite(xd.end_price) ||
-          xd.start_price === 0 || xd.end_price === 0) continue;
-      const startTime = toTime(startK.dt);
-      if (xdData.length === 0 || xdData[xdData.length - 1].time !== startTime) {
-        xdData.push({ time: startTime, value: xd.start_price });
-      }
-      // 避免同一时间插入两个不同 value
-      const endTime = toTime(endK.dt);
-      if (xdData.length > 0 && xdData[xdData.length - 1].time === endTime) {
-        xdData[xdData.length - 1].value = xd.end_price;
-      } else {
-        xdData.push({ time: endTime, value: xd.end_price });
-      }
-    }
-    if (xdData.length >= 2) xdSeries.setData(xdData);
-    } catch (e) { console.error("[线段渲染异常]", e); }
-  }
-
-  // 买卖点标记 — 圆形图标+文字
-  if (settings.value.czsc.showBuySell && czsc.buy_sell.length > 0) {
-    for (const bs of czsc.buy_sell) {
-      const k = data.klines[bs.index];
-      if (!k) continue;
-      const isBuy = bs.bs_type.includes("buy");
-      const bsConf = CZSC_BS_COLORS[bs.bs_type] || {
-        color: isBuy ? "#00e676" : "#ff1744",
-        text: bs.bs_type,
-      };
-      allMarkers.push({
-        time: toTime(k.dt),
-        position: isBuy ? ("belowBar" as const) : ("aboveBar" as const),
-        color: bsConf.color,
-        shape: "circle" as const,
-        size: 2,
-        text: bsConf.text,
-      });
-    }
-  }
-
-  // 笔中枢 — 矩形
-  if (settings.value.czsc.showBiZs && czsc.bi_zs.length > 0) {
-    const zsStyle = settings.value.styles.biZs;
-    renderZhongShu(czsc.bi_zs, data, zsStyle);
-  }
-
-  // 线段中枢 — 矩形
-  if (settings.value.czsc.showXdZs && czsc.xd_zs.length > 0) {
-    const zsStyle = settings.value.styles.xdZs;
-    renderZhongShu(czsc.xd_zs, data, zsStyle);
-  }
-
-  // 背驰标记 — 顶背驰红色，底背驰绿色
-  if (settings.value.czsc.showBeichi && czsc.beichi.length > 0) {
-    for (const bc of czsc.beichi) {
-      const k = data.klines[bc.index];
-      if (!k) continue;
-      const isUp = bc.direction === "up";
-      let text = "⚡";
-      if (bc.bc_sub_type === "panzheng") text = "⚡盘整";
-      else if (bc.bc_type === "xd_beichi") text = "⚡线段";
-      else text = "⚡笔";
-      // 顶背驰用红色系，底背驰用绿色系
-      const bcColor = isUp ? "#ff5252" : "#69f0ae";
-      allMarkers.push({
-        time: toTime(k.dt),
-        position: isUp ? ("aboveBar" as const) : ("belowBar" as const),
-        color: bcColor,
-        shape: "circle" as const,
-        size: 1,
-        text,
-      });
-    }
-  }
-
-  // 设置所有 markers（按时间排序）
-  if (allMarkers.length > 0) {
-    candleSeries!.setMarkers(
-      allMarkers.sort((a, b) => (a.time as string).localeCompare(b.time as string))
-    );
-  }
 }
 
 // 渲染中枢（矩形框+半透明填充）
@@ -938,9 +979,11 @@ function renderWyckoffOverlays(data: ChartData) {
   if (eventMarkers.length > 0) {
     const existingMarkers = candleSeries!.markers() || [];
     candleSeries!.setMarkers(
-      [...existingMarkers, ...eventMarkers].sort((a, b) =>
-        (a.time as string).localeCompare(b.time as string)
-      )
+      [...existingMarkers, ...eventMarkers].sort((a, b) => {
+        const ta = typeof a.time === 'number' ? a.time : String(a.time);
+        const tb = typeof b.time === 'number' ? b.time : String(b.time);
+        return ta < tb ? -1 : ta > tb ? 1 : 0;
+      })
     );
   }
 }
@@ -995,9 +1038,11 @@ function renderFusionOverlays(data: ChartData) {
 
   const existingMarkers = candleSeries!.markers() || [];
   candleSeries!.setMarkers(
-    [...existingMarkers, ...fusionMarkers].sort((a, b) =>
-      (a.time as string).localeCompare(b.time as string)
-    )
+    [...existingMarkers, ...fusionMarkers].sort((a, b) => {
+      const ta = typeof a.time === 'number' ? a.time : String(a.time);
+      const tb = typeof b.time === 'number' ? b.time : String(b.time);
+      return ta < tb ? -1 : ta > tb ? 1 : 0;
+    })
   );
 }
 

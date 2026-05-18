@@ -272,17 +272,33 @@ function hasAnyCzscEnabled(): boolean {
 
 // ===== 时间格式化 =====
 function toTime(dt: string): Time {
-  // lightweight-charts v4 的 Time 类型只接受：
-  //   1. UTCTimestamp (Unix 秒数，number)
-  //   2. BusinessDay 字符串 "YYYY-MM-DD"（仅日线及以上）
+  // lightweight-charts v4 的 Time 类型接受：
+  //   1. UTCTimestamp (Unix 秒数，整数)
+  //   2. BusinessDay 字符串 "YYYY-MM-DD"（仅日线及以上，timeVisible=true 时也可用）
   //   3. BusinessDay 对象 { year, month, day }
-  // "YYYY-MM-DD HH:MM" 格式不被识别，会导致 K 线不渲染。
-  // 因此统一转换为 UTCTimestamp（Unix 秒数）以确保日线和分钟线都能正常显示。
+  //
+  // 关键：Date.parse("2024-01-15") 按 UTC 解析，而 Date.parse("2024-01-15 09:30") 按本地时间解析，
+  // 混用会导致时区偏移不一致，K线时间错乱无法渲染。
+  // 因此：纯日期格式直接用字符串（BusinessDay），带时间的统一用本地时间转 UTCTimestamp。
+
+  if (/^\d{4}-\d{2}-\d{2}$/.test(dt)) {
+    // 纯日期 "YYYY-MM-DD" → 直接作为 BusinessDay 字符串
+    return dt as Time;
+  }
+  // "YYYY-MM-DD HH:MM" 或 "YYYY-MM-DD HH:MM:SS" → 手动解析为本地时间 UTCTimestamp
+  // 避免用 Date.parse()，因为它对 "YYYY-MM-DD" 和 "YYYY-MM-DD HH:MM" 的时区处理不一致
+  const m = dt.match(/^(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2})/);
+  if (m) {
+    const [, y, mo, d, h, mi] = m;
+    const sec = Math.floor(new Date(+y, +mo - 1, +d, +h, +mi).getTime() / 1000);
+    return sec as Time;
+  }
+  // 兜底：尝试 Date.parse
   const ms = Date.parse(dt);
   if (!isNaN(ms)) {
-    return (ms / 1000) as Time;
+    return Math.floor(ms / 1000) as Time;
   }
-  // 兜底：仅日期格式
+  // 最终兜底：截取日期部分
   return dt.slice(0, 10) as Time;
 }
 
@@ -1461,7 +1477,7 @@ watch(currentView, (val) => {
         <div class="flex-1 flex flex-col relative">
           <div ref="chartContainer" class="flex-1 min-h-0"></div>
           <!-- 诊断日志面板（不用 devtools 就能看到） -->
-          <div v-if="diagLogs.length > 0" class="absolute bottom-0 left-0 right-0 max-h-40 overflow-y-auto bg-black/80 text-[10px] text-lime-400 font-mono p-1 z-50 pointer-events-none">
+          <div v-if="diagLogs.length > 0" class="absolute bottom-0 left-0 right-0 max-h-40 overflow-y-auto bg-black/90 text-[10px] text-lime-400 font-mono p-1 z-50 select-text cursor-text">
             <div v-for="(log, i) in diagLogs" :key="i">{{ log }}</div>
           </div>
           <!-- 加载/错误/空数据提示 -->

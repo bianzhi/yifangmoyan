@@ -36,18 +36,32 @@ impl CzscAnalyzer {
     /// 8. 走势递归分解
     pub fn analyze(klines: &[KLine], macd: &MacdData) -> CzscResult {
         if klines.len() < 5 {
+            eprintln!("[CZSC-DIAG] K线不足5根, 跳过分析");
             return CzscResult::default();
         }
 
+        eprintln!("[CZSC-DIAG] === 缠论分析开始 === 原始K线: {} 根", klines.len());
+
         // 1. 去除包含关系
         let merged = remove_include(klines);
+        eprintln!("[CZSC-DIAG] 去包含后: {} 根 (原始: {})", merged.len(), klines.len());
 
         // 2. 识别分型
         let fxs = check_fxs(&merged);
+        eprintln!("[CZSC-DIAG] 分型识别: {} 个 (去包含后bars: {})", fxs.len(), merged.len());
+        if fxs.len() > 0 {
+            eprintln!("[CZSC-DIAG]   首个分型: {:?} fx={}", fxs[0].mark, fxs[0].fx);
+        }
         let fenxing = to_fenxing(&fxs);
 
         // 3. 构建笔
+        eprintln!("[CZSC-DIAG] 开始构建笔 (min_bi_len=7)...");
         let bis = build_bi(klines, None);
+        eprintln!("[CZSC-DIAG] 笔构建完成: {} 条", bis.len());
+        for (i, bi) in bis.iter().enumerate() {
+            eprintln!("[CZSC-DIAG]   笔[{}]: {} {:.2}→{:.2} (idx {}→{})", 
+                i, bi.direction, bi.start_price, bi.end_price, bi.start_index, bi.end_index);
+        }
 
         // 4. 构建线段（特征序列分型破坏法）
         let xds = build_xd(&bis);

@@ -604,9 +604,28 @@ function renderChart() {
       }
     }
     _diagnosePhase = "完成";
-  }
 
-  console.log("[DIAG] 缠论覆盖层渲染完成, phase=", _diagnosePhase);
+    console.log("[DIAG] 缠论覆盖层渲染完成", {
+      fenxing: czsc.fenxing.length,
+      bi: czsc.bi.length,
+      xd: czsc.xd.length,
+      bi_zs: czsc.bi_zs.length,
+      xd_zs: czsc.xd_zs.length,
+      buy_sell: czsc.buy_sell.length,
+      beichi: czsc.beichi.length,
+      zoushi: czsc.zoushi.length,
+      phase: _diagnosePhase,
+      settings: {
+        showFenxing: settings.value.czsc.showFenxing,
+        showBi: settings.value.czsc.showBi,
+        showXd: settings.value.czsc.showXd,
+        showBiZs: settings.value.czsc.showBiZs,
+        showXdZs: settings.value.czsc.showXdZs,
+        showBuySell: settings.value.czsc.showBuySell,
+        showBeichi: settings.value.czsc.showBeichi,
+      },
+    });
+  }
 
   // 威科夫覆盖层
   if (data.wyckoff) {

@@ -120,32 +120,9 @@ fn ensure_alternating(fxs: Vec<FxResult>) -> Vec<FxResult> {
                 *last = fx.clone();
             }
         } else {
-            // 不同类型：
-            // 额外校验：顶分型 fx 值必须高于前一个底分型 fx 值，
-            // 底分型 fx 值必须低于前一个顶分型 fx 值。
-            // 这是缠论的基本逻辑约束——顶一定高于底。
-            let valid = match fx.mark {
-                FxMark::Top => fx.fx > last.fx,
-                FxMark::Bottom => fx.fx < last.fx,
-            };
-
-            if valid {
-                result.push(fx.clone());
-            } else {
-                // 不满足约束时，保留更极端的
-                // 例如：前一个底分型 low=10，当前顶分型 high=9 → 不合理，需保留更极端的
-                // valid=false implies no replacement needed; discard
-                // 这里 valid=false 意味着 should_replace 也为 false,
-                // 所以直接跳过这个分型
-                // 但这也可能意味着前一个分型需要被更新
-                // 保守处理：丢弃不合理的分型。
-                // 实际数据中极少出现，如果频繁出现说明去包含逻辑有误。
-                #[cfg(debug_assertions)]
-                eprintln!(
-                    "WARN: 分型不合理被丢弃: {:?} fx={} 在 {:?} fx={} 之后",
-                    fx.mark, fx.fx, last.mark, last.fx
-                );
-            }
+            // 不同类型：直接加入，保持交替
+            // 方向正确性（顶>底）由后续 match_fx_pairs 在步骤3中处理
+            result.push(fx.clone());
         }
     }
 

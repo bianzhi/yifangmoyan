@@ -63,7 +63,7 @@ export interface ZhongShu {
 }
 
 export interface BuySellPoint {
-  bs_type: string; // "1buy", "2buy", "3buy", "1sell", "2sell", "3sell"
+  bs_type: string; // "1buy", "2buy", "2buy_break", "3buy", "2+3buy", "2+3buy_break", "1sell", "2sell", "2sell_break", "3sell", "2+3sell", "2+3sell_break"
   index: number;
   dt: string;
   price: number;
@@ -431,10 +431,16 @@ export const WYCKOFF_PHASE_COLORS: Record<string, string> = {
 // ===== 缠论买卖点颜色 =====
 
 export const CZSC_BS_COLORS: Record<string, { color: string; text: string; shape: string; label: string }> = {
-  "1buy":  { color: "#00e676", text: "1B", shape: "arrowUp",   label: "一买" },
-  "2buy":  { color: "#69f0ae", text: "2B", shape: "circle",     label: "二买" },
-  "3buy":  { color: "#b9f6ca", text: "3B", shape: "square",     label: "三买" },
-  "1sell": { color: "#ff1744", text: "1S", shape: "arrowDown",  label: "一卖" },
-  "2sell": { color: "#ff5252", text: "2S", shape: "circle",     label: "二卖" },
-  "3sell": { color: "#ff8a80", text: "3S", shape: "square",     label: "三卖" },
+  "1buy":          { color: "#00e676", text: "1B",  shape: "arrowUp",   label: "一买" },
+  "2buy":          { color: "#69f0ae", text: "2B",  shape: "circle",     label: "二买" },
+  "2buy_break":    { color: "#ffab40", text: "2B!", shape: "circle",     label: "二买(破位)" },
+  "3buy":          { color: "#b9f6ca", text: "3B",  shape: "square",     label: "三买" },
+  "2+3buy":        { color: "#00e676", text: "2+3B", shape: "diamond",   label: "二三买重合" },
+  "2+3buy_break":  { color: "#ffab40", text: "2+3B!", shape: "diamond", label: "二三买重合(破位)" },
+  "1sell":         { color: "#ff1744", text: "1S",  shape: "arrowDown",  label: "一卖" },
+  "2sell":         { color: "#ff5252", text: "2S",  shape: "circle",     label: "二卖" },
+  "2sell_break":   { color: "#ffab40", text: "2S!", shape: "circle",     label: "二卖(破位)" },
+  "3sell":         { color: "#ff8a80", text: "3S",  shape: "square",     label: "三卖" },
+  "2+3sell":       { color: "#ff1744", text: "2+3S", shape: "diamond",   label: "二三卖重合" },
+  "2+3sell_break": { color: "#ffab40", text: "2+3S!", shape: "diamond", label: "二三卖重合(破位)" },
 };

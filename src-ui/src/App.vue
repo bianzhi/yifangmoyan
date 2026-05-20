@@ -541,10 +541,16 @@ function renderChart() {
       const bsVisibility: Record<string, boolean> = {
         "1buy": settings.value.czsc.show1buy,
         "2buy": settings.value.czsc.show2buy,
+        "2buy_break": settings.value.czsc.show2buy,
         "3buy": settings.value.czsc.show3buy,
+        "2+3buy": settings.value.czsc.show2buy && settings.value.czsc.show3buy,
+        "2+3buy_break": settings.value.czsc.show2buy && settings.value.czsc.show3buy,
         "1sell": settings.value.czsc.show1sell,
         "2sell": settings.value.czsc.show2sell,
+        "2sell_break": settings.value.czsc.show2sell,
         "3sell": settings.value.czsc.show3sell,
+        "2+3sell": settings.value.czsc.show2sell && settings.value.czsc.show3sell,
+        "2+3sell_break": settings.value.czsc.show2sell && settings.value.czsc.show3sell,
       };
       for (const bs of czsc.buy_sell) {
         if (!bsVisibility[bs.bs_type]) continue;

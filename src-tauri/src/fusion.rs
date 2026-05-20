@@ -43,14 +43,14 @@ const FUSION_RULES: &[FusionRule] = &[
         direction: "bullish",
     },
     FusionRule {
-        czsc_types: &["2buy"],
+        czsc_types: &["2buy", "2+3buy"],
         wyckoff_types: &["LPS"],
         interpretation: "回调确认吸筹完成：缠论二买+威科夫最后支撑",
         strength: 4,
         direction: "bullish",
     },
     FusionRule {
-        czsc_types: &["2buy"],
+        czsc_types: &["2buy", "2+3buy"],
         wyckoff_types: &["SOS"],
         interpretation: "强势回踩确认：缠论二买+威科夫强势信号",
         strength: 4,
@@ -78,7 +78,7 @@ const FUSION_RULES: &[FusionRule] = &[
         direction: "bearish",
     },
     FusionRule {
-        czsc_types: &["2sell"],
+        czsc_types: &["2sell", "2+3sell"],
         wyckoff_types: &["SOW"],
         interpretation: "反弹无力+弱势信号：缠论二卖+威科夫SOW",
         strength: 4,
@@ -100,14 +100,14 @@ const FUSION_RULES: &[FusionRule] = &[
     },
     // 阶段转换 + 背驰
     FusionRule {
-        czsc_types: &["1buy", "2buy"],
+        czsc_types: &["1buy", "2buy", "2+3buy"],
         wyckoff_types: &["AR"],
         interpretation: "底部反转确认：缠论买点+威科夫自动反弹",
         strength: 3,
         direction: "bullish",
     },
     FusionRule {
-        czsc_types: &["1sell", "2sell"],
+        czsc_types: &["1sell", "2sell", "2+3sell"],
         wyckoff_types: &["PSY"],
         interpretation: "顶部反转预警：缠论卖点+威科夫初步供给",
         strength: 3,

@@ -106,11 +106,11 @@ fn is_compatible_bs(high_type: &str, low_type: &str) -> bool {
 }
 
 fn is_buy_type(bs_type: &str) -> bool {
-    matches!(bs_type, "1buy" | "2buy" | "3buy")
+    matches!(bs_type, "1buy" | "2buy" | "2buy_break" | "3buy" | "2+3buy" | "2+3buy_break")
 }
 
 fn is_sell_type(bs_type: &str) -> bool {
-    matches!(bs_type, "1sell" | "2sell" | "3sell")
+    matches!(bs_type, "1sell" | "2sell" | "2sell_break" | "3sell" | "2+3sell" | "2+3sell_break")
 }
 
 /// 分类区间套强度
@@ -122,12 +122,19 @@ fn classify_strength(high_type: &str, low_type: &str) -> &'static str {
         return "strong";
     }
 
-    // 大级别一买 + 小级别二买/三买 → medium
-    // 大级别二买 + 小级别一买 → medium
-    if (high_type == "1buy" && (low_type == "2buy" || low_type == "3buy"))
-        || (high_type == "2buy" && low_type == "1buy")
-        || (high_type == "1sell" && (low_type == "2sell" || low_type == "3sell"))
-        || (high_type == "2sell" && low_type == "1sell")
+    // 大级别一买 + 小级别二买/三买/2+3买 → medium
+    // 大级别二买/2+3买 + 小级别一买 → medium
+    let is_2_or_3_buy = |t: &str| -> bool {
+        matches!(t, "2buy" | "2buy_break" | "3buy" | "2+3buy" | "2+3buy_break")
+    };
+    let is_2_or_3_sell = |t: &str| -> bool {
+        matches!(t, "2sell" | "2sell_break" | "3sell" | "2+3sell" | "2+3sell_break")
+    };
+
+    if (high_type == "1buy" && is_2_or_3_buy(low_type))
+        || (is_2_or_3_buy(high_type) && low_type == "1buy")
+        || (high_type == "1sell" && is_2_or_3_sell(low_type))
+        || (is_2_or_3_sell(high_type) && low_type == "1sell")
     {
         return "medium";
     }

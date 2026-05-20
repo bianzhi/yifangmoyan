@@ -5,20 +5,27 @@
 //! **第一类买卖点**（17课、21课、27课）：
 //! - 一买：下跌趋势（≥2个同级别中枢且方向向下递进）最后一个中枢后出现的趋势底背驰点
 //! - 一卖：上涨趋势（≥2个同级别中枢且方向向上递进）最后一个中枢后出现的趋势顶背驰点
-//! - **铁律**：盘整背驰绝对不能产生第一类买卖点（21课明确：盘整背驰转化为第三类买卖点）
+//! - **铁律**：盘整背驰绝对不能产生第一类买卖点（27课明确：趋势背驰产生一类买卖点）
 //!
-//! **第二类买卖点**（17课、20课）：
-//! - 二买：一买之后，第一个回调（次级别向下走势）的终点，其低点不低于一买低点
-//! - 二卖：一卖之后，第一个反弹（次级别向上走势）的终点，其高点不高于一卖高点
-//! - 二买可出现在中枢上/中/下（20课），关键是"不破一买低点"
+//! **第二类买卖点**（21课）：
+//! - 21课原文："第一买点出现后的第二段次级别走势低点就构成第二类买点"
+//! - 二买 = 一买后，第一段向上走势（离开段）+ 第二段向下走势（回抽段）的低点
+//! - 二卖 = 一卖后，第一段向下走势（离开段）+ 第二段向上走势（回抽段）的高点
+//! - 21课原文**未附加**"不破一买/一卖价格"的约束，此处比原文更严格：
+//!   - 回抽不破一买价 → 标准二买("2buy")
+//!   - 回抽破了一买价 → 破位二买("2buy_break")，表示一买可能误判
 //!
 //! **第三类买卖点**（17课、20课、21课）：
 //! - 三买：某级别中枢之上，次级别走势离开该中枢后，次级别走势回抽不回到中枢区间[Zd, Zg]
-//!   即：回抽走势的低点 > 中枢Zg（上沿）
+//!   即：回抽走势的低点 >= 中枢Zg（上沿），原文"不跌破ZG"包含等于的情况
 //! - 三卖：某级别中枢之下，次级别走势离开该中枢后，次级别走势回抽不回到中枢区间[Zd, Zg]
-//!   即：回抽走势的高点 < 中枢Zd（下沿）
+//!   即：回抽走势的高点 <= 中枢Zd（下沿），原文"不升破ZD"包含等于的情况
 //! - 关键：离开段必须实际脱离中枢（三买：离开段高点>Zg，三卖：离开段低点<Zd）
-
+//!
+//! **二三买/二三卖重合**（21课）：
+//! - 21课原文："第一类买点出现后，一个次级别的走势凌厉地直接上破前面下跌的最后一个中枢，
+//!   然后在其上产生一个次级别的回抽不触及该中枢，这时候，就会出现第二类买点与第三类买点重合的情况"
+//! - 一旦出现重合，"一个大级别的上涨往往就会出现" → 标记为"2+3buy"/"2+3sell"
 use yifang_data::{BeiChi, Bi, BuySellPoint, XianDuan, ZhongShu};
 
 // ─── 公开接口 ──────────────────────────────────────────
@@ -100,8 +107,11 @@ where
     results.extend(buy3_list);
     results.extend(sell3_list);
 
-    results.sort_by_key(|p| p.index);
-    results.dedup_by(|a, b| a.index == b.index && a.bs_type == b.bs_type);
+    // 检测二三买/二三卖重合（21课原文明确重视此信号）
+    // 当二买和三买在同一位置(index相同)时，合并为"2+3buy"
+    // 当二卖和三卖在同一位置(index相同)时，合并为"2+3sell"
+    results = merge_overlapping_2_3(results);
+
     results
 }
 
@@ -185,16 +195,14 @@ fn find_buy1_sell1(
 
 // ─── 第二类买卖点 ─────────────────────────────────────
 
-/// 第二类买卖点（缠论17课、20课）
+/// 第二类买卖点（缠论21课）
 ///
-/// 缠论原文（17课）：
-/// "第二类买点是说，第一个买的回抽之后再次的下探不破第一个买的低点"
+/// 缠论原文（21课）：
+/// "第一买点出现后的第二段次级别走势低点就构成第二类买点"
 ///
-/// 缠论原文（20课）：
-/// "第二类买点，可以出现在中枢的上、中、下，关键是'不破一买低点'"
-///
-/// 所以二买条件：一买之后的回调低点 >= 一买价格（允许双底）
-/// 二卖条件：一卖之后的反弹高点 <= 一卖价格（允许双顶）
+/// 原文**未附加**"不破一买/一卖价格"的约束，但此处按更严格的实践标准区分：
+/// - 回抽不破一买价 → 标准二买("2buy")
+/// - 回抽破了一买价 → 破位二买("2buy_break")，表示一买可能误判，趋势或许还在延续
 fn find_buy2_sell2(
     seg_infos: &[SegInfo],
     first_points: &[BuySellPoint],
@@ -217,10 +225,15 @@ fn find_buy2_sell2(
     (buy2_list, sell2_list)
 }
 
-/// 二买：一买后的第一个向下回抽段，其终点价格 >= 一买价格
+/// 二买：一买后的第一个向下回抽段的低点
 ///
+/// 21课原文："第一买点出现后的第二段次级别走势低点就构成第二类买点"
 /// 一买之后，走势首先向上离开（离开段），然后向下回抽（回抽段）。
-/// 回抽段的终点价格如果 >= 一买价格，则是二买。
+/// 回抽段的终点就是二买位置。
+///
+/// 按实践严格标准区分：
+/// - pullback_low >= buy1.price → 标准二买("2buy")
+/// - pullback_low < buy1.price → 破位二买("2buy_break")
 fn find_buy2_after_buy1(seg_infos: &[SegInfo], buy1: &BuySellPoint) -> Option<BuySellPoint> {
     // 从一买位置开始找后续段
     let after_segs: Vec<&SegInfo> = seg_infos.iter().filter(|s| s.start_idx >= buy1.index).collect();
@@ -236,23 +249,29 @@ fn find_buy2_after_buy1(seg_infos: &[SegInfo], buy1: &BuySellPoint) -> Option<Bu
         if found_up && seg.direction == "down" {
             // 回抽段的终点价格（段是向下的，终点是低点）
             let pullback_low = seg.end_val;
-            // 缠论20课：不破一买低点（允许等于，即双底也是二买）
-            if pullback_low >= buy1.price {
-                return Some(BuySellPoint {
-                    bs_type: "2buy".to_string(),
-                    index: seg.end_idx,
-                    dt: String::new(),
-                    price: pullback_low,
-                });
-            }
-            // 如果第一个回抽就破了，那这个一买可能无效，不再寻找
-            return None;
+            // 21课原文仅说"第二段低点就是二买"，这里按实践严格标准区分
+            let bs_type = if pullback_low >= buy1.price {
+                "2buy" // 不破一买：标准二买
+            } else {
+                "2buy_break" // 破一买：破位二买（一买可能误判）
+            };
+            return Some(BuySellPoint {
+                bs_type: bs_type.to_string(),
+                index: seg.end_idx,
+                dt: String::new(),
+                price: pullback_low,
+            });
         }
     }
     None
 }
 
-/// 二卖：一卖后的第一个向上回抽段，其终点价格 <= 一卖价格
+/// 二卖：一卖后的第一个向上回抽段的高点
+///
+/// 21课原文对称定义：一卖后第二段次级别走势高点就是二卖
+/// 按实践严格标准区分：
+/// - pullback_high <= sell1.price → 标准二卖("2sell")
+/// - pullback_high > sell1.price → 破位二卖("2sell_break")
 fn find_sell2_after_sell1(seg_infos: &[SegInfo], sell1: &BuySellPoint) -> Option<BuySellPoint> {
     let after_segs: Vec<&SegInfo> = seg_infos.iter().filter(|s| s.start_idx >= sell1.index).collect();
     if after_segs.len() < 2 { return None; }
@@ -266,16 +285,18 @@ fn find_sell2_after_sell1(seg_infos: &[SegInfo], sell1: &BuySellPoint) -> Option
         if found_down && seg.direction == "up" {
             // 回抽段的终点价格（段是向上的，终点是高点）
             let pullback_high = seg.end_val;
-            // 不破一卖高点（允许等于，即双顶也是二卖）
-            if pullback_high <= sell1.price {
-                return Some(BuySellPoint {
-                    bs_type: "2sell".to_string(),
-                    index: seg.end_idx,
-                    dt: String::new(),
-                    price: pullback_high,
-                });
-            }
-            return None;
+            // 21课原文仅说"第二段高点就是二卖"，这里按实践严格标准区分
+            let bs_type = if pullback_high <= sell1.price {
+                "2sell" // 不破一卖：标准二卖
+            } else {
+                "2sell_break" // 破一卖：破位二卖（一卖可能误判）
+            };
+            return Some(BuySellPoint {
+                bs_type: bs_type.to_string(),
+                index: seg.end_idx,
+                dt: String::new(),
+                price: pullback_high,
+            });
         }
     }
     None
@@ -288,11 +309,11 @@ fn find_sell2_after_sell1(seg_infos: &[SegInfo], sell1: &BuySellPoint) -> Option
 /// 缠论原文（20课）：
 /// "第三类买卖点：中枢之上，次级别离开后次级别回抽不回到中枢"
 ///
-/// 严格定义：
+/// 严格定义（17课原文"不跌破ZG"/"不升破ZD"包含等于）：
 /// - 三买 = 有一个段离开中枢向上（段高点 > Zg），
-///   之后有一个向下段回抽，回抽低点 > Zg（回到中枢上沿之上）
+///   之后有一个向下段回抽，回抽低点 >= Zg（不跌破中枢上沿，含等于）
 /// - 三卖 = 有一个段离开中枢向下（段低点 < Zd），
-///   之后有一个向上段回抽，回抽高点 < Zd（回到中枢下沿之下）
+///   之后有一个向上段回抽，回抽高点 <= Zd（不升破中枢下沿，含等于）
 ///
 /// 关键：离开和回抽必须是完整的段（笔/线段）
 /// 扫描中枢后所有段对，找到"离开+回抽"组合
@@ -324,8 +345,8 @@ fn find_buy3_sell3(
                 if leave_high > zs.zg {
                     // 离开段确实脱离了中枢上沿
                     let back_low = back_seg.start_val.min(back_seg.end_val);
-                    if back_low > zs.zg {
-                        // 回抽不破中枢上沿 → 三买
+                    if back_low >= zs.zg {
+                        // 回抽不破中枢上沿（含等于）→ 三买
                         buy3_list.push(BuySellPoint {
                             bs_type: "3buy".to_string(),
                             index: back_seg.end_idx,
@@ -344,8 +365,8 @@ fn find_buy3_sell3(
                 if leave_low < zs.zd {
                     // 离开段确实脱离了中枢下沿
                     let back_high = back_seg.start_val.max(back_seg.end_val);
-                    if back_high < zs.zd {
-                        // 回抽不破中枢下沿 → 三卖
+                    if back_high <= zs.zd {
+                        // 回抽不破中枢下沿（含等于）→ 三卖
                         sell3_list.push(BuySellPoint {
                             bs_type: "3sell".to_string(),
                             index: back_seg.end_idx,
@@ -431,6 +452,71 @@ fn find_seg_end_price(seg_infos: &[SegInfo], index: u64) -> f64 {
         .find(|s| s.end_idx == index)
         .map(|s| s.end_val)
         .unwrap_or(0.0)
+}
+
+// ─── 二三买卖点重合检测 ────────────────────────────────
+
+/// 检测二三买/二三卖重合（21课原文）
+///
+/// 21课原文："第一类买点出现后，一个次级别的走势凌厉地直接上破前面下跌的最后一个中枢，
+/// 然后在其上产生一个次级别的回抽不触及该中枢，这时候，就会出现第二类买点与第三类买点重合的情况"
+///
+/// 检测规则：
+/// - 二买(index=i) + 三买(index=i) → 合并为"2+3buy"
+/// - 二卖(index=i) + 三卖(index=i) → 合并为"2+3sell"
+/// - 也支持 "2buy_break" 与 "3buy" 重合 → "2+3buy_break"
+fn merge_overlapping_2_3(mut points: Vec<BuySellPoint>) -> Vec<BuySellPoint> {
+    // 找出所有重合位置：同一index同时出现2buy(或2buy_break)和3buy（或2sell和3sell）
+    let mut merge_indices: Vec<(usize, usize)> = Vec::new(); // (2x_index, 3x_index) in points vec
+
+    for i in 0..points.len() {
+        let pi = &points[i];
+        let is_buy2 = pi.bs_type == "2buy" || pi.bs_type == "2buy_break";
+        let is_sell2 = pi.bs_type == "2sell" || pi.bs_type == "2sell_break";
+        if !is_buy2 && !is_sell2 { continue; }
+
+        for j in 0..points.len() {
+            if i == j { continue; }
+            let pj = &points[j];
+            if pi.index != pj.index { continue; }
+
+            let is_overlap = (is_buy2 && pj.bs_type == "3buy")
+                || (is_sell2 && pj.bs_type == "3sell");
+            if is_overlap {
+                merge_indices.push((i, j));
+            }
+        }
+    }
+
+    // 合并：把2x和3x合并为"2+3x"，移除3x条目
+    let mut remove_set: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    for (idx_2x, idx_3x) in &merge_indices {
+        let new_type = if points[*idx_2x].bs_type.starts_with("2buy") {
+            if points[*idx_2x].bs_type == "2buy_break" {
+                "2+3buy_break"
+            } else {
+                "2+3buy"
+            }
+        } else {
+            if points[*idx_2x].bs_type == "2sell_break" {
+                "2+3sell_break"
+            } else {
+                "2+3sell"
+            }
+        };
+        points[*idx_2x].bs_type = new_type.to_string();
+        remove_set.insert(*idx_3x);
+    }
+
+    // 移除被合并的3x条目
+    let mut removed: Vec<BuySellPoint> = Vec::new();
+    for (i, p) in points.into_iter().enumerate() {
+        if !remove_set.contains(&i) {
+            removed.push(p);
+        }
+    }
+
+    removed
 }
 
 // ─── 测试 ─────────────────────────────────────────────
@@ -747,5 +833,90 @@ mod tests {
         ];
         let dir2 = classify_trend_direction_from_indices(&zs2, &[0, 1]);
         assert_eq!(dir2, "down", "应为下跌趋势");
+    }
+
+    // ─── 二买破位测试 ───
+
+    #[test]
+    fn test_second_buy_break_when_pullback_below_first_buy() {
+        // 一买后回抽破了一买价格 → 破位二买("2buy_break")
+        let bis = vec![
+            make_bi(0,"up",20.,25.,0,3), make_bi(1,"down",25.,18.,3,6),
+            make_bi(2,"up",18.,22.,6,9), make_bi(3,"down",22.,19.,9,12),
+            make_bi(4,"up",19.,16.,12,15), make_bi(5,"down",16.,10.,15,18),
+            make_bi(6,"up",10.,13.,18,21), make_bi(7,"down",13.,11.,21,24),
+            make_bi(8,"down",11.,8.,24,27),
+            // 一买: idx=27, price=8.0
+            make_bi(9,"up",8.,12.,27,30),       // 离开段
+            make_bi(10,"down",12.,7.,30,33),    // 回抽破一买价(low=7.0 < 8.0) → 破位二买
+        ];
+        let zs = vec![make_zs("bi_zs",6,12,22.,19.), make_zs("bi_zs",18,24,13.,11.)];
+        let bc = vec![make_bc("bi_beichi",27,"down","trend")];
+        let pts = detect_buy_sell(&bis, &zs, &bc);
+        let b2_break: Vec<_> = pts.iter().filter(|p| p.bs_type == "2buy_break").collect();
+        assert!(!b2_break.is_empty(), "回抽破一买价应产生破位二买");
+        assert_eq!(b2_break[0].index, 33);
+        assert!(b2_break[0].price < 8.0, "破位二买价格应低于一买价格");
+    }
+
+    // ─── 三买边界测试：回抽恰好触及ZG（等于） ───
+
+    #[test]
+    fn test_third_buy_when_pullback_equals_zg() {
+        // 回抽低点恰好等于ZG → 仍构成三买（17课原文"不跌破ZG"含等于）
+        let bis = vec![
+            make_bi(0,"up",10.,15.,0,3), make_bi(1,"down",15.,12.,3,6),
+            make_bi(2,"up",12.,14.,6,9), make_bi(3,"down",14.,13.,9,12),
+            // ZS: [12,14], zg=14, zd=12
+            make_bi(4,"up",13.,20.,12,15),   // 向上离开，高点20>Zg=14
+            make_bi(5,"down",20.,14.,15,18), // 回抽低点14 = Zg=14 → 仍算三买
+        ];
+        let zs = vec![make_zs("bi_zs",3,12,14.,12.)];
+        let pts = detect_buy_sell(&bis, &zs, &[]);
+        let b3: Vec<_> = pts.iter().filter(|p| p.bs_type == "3buy").collect();
+        assert!(!b3.is_empty(), "回抽恰好触及ZG仍应构成三买（原文'不跌破ZG'含等于）");
+    }
+
+    // ─── 三卖边界测试：回抽恰好触及ZD（等于） ───
+
+    #[test]
+    fn test_third_sell_when_pullback_equals_zd() {
+        // 回抽高点恰好等于ZD → 仍构成三卖（17课原文"不升破ZD"含等于）
+        let bis = vec![
+            make_bi(0,"down",25.,20.,0,3), make_bi(1,"up",20.,23.,3,6),
+            make_bi(2,"down",23.,21.,6,9), make_bi(3,"up",21.,22.,9,12),
+            // ZS: [21,23], zg=23, zd=21
+            make_bi(4,"down",22.,15.,12,15), // 向下离开，低点15<Zd=21
+            make_bi(5,"up",15.,21.,15,18),   // 回抽高点21 = Zd=21 → 仍算三卖
+        ];
+        let zs = vec![make_zs("bi_zs",3,12,23.,21.)];
+        let pts = detect_buy_sell(&bis, &zs, &[]);
+        let s3: Vec<_> = pts.iter().filter(|p| p.bs_type == "3sell").collect();
+        assert!(!s3.is_empty(), "回抽恰好触及ZD仍应构成三卖（原文'不升破ZD'含等于）");
+    }
+
+    // ─── 二三买重合测试 ───
+
+    #[test]
+    fn test_2plus3_buy_overlap() {
+        // 一买后离开段直接上破下跌最后中枢 + 回抽不破ZG → 二三买重合("2+3buy")
+        let bis = vec![
+            make_bi(0,"up",20.,25.,0,3), make_bi(1,"down",25.,18.,3,6),
+            make_bi(2,"up",18.,22.,6,9), make_bi(3,"down",22.,19.,9,12),
+            make_bi(4,"up",19.,16.,12,15), make_bi(5,"down",16.,10.,15,18),
+            make_bi(6,"up",10.,13.,18,21), make_bi(7,"down",13.,11.,21,24),
+            make_bi(8,"down",11.,8.,24,27),
+            // 一买: idx=27, price=8.0
+            // 下跌最后中枢ZS2: zg=13, zd=11
+            // 离开段直接上破ZS2高点 → 二三买重合
+            make_bi(9,"up",8.,18.,27,30),     // 离开段，高点18>Zg=13
+            make_bi(10,"down",18.,14.,30,33), // 回抽低点14>Zg=13 → 三买且不破一买(8)→也二买
+        ];
+        let zs = vec![make_zs("bi_zs",6,12,22.,19.), make_zs("bi_zs",18,24,13.,11.)];
+        let bc = vec![make_bc("bi_beichi",27,"down","trend")];
+        let pts = detect_buy_sell(&bis, &zs, &bc);
+        let overlap: Vec<_> = pts.iter().filter(|p| p.bs_type == "2+3buy").collect();
+        assert!(!overlap.is_empty(), "二三买在同一位置应重合为'2+3buy'");
+        assert_eq!(overlap[0].index, 33);
     }
 }

@@ -576,7 +576,7 @@ fn run_sync_parallel(
     let idx_lock = std::sync::Arc::new(std::sync::Mutex::new(0usize));
     let mut handles = Vec::new();
 
-    // ── 第一轮：全量并行同步 ──
+    // ── 第一轮：全量并行同步，每只股票后加小间隔防限流 ──
     for _ in 0..concurrency {
         let idx_lock = idx_lock.clone();
         let codes_ref = codes_vec.clone();
@@ -633,6 +633,9 @@ fn run_sync_parallel(
                         p.success += 1;
                     }
                 }
+
+                // 每只股票同步后加 50ms 间隔，防止被 API 限流
+                std::thread::sleep(std::time::Duration::from_millis(50));
             }
         });
         handles.push(handle);
@@ -651,8 +654,8 @@ fn run_sync_parallel(
         }
     }
 
-    // ── 自动重试失败项（最多5轮，直到0失败） ──
-    let max_retry_rounds = 5u32;
+    // ── 自动重试失败项（最多2轮，而非5轮，避免无限等待） ──
+    let max_retry_rounds = 2u32;
     for round in 1..=max_retry_rounds {
         let failed_symbols: Vec<String> = {
             let p = progress_state.lock().unwrap();
@@ -681,7 +684,7 @@ fn run_sync_parallel(
 
         eprintln!("[自动重试] 第 {} 轮：{} 只股票需重试", round, unique.len());
 
-        // 并行重试（2线程）
+        // 并行重试（2线程），每只之间间隔 300ms
         let retry_concurrency = 2usize.min(unique.len());
         let retry_total = unique.len();
         let retry_idx = std::sync::Arc::new(std::sync::Mutex::new(0usize));
@@ -717,10 +720,16 @@ fn run_sync_parallel(
 
                     let symbol = &unique_ref[i];
 
+                    {
+                        let mut p = progress_state.lock().unwrap();
+                        p.current_symbols.push(symbol.clone());
+                    }
+
                     let result = yifang_data::sync_stock(&data_dir, symbol, &tf_list, &start, true);
 
                     {
                         let mut p = progress_state.lock().unwrap();
+                        p.current_symbols.retain(|s| s != symbol);
                         p.completed += 1;
                         let mut has_failure = false;
                         for lv in &result.levels {
@@ -734,8 +743,8 @@ fn run_sync_parallel(
                         }
                     }
 
-                    // 重试间隔长一些，避免被封
-                    std::thread::sleep(std::time::Duration::from_millis(200));
+                    // 重试间隔 300ms，防止被限流
+                    std::thread::sleep(std::time::Duration::from_millis(300));
                 }
             });
             retry_handles.push(handle);

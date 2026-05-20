@@ -71,6 +71,8 @@ const syncTotal = ref(0);
 const syncCompleted = ref(0);
 const syncFailedDetails = ref<{ symbol: string; level: string; msg: string }[]>([]);
 const currentSymbols = ref<string[]>([]);
+const syncRetrying = ref(false);
+const syncRetryRound = ref(0);
 const syncStartTime = ref(0);
 const syncElapsed = ref("");
 let syncTimer: ReturnType<typeof setInterval> | null = null;
@@ -103,6 +105,8 @@ const bgSyncRunning = ref(false);
 const bgSyncBoard = ref<string | null>(null);
 const bgSyncTotal = ref(0);
 const bgSyncCompleted = ref(0);
+const bgSyncRetrying = ref(false);
+const bgSyncRetryRound = ref(0);
 
 // 页面状态
 type PageState = "idle" | "syncing" | "result";
@@ -339,6 +343,8 @@ async function startSync() {
         syncTotal.value = status.total;
         syncCompleted.value = status.completed;
         currentSymbols.value = status.current_symbols ?? [];
+        syncRetrying.value = status.retrying;
+        syncRetryRound.value = status.retry_round;
         syncFailedDetails.value = status.failures.map(f => ({
           symbol: f[0],
           level: f[1],
@@ -615,6 +621,8 @@ onMounted(async () => {
 
           bgSyncTotal.value = s.total;
           bgSyncCompleted.value = s.completed;
+          bgSyncRetrying.value = s.retrying;
+          bgSyncRetryRound.value = s.retry_round;
 
           if (!s.running) {
             clearInterval(pollTimer);
@@ -640,8 +648,11 @@ onMounted(async () => {
     <!-- 后台同步横幅 -->
     <div v-if="bgSyncRunning && pageState !== 'syncing'" class="shrink-0 px-4 py-2 bg-[#e94560]/10 border-b border-[#e94560]/20 flex items-center justify-between">
       <div class="flex items-center gap-2">
-        <div class="w-2 h-2 rounded-full bg-[#e94560] animate-pulse"></div>
-        <span class="text-xs text-[#e94560]">后台同步中（{{ bgSyncBoard || '全A股' }}）{{ bgSyncCompleted }}/{{ bgSyncTotal }}</span>
+        <div class="w-2 h-2 rounded-full animate-pulse" :class="bgSyncRetrying ? 'bg-[#ff9800]' : 'bg-[#e94560]'"></div>
+        <span class="text-xs" :class="bgSyncRetrying ? 'text-[#ff9800]' : 'text-[#e94560]'">
+          {{ bgSyncRetrying ? `重试中 第${bgSyncRetryRound}轮（${bgSyncBoard || '全A股'}）` : `后台同步中（${bgSyncBoard || '全A股'}）` }}
+          {{ bgSyncCompleted }}/{{ bgSyncTotal }}
+        </span>
       </div>
       <button @click="stopBgSync" class="text-[10px] px-2 py-0.5 rounded border border-[#e94560]/40 text-[#e94560] hover:bg-[#e94560]/20 transition">
         停止
@@ -655,8 +666,8 @@ onMounted(async () => {
       <!-- 顶栏 -->
       <div class="shrink-0 px-6 py-4 flex items-center justify-between">
         <div class="flex items-center gap-3">
-          <div class="w-2 h-2 rounded-full bg-[#e94560] animate-pulse"></div>
-          <span class="text-sm font-bold text-white">正在同步{{ selectedBoardLabel() }}</span>
+          <div class="w-2 h-2 rounded-full animate-pulse" :class="syncRetrying ? 'bg-[#ff9800]' : 'bg-[#e94560]'"></div>
+          <span class="text-sm font-bold text-white">{{ syncRetrying ? `重试中 第${syncRetryRound}轮` : `正在同步${selectedBoardLabel()}` }}</span>
         </div>
         <span class="text-xs text-[#9e9e9e]">{{ syncElapsed }}<span v-if="syncETA" class="text-[#ff9800]"> · 约{{ syncETA }}</span></span>
       </div>

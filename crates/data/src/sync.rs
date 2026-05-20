@@ -263,7 +263,8 @@ pub fn get_board_stats(data_dir: &Path) -> Vec<BoardStats> {
 fn build_eastmoney_client() -> Result<reqwest::blocking::Client> {
     Ok(reqwest::blocking::Client::builder()
         .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
-        .timeout(std::time::Duration::from_secs(15))
+        .timeout(std::time::Duration::from_secs(10))
+        .connect_timeout(std::time::Duration::from_secs(5))
         .build()?)
 }
 
@@ -294,7 +295,8 @@ pub fn fetch_board_codes_tushare(board: &str) -> Result<Vec<String>> {
 
     let client = reqwest::blocking::Client::builder()
         .user_agent("Mozilla/5.0")
-        .timeout(std::time::Duration::from_secs(15))
+        .timeout(std::time::Duration::from_secs(10))
+        .connect_timeout(std::time::Duration::from_secs(5))
         .build()?;
 
     let resp = client
@@ -1080,7 +1082,8 @@ fn build_http_client() -> Result<reqwest::blocking::Client> {
 
     Ok(reqwest::blocking::Client::builder()
         .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36")
-        .timeout(std::time::Duration::from_secs(15))
+        .timeout(std::time::Duration::from_secs(8))
+        .connect_timeout(std::time::Duration::from_secs(5))
         .default_headers(headers)
         .build()?)
 }
@@ -1207,7 +1210,8 @@ fn fetch_eastmoney_kline(secid: &str, klt: &str, lmt: u32, beg: Option<&str>) ->
 
     let client = reqwest::blocking::Client::builder()
         .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
-        .timeout(std::time::Duration::from_secs(15))
+        .timeout(std::time::Duration::from_secs(10))
+        .connect_timeout(std::time::Duration::from_secs(5))
         .build()?;
 
     let resp = client
@@ -1305,7 +1309,8 @@ fn fetch_tushare_kline(ts_code: &str, freq: &str, since: Option<&str>) -> Result
 
     let client = reqwest::blocking::Client::builder()
         .user_agent("Mozilla/5.0")
-        .timeout(std::time::Duration::from_secs(20))
+        .timeout(std::time::Duration::from_secs(10))
+        .connect_timeout(std::time::Duration::from_secs(5))
         .build()?;
 
     let resp = client

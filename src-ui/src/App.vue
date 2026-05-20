@@ -27,6 +27,8 @@ import {
   CZSC_BS_COLORS,
   WYCKOFF_EVENT_COLORS,
   WYCKOFF_BULLISH_EVENTS,
+  WYCKOFF_PHASE_COLORS,
+  WYCKOFF_EVENT_DESC,
 } from "./types";
 import ChartToolbar from "./components/ChartToolbar.vue";
 import StockSearch from "./components/StockSearch.vue";
@@ -740,6 +742,15 @@ function renderChart() {
       if (evt) {
         items.push({ type: "wyckoff", data: evt });
       }
+      // 供需线：当光标所在K线在某条供需线范围内时显示
+      const sdLines = data.wyckoff.supply_demand_lines?.filter(
+        (l) => idx >= l.start_index && idx <= l.end_index
+      );
+      if (sdLines && sdLines.length > 0) {
+        for (const l of sdLines) {
+          items.push({ type: "supply_demand_line", data: l });
+        }
+      }
     }
 
     tooltipInfo.value = items.length > 0
@@ -1446,11 +1457,46 @@ watch(currentView, (val) => {
         </template>
 
         <!-- 光标位置威科夫事件 -->
-        <template v-if="crosshairKline && chartData?.wyckoff?.events">
-          <template v-for="evt in chartData.wyckoff.events.filter(e => e.index === crosshairKline!.id)" :key="evt.index + evt.event_type">
-            <span class="text-xs font-semibold" :style="{ color: WYCKOFF_EVENT_COLORS[evt.event_type] || '#fff' }">
-              {{ evt.event_type }}
-            </span>
+        <template v-if="crosshairKline">
+          <!-- 威科夫事件 -->
+          <template v-if="chartData?.wyckoff?.events">
+            <template v-for="evt in chartData.wyckoff.events.filter(e => e.index === crosshairKline!.id)" :key="evt.index + evt.event_type">
+              <span class="text-xs font-semibold" :style="{ color: WYCKOFF_EVENT_COLORS[evt.event_type] || '#fff' }">
+                {{ evt.event_type }}
+              </span>
+              <span v-if="evt.reason" class="text-[10px] text-[#9e9e9e] max-w-[200px] truncate" :title="evt.reason">{{ evt.reason }}</span>
+            </template>
+          </template>
+          <!-- 供需线 -->
+          <template v-if="chartData?.wyckoff?.supply_demand_lines">
+            <template v-for="sdl in chartData.wyckoff.supply_demand_lines.filter(l => crosshairKline!.id >= l.start_index && crosshairKline!.id <= l.end_index)" :key="sdl.start_index + sdl.line_type">
+              <span class="text-[10px]" :class="sdl.line_type === 'supply' ? 'text-[#ff5722]' : sdl.line_type === 'ice_line' ? 'text-[#80deea]' : 'text-[#66bb6a]'">
+                {{ sdl.line_type === 'supply' ? '供' : sdl.line_type === 'ice_line' ? '冰' : '需' }}={{ sdl.start_price.toFixed(2) }}
+              </span>
+              <span v-if="sdl.reason" class="text-[10px] text-[#9e9e9e] max-w-[180px] truncate" :title="sdl.reason">{{ sdl.reason }}</span>
+            </template>
+          </template>
+          <!-- 交易区间 -->
+          <template v-if="chartData?.wyckoff?.trading_ranges">
+            <template v-for="tr in chartData.wyckoff.trading_ranges.filter(r => crosshairKline!.id >= r.start_index && crosshairKline!.id <= r.end_index)" :key="tr.start_index">
+              <span class="text-[10px] text-[#9e9e9e]">TR=[{{ tr.lower.toFixed(2) }}~{{ tr.upper.toFixed(2) }}] 冰={{ tr.ice_line.toFixed(2) }}</span>
+            </template>
+          </template>
+          <!-- 阶段 -->
+          <template v-if="chartData?.wyckoff?.phase_labels">
+            <template v-for="pl in chartData.wyckoff.phase_labels.filter(p => p.index === crosshairKline!.id)" :key="pl.index">
+              <span v-if="pl.phase !== 'Unknown'" class="text-[10px] font-semibold" :style="{ color: WYCKOFF_PHASE_COLORS[pl.phase] || '#9e9e9e' }">
+                {{ pl.phase }}{{ pl.sub_phase ? '-' + pl.sub_phase : '' }}
+              </span>
+            </template>
+          </template>
+          <!-- 努力与结果 -->
+          <template v-if="chartData?.wyckoff?.effort_results">
+            <template v-for="er in chartData.wyckoff.effort_results.filter(e => e.index === crosshairKline!.id)" :key="er.index">
+              <span class="text-[10px]" :class="er.interpretation === 'demand_dominant' ? 'text-[#66bb6a]' : er.interpretation === 'supply_dominant' ? 'text-[#ff5722]' : 'text-[#9e9e9e]'">
+                E-R: {{ er.harmony === 'harmonious' ? '协调' : '背离' }}
+              </span>
+            </template>
           </template>
         </template>
 
@@ -1569,6 +1615,15 @@ watch(currentView, (val) => {
                   {{ item.data.event_type }}
                 </div>
                 <div>{{ item.data.description }}</div>
+                <div v-if="item.data.reason" class="text-[#ccc] mt-0.5 leading-snug">{{ item.data.reason }}</div>
+              </template>
+              <!-- 供需线 -->
+              <template v-else-if="item.type === 'supply_demand_line'">
+                <div class="font-bold" :class="item.data.line_type === 'supply' ? 'text-[#ff5722]' : item.data.line_type === 'ice_line' ? 'text-[#80deea]' : 'text-[#66bb6a]'">
+                  {{ item.data.line_type === 'supply' ? '供给线' : item.data.line_type === 'ice_line' ? '冰线' : '需求线' }}
+                </div>
+                <div>{{ item.data.start_price.toFixed(2) }} → {{ item.data.end_price.toFixed(2) }} (斜率: {{ item.data.slope.toFixed(4) }})</div>
+                <div v-if="item.data.reason" class="text-[#ccc] mt-0.5 leading-snug">{{ item.data.reason }}</div>
               </template>
             </template>
           </div>

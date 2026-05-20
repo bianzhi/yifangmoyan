@@ -56,7 +56,10 @@ pub fn draw_supply_demand_lines(klines: &[KLine], trading_ranges: &[TradingRange
 
     // 2. 从交易区间推导供需线
     for tr in trading_ranges {
-        // 区间上沿 = 供给线水平段
+        let range_width = tr.upper - tr.lower;
+        let width_pct = if tr.lower > 0.0 { range_width / tr.lower * 100.0 } else { 0.0 };
+
+        // 区间上沿 = 供给线水平段（由交易区间上沿界定）
         lines.push(SupplyDemandLine {
             line_type: "supply".to_string(),
             start_index: tr.start_index,
@@ -64,9 +67,13 @@ pub fn draw_supply_demand_lines(klines: &[KLine], trading_ranges: &[TradingRange
             start_price: tr.upper,
             end_price: tr.upper,
             slope: 0.0,
+            reason: format!(
+                "供给线(区间上沿): 交易区间[#{:#?}~#{:#?}]上沿={:.2}, 由AR高点确立的供给边界",
+                tr.start_index, tr.end_index, tr.upper
+            ),
         });
 
-        // 区间下沿 = 需求线水平段
+        // 区间下沿 = 需求线水平段（由交易区间下沿界定）
         lines.push(SupplyDemandLine {
             line_type: "demand".to_string(),
             start_index: tr.start_index,
@@ -74,9 +81,14 @@ pub fn draw_supply_demand_lines(klines: &[KLine], trading_ranges: &[TradingRange
             start_price: tr.lower,
             end_price: tr.lower,
             slope: 0.0,
+            reason: format!(
+                "需求线(区间下沿): 交易区间[#{:#?}~#{:#?}]下沿={:.2}, 由SC低点确立的需求边界",
+                tr.start_index, tr.end_index, tr.lower
+            ),
         });
 
-        // 冰线
+        // 冰线（ICE Line）: 交易区间中位线，是吸筹转为拉升的关键分界
+        // 威科夫原著：冰线由AR低点连线形成，跌破冰线意味着供给压倒需求
         lines.push(SupplyDemandLine {
             line_type: "ice_line".to_string(),
             start_index: tr.start_index,
@@ -84,6 +96,10 @@ pub fn draw_supply_demand_lines(klines: &[KLine], trading_ranges: &[TradingRange
             start_price: tr.ice_line,
             end_price: tr.ice_line,
             slope: 0.0,
+            reason: format!(
+                "冰线(ICE): 交易区间中位线={:.2}, 区间宽={:.2}({:.1}%), 跌破冰线→供给压倒需求",
+                tr.ice_line, range_width, width_pct
+            ),
         });
     }
 
@@ -93,6 +109,7 @@ pub fn draw_supply_demand_lines(klines: &[KLine], trading_ranges: &[TradingRange
 /// 从极值点绘制趋势线
 ///
 /// 选择最能代表趋势的前两个极值点。
+/// reason 说明：连接哪两个 swing point 构成的线，以及线的类型含义。
 fn draw_line_from_points(points: &[&crate::phase::SwingPoint], line_type: &str) -> Option<SupplyDemandLine> {
     if points.len() < 2 {
         return None;
@@ -110,6 +127,20 @@ fn draw_line_from_points(points: &[&crate::phase::SwingPoint], line_type: &str) 
         0.0
     };
 
+    let (type_cn, role) = match line_type {
+        "supply" => ("供给线", "连接反弹高点，等同传统下降趋势线；触及→卖出压力，突破→需求克服供给(看涨)"),
+        "demand" => ("需求线", "连接回调低点，等同传统上升趋势线；触及→买入支撑，跌破→供给压倒需求(看跌)"),
+        _ => (line_type, ""),
+    };
+
+    let trend_desc = if slope > 0.001 {
+        "上升"
+    } else if slope < -0.001 {
+        "下降"
+    } else {
+        "水平"
+    };
+
     Some(SupplyDemandLine {
         line_type: line_type.to_string(),
         start_index: p1.index as u64,
@@ -117,6 +148,10 @@ fn draw_line_from_points(points: &[&crate::phase::SwingPoint], line_type: &str) 
         start_price: p1.price,
         end_price: p2.price,
         slope,
+        reason: format!(
+            "{}(趋势线): 连接swing点[#{:#?}@{:.2}→#{:#?}@{:.2}], 斜率={:.4}({}), {}",
+            type_cn, p1.index, p1.price, p2.index, p2.price, slope, trend_desc, role
+        ),
     })
 }
 

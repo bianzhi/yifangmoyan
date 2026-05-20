@@ -210,7 +210,8 @@ mod tests {
                 dt: "2024-03-14".to_string(),
                 price: 9.8,
                 description: "Spring test".to_string(),
-            }],
+            reason: String::new(),
+        }],
             ..Default::default()
         };
 
@@ -240,7 +241,8 @@ mod tests {
                 dt: "2024-06-03".to_string(),
                 price: 52.0,
                 description: "UTAD test".to_string(),
-            }],
+            reason: String::new(),
+        }],
             ..Default::default()
         };
 
@@ -269,7 +271,8 @@ mod tests {
                 dt: "2024-01-01".to_string(),
                 price: 20.0,
                 description: "BC test".to_string(),
-            }],
+            reason: String::new(),
+        }],
             ..Default::default()
         };
 
@@ -296,7 +299,8 @@ mod tests {
                 dt: "2024-03-16".to_string(),
                 price: 9.5,
                 description: "SC test".to_string(),
-            }],
+            reason: String::new(),
+        }],
             ..Default::default()
         };
 

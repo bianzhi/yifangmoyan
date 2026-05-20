@@ -121,6 +121,7 @@ export interface WyckoffEvent {
   dt: string;
   price: number;
   description: string;
+  reason: string;
 }
 
 export interface TradingRange {
@@ -169,6 +170,7 @@ export interface SupplyDemandLine {
   start_price: number;
   end_price: number;
   slope: number;
+  reason: string;
 }
 
 export interface WyckoffResult {
@@ -427,6 +429,25 @@ export const WYCKOFF_PHASE_COLORS: Record<string, string> = {
   Distribution: "#9c27b0",
   Markdown: "#78909c",
   Unknown: "#424242",
+};
+
+// ===== 威科夫事件原始定义（Wyckoff原著 / StockCharts教程） =====
+
+export const WYCKOFF_EVENT_DESC: Record<string, string> = {
+  PS: "Preliminary Support — 下跌趋势中首次出现机构买入，放量但跌幅收窄（Wyckoff Phase A）",
+  SC: "Selling Climax — 下跌末端恐慌性抛售被大资金承接，宽幅巨量收回，确立交易区间下沿（Wyckoff Phase A）",
+  AR: "Automatic Rally — SC后卖压耗尽+空头回补的自动反弹，确立交易区间上沿（Wyckoff Phase A）",
+  ST: "Secondary Test — 回测SC低点，量缩价窄确认卖压衰竭（Wyckoff Phase A/B）",
+  Spring: "Spring/Shakeout — 跌破SC支撑后快速收回，空头陷阱，测试剩余供给（Wyckoff Phase C）",
+  SOS: "Sign of Strength — 放量上涨突破AR高点，需求压倒供给。Evans比喻：'跳过小溪'(Jump Across Creek)（Wyckoff Phase D）",
+  LPS: "Last Point of Support — SOS后缩量回踩获支撑，最佳入场点。Evans比喻：'回踩小溪'(Back Up to Creek)（Wyckoff Phase D）",
+  JOC: "Jump Over Creek — 放量跳过'小溪'(阻力线)，SOS的特殊形式。小溪宽度=阻力线到近期低点的距离（Wyckoff: Evans比喻）",
+  PSY: "Preliminary Supply — 上涨中首次出现放量滞涨，大资金开始出货（Wyckoff Phase A）",
+  BC: "Buying Climax — 上涨末端宽幅巨量收上影线，大资金大规模出货，确立交易区间上沿（Wyckoff Phase A）",
+  UTAD: "Upthrust After Distribution — 突破BC高点后迅速回落，多头陷阱，测试剩余需求。Spring的镜像（Wyckoff Phase C）",
+  SOW: "Sign of Weakness — 放量跌破近期支撑，供给压倒需求（Wyckoff Phase D）",
+  LPSY: "Last Point of Supply — SOW后缩量反弹，需求衰竭，最后供给点（Wyckoff Phase D）",
+  Shakeout: "Shakeout — 剧烈洗盘，类似Spring但幅度更大",
 };
 
 // ===== 缠论买卖点颜色 =====

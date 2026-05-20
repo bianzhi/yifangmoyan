@@ -447,6 +447,21 @@ pub struct WyckoffEvent {
     pub price: f64,
     /// 描述
     pub description: String,
+    /// 判断依据
+    pub reason: String,
+}
+
+impl Default for WyckoffEvent {
+    fn default() -> Self {
+        Self {
+            event_type: String::new(),
+            index: 0,
+            dt: String::new(),
+            price: 0.0,
+            description: String::new(),
+            reason: String::new(),
+        }
+    }
 }
 
 /// 交易区间 (Trading Range)
@@ -616,6 +631,8 @@ pub struct SupplyDemandLine {
     pub end_price: f64,
     /// 斜率
     pub slope: f64,
+    /// 构造说明
+    pub reason: String,
 }
 
 /// 威科夫分析结果

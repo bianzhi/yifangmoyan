@@ -135,7 +135,7 @@ pub fn detect_events(klines: &[KLine]) -> Vec<WyckoffEvent> {
         }
 
         // JOC: 放量突破阻力
-        if let Some(ev) = detect_joc(klines, i, avg_vol) {
+        if let Some(ev) = detect_joc(klines, i, avg_vol, &events) {
             events.push(ev);
         }
     }
@@ -178,6 +178,9 @@ fn detect_ps(klines: &[KLine], i: usize, avg_vol: f64) -> Option<WyckoffEvent> {
             dt: k.dt.clone(),
             price: k.low,
             description: "初步支撑: 下跌中放量但跌幅收窄".to_string(),
+            reason: format!(
+                "PS(初步支撑): 下跌中首次出现放量(vol={:.0} > 均值*1.5={:.0}), 跌幅收窄或收阳, 表明大资金开始承接（Wyckoff: 供给法则）"
+            , k.vol, avg_vol * 1.5),
         })
     } else {
         None
@@ -211,6 +214,10 @@ fn detect_sc(klines: &[KLine], i: usize, avg_vol: f64, avg_spread: f64) -> Optio
             dt: k.dt.clone(),
             price: k.low,
             description: "卖出高潮: 宽幅巨量下跌并收回".to_string(),
+            reason: format!(
+                "SC(卖出高潮): 下跌末端宽幅(spread={:.2} > 均值*2={:.2})+巨量(vol={:.0} > 均值*2={:.0})+收回, 大资金大规模承接, 确立交易区间下沿={:.2}（Wyckoff Phase A）",
+                spread, avg_spread * 2.0, k.vol, avg_vol * 2.0, k.low
+            ),
         })
     } else {
         None
@@ -248,12 +255,17 @@ fn detect_ar(klines: &[KLine], i: usize, events: &[WyckoffEvent], avg_vol: f64) 
     let breakout = k.high > recent_high;
 
     if breakout {
+        let sc_event = sc.unwrap();
         Some(WyckoffEvent {
             event_type: "AR".to_string(),
             index: i as u64,
             dt: k.dt.clone(),
             price: k.high,
             description: "自动反弹: SC后放量上涨创新高".to_string(),
+            reason: format!(
+                "AR(自动反弹): SC#{:#?}后卖压耗尽+空头回补, 放量(vol={:.0})上涨创新高={:.2}, 确立交易区间上沿（Wyckoff Phase A）",
+                sc_event.index, k.vol, k.high
+            ),
         })
     } else {
         None
@@ -298,6 +310,10 @@ fn detect_st(klines: &[KLine], i: usize, events: &[WyckoffEvent], _avg_vol: f64,
             dt: k.dt.clone(),
             price: k.low,
             description: "二次测试: 量缩价窄回测SC低点".to_string(),
+            reason: format!(
+                "ST(二次测试): 回测SC#{:#?}低点={:.2}(当前low={:.2}, 偏差<{:.1}%), 量缩(vol={:.0} < SC*0.8={:.0})+价窄, 确认卖压衰竭（Wyckoff Phase A/B）",
+                sc_event.index, sc_low, k.low, 3.0, k.vol, sc_vol * 0.8
+            ),
         })
     } else {
         None
@@ -326,12 +342,17 @@ fn detect_spring(klines: &[KLine], i: usize, events: &[WyckoffEvent]) -> Option<
     let recovered = k.close > sc_low * 0.99;
 
     if broke_below && recovered {
+        let penetration_pct = (sc_low - k.low) / sc_low * 100.0;
         Some(WyckoffEvent {
             event_type: "Spring".to_string(),
             index: i as u64,
             dt: k.dt.clone(),
             price: k.low,
             description: "弹簧效应: 跌破SC低点后收回".to_string(),
+            reason: format!(
+                "Spring(弹簧): 跌破SC#{:#?}低点={:.2}(当前low={:.2}, 穿透{:.1}%)后收回(close={:.2} > SC*0.99={:.2}), 空头陷阱, 供给被吸收（Wyckoff Phase C）",
+                sc_event.index, sc_low, k.low, penetration_pct, k.close, sc_low * 0.99
+            ),
         })
     } else {
         None
@@ -366,6 +387,10 @@ fn detect_sos(klines: &[KLine], i: usize, events: &[WyckoffEvent], avg_vol: f64)
             dt: k.dt.clone(),
             price: k.high,
             description: "强势出现: 放量突破AR高点".to_string(),
+            reason: format!(
+                "SOS(强势出现): 放量(vol={:.0} > 均值*1.2={:.0})上涨突破AR#{:#?}高点={:.2}(当前high={:.2}), 需求压倒供给, 等同'跳过小溪(Jump Across Creek)'（Wyckoff Phase D）",
+                k.vol, avg_vol * 1.2, ar_event.index, ar_high, k.high
+            ),
         })
     } else {
         None
@@ -405,6 +430,10 @@ fn detect_lps(klines: &[KLine], i: usize, events: &[WyckoffEvent]) -> Option<Wyc
             dt: k.dt.clone(),
             price: k.low,
             description: "最后支撑点: SOS后缩量回踩获支撑".to_string(),
+            reason: format!(
+                "LPS(最后支撑点): SOS#{:#?}后缩量回调(vol={:.0} < SOS*0.7={:.0}), 回踩SOS低点={:.2}附近获支撑(low={:.2}), 等同'回踩小溪(Back Up to Creek)'（Wyckoff Phase D）",
+                sos_event.index, k.vol, sos_vol * 0.7, sos_low, k.low
+            ),
         })
     } else {
         None
@@ -443,6 +472,10 @@ fn detect_psy(klines: &[KLine], i: usize, avg_vol: f64) -> Option<WyckoffEvent> 
             dt: k.dt.clone(),
             price: k.high,
             description: "初步供给: 上涨中放量但涨幅收窄".to_string(),
+            reason: format!(
+                "PSY(初步供给): 上涨中首次出现放量(vol={:.0} > 均值*1.5={:.0}), 但涨幅收窄或收阴, 表明大资金开始出货（Wyckoff: 供需法则）",
+                k.vol, avg_vol * 1.5
+            ),
         })
     } else {
         None
@@ -475,6 +508,10 @@ fn detect_bc(klines: &[KLine], i: usize, avg_vol: f64, avg_spread: f64) -> Optio
             dt: k.dt.clone(),
             price: k.high,
             description: "买入高潮: 宽幅巨量上涨收上影线".to_string(),
+            reason: format!(
+                "BC(买入高潮): 上涨末端宽幅(spread={:.2} > 均值*2={:.2})+巨量(vol={:.0} > 均值*2={:.0})+上影线, 大资金大规模出货, 确立交易区间上沿={:.2}（Wyckoff Phase A）",
+                spread, avg_spread * 2.0, k.vol, avg_vol * 2.0, k.high
+            ),
         })
     } else {
         None
@@ -502,12 +539,17 @@ fn detect_utad(klines: &[KLine], i: usize, events: &[WyckoffEvent]) -> Option<Wy
     let fell_back = k.close < bc_high;
 
     if broke_above && fell_back {
+        let overshoot_pct = (k.high - bc_high) / bc_high * 100.0;
         Some(WyckoffEvent {
             event_type: "UTAD".to_string(),
             index: i as u64,
             dt: k.dt.clone(),
             price: k.high,
             description: "派发后冲高: 突破BC高点后回落".to_string(),
+            reason: format!(
+                "UTAD(派发后冲高): 突破BC#{:#?}高点={:.2}(当前high={:.2}, 冲出{:.1}%)后回落(close={:.2} < BC高点), 多头陷阱, 需求被吸收（Wyckoff Phase C）",
+                bc_event.index, bc_high, k.high, overshoot_pct, k.close
+            ),
         })
     } else {
         None
@@ -535,6 +577,10 @@ fn detect_sow(klines: &[KLine], i: usize, avg_vol: f64) -> Option<WyckoffEvent> 
             dt: k.dt.clone(),
             price: k.low,
             description: "弱势出现: 放量跌破近期支撑".to_string(),
+            reason: format!(
+                "SOW(弱势出现): 放量下跌(vol={:.0} > 均值*1.5={:.0}), 跌破近期支撑={:.2}(close={:.2}), 供给压倒需求（Wyckoff Phase D）",
+                k.vol, avg_vol * 1.5, recent_low, k.close
+            ),
         });
     }
     None
@@ -568,6 +614,10 @@ fn detect_lpsy(klines: &[KLine], i: usize, events: &[WyckoffEvent]) -> Option<Wy
             dt: k.dt.clone(),
             price: k.high,
             description: "最后供给点: SOW后缩量反弹".to_string(),
+            reason: format!(
+                "LPSY(最后供给点): SOW#{:#?}后缩量反弹(vol={:.0} < SOW*0.7={:.0}), 需求衰竭, 最后供给点（Wyckoff Phase D）",
+                sow_event.index, k.vol, sow_vol * 0.7
+            ),
         })
     } else {
         None
@@ -576,9 +626,16 @@ fn detect_lpsy(klines: &[KLine], i: usize, events: &[WyckoffEvent]) -> Option<Wy
 
 /// JOC (Jump Over Creek) 跳过小溪
 ///
-/// 条件：
-/// 1. 放量突破近期阻力
-fn detect_joc(klines: &[KLine], i: usize, avg_vol: f64) -> Option<WyckoffEvent> {
+/// 威科夫原著中，"小溪"(Creek)指交易区间上沿（由AR高点确立的供给线/阻力区）。
+/// JOC = SOS的一种形式，价格放量跳过这条"小溪"(阻力线)。
+///
+/// "小溪"宽度的计算：
+/// - Creek宽度 = 阻力线价格 - 交易区间下沿（SC低点）
+/// - 即交易区间的振幅，代表需要跳过的"溪流"宽度
+///
+/// Evans：SOS等同"跳过小溪"(Jump Across Creek)，
+/// 之后出现的缩量回调叫"回踩小溪"(Back Up to Creek / BUEC)，即LPS
+fn detect_joc(klines: &[KLine], i: usize, avg_vol: f64, events: &[WyckoffEvent]) -> Option<WyckoffEvent> {
     if i < 5 { return None; }
 
     let k = &klines[i];
@@ -588,13 +645,35 @@ fn detect_joc(klines: &[KLine], i: usize, avg_vol: f64) -> Option<WyckoffEvent> 
 
     let lookback = 10.min(i).max(3);
     let resistance = klines[i - lookback..i].iter().map(|k| k.high).fold(f64::MIN, f64::max);
+    let recent_low = klines[i - lookback..i].iter().map(|k| k.low).fold(f64::MAX, f64::min);
+
     if k.close > resistance {
+        // 计算小溪宽度：阻力线到近期低点的距离
+        let creek_width = resistance - recent_low;
+        let creek_width_pct = if recent_low > 0.0 { creek_width / recent_low * 100.0 } else { 0.0 };
+
+        // 查找关联的AR事件，用于说明哪条"小溪"
+        let ar_event = events.iter()
+            .filter(|e| e.event_type == "AR")
+            .filter(|e| i as u64 > e.index)
+            .max_by_key(|e| e.index);
+
+        let creek_desc = if let Some(ar) = ar_event {
+            format!("小溪=AR#{:#?}高点{:.2}到近期低点{:.2}的距离", ar.index, resistance, recent_low)
+        } else {
+            format!("小溪=近期阻力{:.2}到近期低点{:.2}的距离", resistance, recent_low)
+        };
+
         Some(WyckoffEvent {
             event_type: "JOC".to_string(),
             index: i as u64,
             dt: k.dt.clone(),
             price: k.high,
             description: "跳过小溪: 放量突破阻力区".to_string(),
+            reason: format!(
+                "JOC(跳过小溪): 放量(vol={:.0} > 均值*1.3={:.0})突破阻力={:.2}(close={:.2}), {}, 溪宽={:.2}({:.1}%), 需求强劲越过供给边界（Wyckoff: Evans比喻, 等同SOS）",
+                k.vol, avg_vol * 1.3, resistance, k.close, creek_desc, creek_width, creek_width_pct
+            ),
         })
     } else {
         None

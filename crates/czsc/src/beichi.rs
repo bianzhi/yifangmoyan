@@ -315,57 +315,47 @@ fn check_trend_backdivergence(
         }
     }
 
-    let first_zs = zs_group[0];
     let last_zs = zs_group.last().unwrap();
+    let second_last_zs = zs_group[zs_group.len() - 2];
 
-    // 找b段：两个中枢之间的连接段，方向与趋势一致
+    // 找b段：最后两个中枢之间的连接段，方向与趋势一致
     //
-    // 在 a+A+b+B+c 中：
-    // - A、B 是中枢
-    // - b 是连接A和B的段，方向与趋势一致
+    // 缠论37课：在 a+A1+b1+A2+b2+...+An+c 中，力度比较的是
+    // 最后两个中枢之间的连接段 b(last-1) 与 c 段。
     //
-    // 策略：取所有连接段中力度最大的作为b段参考
-    let mut best_b: Option<&TrendSection> = None;
+    // 趋势背驰的物理含义是"最后的推动力度衰减"——看的是最后一段
+    // 推动（b_last）和最新一段推动（c）哪个力度更弱。
+    // 取max力度反而会选到最强的那段，违背了背驰的本意。
+    let mut b_section: Option<&TrendSection> = None;
 
-    for w in zs_group.windows(2) {
-        let zsa = w[0];
-        let zsb = w[1];
-
-        // 找zsa和zsb之间的连接段
-        for sec in sections.iter() {
-            if sec.direction == trend_direction
-                && sec.start_idx >= zsa.end_index
-                && sec.start_idx < zsb.start_index
-            {
-                if sec.macd_area > 0.0 {
-                    let is_better = match best_b {
-                        None => true,
-                        Some(prev) => sec.macd_area > prev.macd_area,
-                    };
-                    if is_better {
-                        best_b = Some(sec);
-                    }
-                }
+    // 优先：找起点在 second_last_zs 之后、start_index 在 last_zs 之前的连接段
+    for sec in sections.iter() {
+        if sec.direction == trend_direction
+            && sec.start_idx >= second_last_zs.end_index
+            && sec.start_idx < last_zs.start_index
+        {
+            if sec.macd_area > 0.0 {
+                b_section = Some(sec);
                 break;
             }
         }
-        // 放宽：段起点在第一个中枢结束之后
-        if best_b.is_none() {
-            for sec in sections.iter() {
-                if sec.direction == trend_direction
-                    && sec.start_idx >= zsa.end_index
-                    && sec.start_idx < zsb.end_index
-                {
-                    if sec.macd_area > 0.0 {
-                        best_b = Some(sec);
-                        break;
-                    }
+    }
+    // 放宽：段起点在 second_last_zs 结束之后、终点在 last_zs 结束之前
+    if b_section.is_none() {
+        for sec in sections.iter() {
+            if sec.direction == trend_direction
+                && sec.start_idx >= second_last_zs.end_index
+                && sec.start_idx < last_zs.end_index
+            {
+                if sec.macd_area > 0.0 {
+                    b_section = Some(sec);
+                    break;
                 }
             }
         }
     }
 
-    let b_section = best_b?;
+    let b_section = b_section?;
 
     // 找c段：最后一个中枢之后的离开段，方向与趋势一致
     let c_section = sections.iter().find(|sec| {
@@ -389,6 +379,30 @@ fn check_trend_backdivergence(
         // c段没创新高/新低 → 不构成趋势背驰
         // 但仍可能构成盘整背驰（37课："可以用盘整背驰的方式处理"）
         // 这在 check_panzheng_backdivergence 中单独检测
+        return None;
+    }
+
+    // 37课必要条件：c段必须包含对最后一个中枢B的第三类买卖点
+    //
+    // "c必然是次级别的，也就是说，c至少包含对B的一个第三类买卖点，
+    //  否则，就可以看成是B中枢的小级别波动，完全可以用盘整背驰来处理。"
+    //
+    // 第三类买卖点判定：
+    // - 上涨趋势：c段内部的回抽低点 > B.zd（即c段的最低点未回到中枢下边界）
+    //   这意味着c段确实"离开了"B中枢，且有一个回抽确认的过程
+    // - 下跌趋势：c段内部的反弹高点 < B.zg（即c段的最高点未回到中枢上边界）
+    //
+    // 对于单个段（Bi/XianDuan），段本身就包含了次级别的走势结构（笔包含K线、
+    // 线段包含笔），所以c段"最低点不回B"等价于段内回抽确认了第三类买卖点。
+    let cond_third_bs = if trend_direction == "up" {
+        c_section.low() > last_zs.zd
+    } else {
+        c_section.high() < last_zs.zg
+    };
+
+    if !cond_third_bs {
+        // c段未包含第三类买卖点 → 不构成趋势背驰
+        // 可用盘整背驰方式处理
         return None;
     }
 
@@ -483,6 +497,19 @@ fn check_panzheng_backdivergence(
         return None;
     }
 
+    // 盘整背驰24课区分两种情况：
+    // 1) b段破了a段极值位置 → 破位盘整背驰，可能形成第三类买卖点
+    // 2) b段未破a段极值位置 → 未破位盘整背驰，更可能回到中枢
+    //
+    // 破位判定：b段价格极值超过a段价格极值
+    // - 向上：b段最高价 > a段最高价
+    // - 向下：b段最低价 < a段最低价
+    let broken = if b_sec.direction == "up" {
+        b_sec.high() > a_sec.high()
+    } else {
+        b_sec.low() < a_sec.low()
+    };
+
     // 盘整背驰的方向定义：
     // a、b是向上的段 → 围绕中枢的向上震荡力度衰减 → 顶背驰
     // a、b是向下的段 → 围绕中枢的向下震荡力度衰减 → 底背驰
@@ -490,9 +517,11 @@ fn check_panzheng_backdivergence(
     // 注意：盘整背驰只是中枢震荡的力度比较，不是走势转折的标志
     // 所以"方向"是指震荡的方向，而不是走势级别的方向
     let direction_label = if b_sec.direction == "up" { "顶背驰" } else { "底背驰" };
+    let broken_label = if broken { "破位" } else { "未破位" };
     let reason = format!(
-        "盘整{}: a段面积 {:.2} 峰值 {:.2}, b段面积 {:.2} ({:.0}%) 峰值 {:.2} ({:.0}%)",
+        "盘整{}({}): a段面积 {:.2} 峰值 {:.2}, b段面积 {:.2} ({:.0}%) 峰值 {:.2} ({:.0}%)",
         direction_label,
+        broken_label,
         a_sec.macd_area,
         a_sec.macd_peak,
         b_sec.macd_area,
@@ -516,7 +545,6 @@ fn check_panzheng_backdivergence(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use yifang_data::TimeFrame;
 
     fn make_bi(id: usize, dir: &str, start: f64, end: f64, start_idx: u64, end_idx: u64) -> Bi {
         Bi {
@@ -621,13 +649,13 @@ mod tests {
             make_bi(3, "up", 21.0, 22.0, 9, 12),    // ZS1: [20,22]
             make_bi(4, "down", 22.0, 12.0, 12, 16),  // b段
             make_bi(5, "up", 12.0, 16.0, 16, 19),
-            make_bi(6, "down", 16.0, 15.0, 19, 22),
-            make_bi(7, "up", 15.0, 16.0, 22, 25),    // ZS2: [15,16]
-            make_bi(8, "down", 16.0, 10.0, 25, 29),  // c段（创新低10<12, 但力度小）
+            make_bi(6, "down", 16.0, 14.0, 19, 22),
+            make_bi(7, "up", 14.0, 15.0, 22, 25),    // ZS2: [14,15]
+            make_bi(8, "down", 14.5, 10.0, 25, 29),  // c段（创新低10<12, c.high=14.5<ZS2.zg=15, 力度小）
         ];
         let zs = vec![
             make_zs("bi_zs", 3, 12, 22.0, 20.0),   // ZS1
-            make_zs("bi_zs", 16, 25, 16.0, 15.0),  // ZS2: zg=16 < ZS1.zd=20
+            make_zs("bi_zs", 16, 25, 15.0, 14.0),  // ZS2: zg=15 < ZS1.zd=20
         ];
 
         let mut macd_hist = vec![0.0; 30];
@@ -848,5 +876,35 @@ mod tests {
         let beichi = detect_bi_beichi(&bis, &macd, &zs);
         let pz: Vec<_> = beichi.iter().filter(|b| b.bc_sub_type == "panzheng").collect();
         assert!(pz.is_empty(), "a、b方向不同不应构成盘整背驰");
+    }
+
+    #[test]
+    fn test_no_trend_beichi_without_third_bs() {
+        // 37课约束：c段不包含第三类买卖点 → 不构成趋势背驰
+        // 上涨趋势中，c段低点回到中枢下边界之内 → 未确认离开中枢
+        let bis = vec![
+            make_bi(0, "up", 10.0, 15.0, 0, 3),
+            make_bi(1, "down", 15.0, 12.0, 3, 6),
+            make_bi(2, "up", 12.0, 14.0, 6, 9),
+            make_bi(3, "down", 14.0, 13.0, 9, 12),    // ZS1: [12,14]
+            make_bi(4, "up", 13.0, 22.0, 12, 16),      // b段
+            make_bi(5, "down", 22.0, 17.0, 16, 19),
+            make_bi(6, "up", 17.0, 19.0, 19, 22),
+            make_bi(7, "down", 19.0, 18.0, 22, 25),    // ZS2: [17,19]
+            make_bi(8, "up", 16.5, 25.0, 25, 29),      // c段（创新高25>22, 但c.low=16.5<ZS2.zd=17→未确认离开中枢）
+        ];
+        let zs = vec![
+            make_zs("bi_zs", 3, 12, 14.0, 12.0),   // ZS1
+            make_zs("bi_zs", 16, 25, 19.0, 17.0),  // ZS2: zd=17, c.low=16.5<17 → 不满足第三类买点
+        ];
+
+        let mut macd_hist = vec![0.0; 30];
+        for i in 12..=16 { macd_hist[i] = 5.0; }  // b段力度大
+        for i in 25..=29 { macd_hist[i] = 1.0; }  // c段力度小
+        let macd = MacdData { dif: vec![0.0; 30], dea: vec![0.0; 30], macd_hist };
+
+        let beichi = detect_bi_beichi(&bis, &macd, &zs);
+        let trend_bc: Vec<_> = beichi.iter().filter(|b| b.bc_sub_type == "trend").collect();
+        assert!(trend_bc.is_empty(), "c段不包含第三类买点不应构成趋势背驰(37课)");
     }
 }

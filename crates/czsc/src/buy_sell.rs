@@ -1,42 +1,22 @@
-//! 三类买卖点识别
+//! 三类买卖点识别（严格缠论17/20/21/37课）
 //!
-//! **严格对齐缠论原文定义 + czsc 信号函数参考**
+//! 核心规则：
+//! - **一买**：下跌趋势（≥2个向下递进中枢）+ 最后一个中枢后出现趋势背驰
+//!   只有趋势背驰才能产生第一类买点，盘整背驰绝对不能作为第一类买点。
+//! - **一卖**：上涨趋势（≥2个向上递进中枢）+ 最后一个中枢后出现趋势背驰
+//! - **二买**：一买之后的回调低点不破一买低点
+//! - **二卖**：一卖之后的反弹高点不过一卖高点
+//! - **三买**：中枢之上，次级别离开后次级别回抽不回到中枢区间（回抽低点 > 中枢上沿）
+//! - **三卖**：中枢之下，次级别离开后次级别回抽不回到中枢区间（回抽高点 < 中枢下沿）
 //!
-//! 缠论三类买卖点：
-//!
-//! **一买**：下跌趋势最后一个中枢之后的背驰段终点。
-//!   条件：存在下跌趋势（至少两个中枢或一个中枢+背驰），最后一个中枢后的离开段出现背驰。
-//!   对齐 czsc __check_first_buy：
-//!   - 笔序列长度为奇数
-//!   - 第一笔和最后一笔方向相同（都是下降）·
-//!   - 最高点 = 第一笔高点，最低点 = 最后一笔低点
-//!   - 最后一笔力度 < 前一同向笔力度（价格力度 + 成交量/长度）
-//!
-//! **二买**：一买之后的回调低点（不破一买低点）。
-//!   条件：一买出现后，价格回调形成的低点高于一买低点。
-//!   对齐 czsc cxt_second_bs_V230320：
-//!   - 5笔序列中，b1,b3 低点在均线下方
-//!   - b5 起点<b5终点（下降笔中低点抬高）
-//!
-//! **三买**：中枢上方回踩不进中枢的买点。
-//!   条件：价格向上离开中枢后，回调的低点不低于中枢上沿(zg)。
-//!   对齐 czsc cxt_third_bs_V230319：
-//!   - b1,b3 构成中枢：zs_zd = max(b1.low, b3.low), zs_zg = min(b1.high, b3.high)
-//!   - b5 下降笔，b5.low > zs_zg → 三买
-//!
-//! **一卖**：上涨趋势最后一个中枢之后的背驰段终点。（一买的镜像）
-//! **二卖**：一卖之后的反弹高点（不过一卖高点）。（二买的镜像）
-//! **三卖**：中枢下方反弹不进中枢的卖点。（三买的镜像）
-//!
-//! 支持两个级别：
-//! - 笔级别：以笔为元素识别买卖点
-//! - 线段级别：以线段为元素识别买卖点
+//! 铁律：
+//! - 盘整背驰绝对不能产生第一类买卖点
+//! - 第三类买卖点的离开和回抽必须是完整的段（笔或线段），单笔回抽不能构成
+//! - 第二类买卖点可出现在中枢内部/之上/之下，只需不破一买低点/一卖高点
 
 use yifang_data::{BeiChi, Bi, BuySellPoint, XianDuan, ZhongShu};
 
-// ============================================================
-//  笔级别买卖点
-// ============================================================
+// ─── 公开接口 ──────────────────────────────────────────
 
 /// 识别笔级别买卖点
 pub fn detect_buy_sell(
@@ -48,13 +28,10 @@ pub fn detect_buy_sell(
         bis,
         bi_zs,
         beichi,
-        |bi| (bi.direction.clone(), bi.start_index, bi.end_index, bi.start_dt.clone(), bi.end_dt.clone(), bi.start_price, bi.end_price),
+        "bi_beichi",
+        |bi: &Bi| (bi.start_index, bi.end_index, bi.direction.clone(), bi.start_price, bi.end_price),
     )
 }
-
-// ============================================================
-//  线段级别买卖点
-// ============================================================
 
 /// 识别线段级别买卖点
 pub fn detect_xd_buy_sell(
@@ -66,293 +43,545 @@ pub fn detect_xd_buy_sell(
         xds,
         xd_zs,
         xd_beichi,
-        |xd| (xd.direction.clone(), xd.start_index, xd.end_index, xd.start_dt.clone(), xd.end_dt.clone(), xd.start_price, xd.end_price),
+        "xd_beichi",
+        |xd: &XianDuan| (xd.start_index, xd.end_index, xd.direction.clone(), xd.start_price, xd.end_price),
     )
 }
 
-// ============================================================
-//  通用实现
-// ============================================================
+// ─── 内部统一实现 ──────────────────────────────────────
 
-/// 通用买卖点识别
-///
 /// 从笔或线段序列中识别三类买卖点。
-/// 通过 extract 闭包抽象笔和线段的共同字段。
 fn detect_buy_sell_from_segments<T, F>(
     segments: &[T],
     zs_list: &[ZhongShu],
     beichi: &[BeiChi],
+    bc_type_filter: &str,
     extract: F,
 ) -> Vec<BuySellPoint>
 where
-    F: Fn(&T) -> (String, u64, u64, String, String, f64, f64),
+    F: Fn(&T) -> (u64, u64, String, f64, f64),
 {
-    let mut points = Vec::new();
+    let mut results = Vec::new();
 
-    if segments.is_empty() {
-        return points;
+    if segments.len() < 3 || zs_list.is_empty() {
+        return results;
     }
 
-    // === 一买/一卖：基于背驰 ===
-    for bc in beichi {
-        match bc.direction.as_str() {
-            "up" => {
-                // 上涨背驰 → 一卖
-                points.push(BuySellPoint {
+    let seg_infos: Vec<SegInfo> = segments
+        .iter()
+        .map(|s| {
+            let (start_idx, end_idx, direction, start_val, end_val) = extract(s);
+            SegInfo { start_idx, end_idx, direction, start_val, end_val }
+        })
+        .collect();
+
+    // 过滤出当前级别的趋势背驰
+    let trend_bds: Vec<&BeiChi> = beichi
+        .iter()
+        .filter(|bd| bd.bc_type == bc_type_filter && bd.bc_sub_type == "trend")
+        .collect();
+
+    // 第一类买卖点
+    let (buy1_list, sell1_list) = find_buy1_sell1(&seg_infos, zs_list, &trend_bds);
+    results.extend(buy1_list);
+    results.extend(sell1_list);
+
+    // 第二类买卖点（依赖一买一卖）
+    let (buy2_list, sell2_list) = find_buy2_sell2(&seg_infos, &results);
+    results.extend(buy2_list);
+    results.extend(sell2_list);
+
+    // 第三类买卖点
+    let (buy3_list, sell3_list) = find_buy3_sell3(&seg_infos, zs_list);
+    results.extend(buy3_list);
+    results.extend(sell3_list);
+
+    results.sort_by_key(|p| p.index);
+    results.dedup_by(|a, b| a.index == b.index && a.bs_type == b.bs_type);
+    results
+}
+
+// ─── 段信息 ───────────────────────────────────────────
+
+struct SegInfo {
+    start_idx: u64,
+    end_idx: u64,
+    direction: String,
+    start_val: f64,
+    end_val: f64,
+}
+
+// ─── 第一类买卖点 ─────────────────────────────────────
+
+/// 第一类买卖点：趋势背驰产生
+/// - 上涨趋势（≥2个向上递进中枢）+ 顶背驰 → 一卖
+/// - 下跌趋势（≥2个向下递进中枢）+ 底背驰 → 一买
+/// 铁律：盘整背驰绝对不能产生第一类买卖点
+fn find_buy1_sell1(
+    seg_infos: &[SegInfo],
+    zs_list: &[ZhongShu],
+    trend_bds: &[&BeiChi],
+) -> (Vec<BuySellPoint>, Vec<BuySellPoint>) {
+    let mut buy1_list = Vec::new();
+    let mut sell1_list = Vec::new();
+
+    for bd in trend_bds {
+        // 找到背驰点之前结束的中枢索引
+        let related_indices: Vec<usize> = zs_list
+            .iter()
+            .enumerate()
+            .filter(|(_, zs)| zs.end_index <= bd.index)
+            .map(|(i, _)| i)
+            .collect();
+
+        if related_indices.len() < 2 {
+            continue;
+        }
+
+        let groups = group_zs_indices_by_trend(zs_list, &related_indices);
+
+        for group in &groups {
+            if group.len() < 2 {
+                continue;
+            }
+
+            let trend_dir = classify_trend_direction_from_indices(zs_list, group);
+
+            if trend_dir == "up" && bd.direction == "up" {
+                let price = find_seg_end_price(seg_infos, bd.index);
+                sell1_list.push(BuySellPoint {
                     bs_type: "1sell".to_string(),
-                    index: bc.index,
-                    dt: bc.dt.clone(),
-                    price: 0.0,
+                    index: bd.index,
+                    dt: bd.dt.clone(),
+                    price,
                 });
-            }
-            "down" => {
-                // 下跌背驰 → 一买
-                points.push(BuySellPoint {
+            } else if trend_dir == "down" && bd.direction == "down" {
+                let price = find_seg_end_price(seg_infos, bd.index);
+                buy1_list.push(BuySellPoint {
                     bs_type: "1buy".to_string(),
-                    index: bc.index,
-                    dt: bc.dt.clone(),
-                    price: 0.0,
+                    index: bd.index,
+                    dt: bd.dt.clone(),
+                    price,
                 });
             }
-            _ => {}
         }
     }
 
-    // 提取一买/一卖的 index
-    let first_buy_indices: Vec<u64> = points
-        .iter()
-        .filter(|p| p.bs_type == "1buy")
-        .map(|p| p.index)
-        .collect();
-    let first_sell_indices: Vec<u64> = points
-        .iter()
-        .filter(|p| p.bs_type == "1sell")
-        .map(|p| p.index)
-        .collect();
+    (buy1_list, sell1_list)
+}
 
-    // === 二买/二卖 ===
-    for fb_index in &first_buy_indices {
-        if let Some(second_buy) = find_second_point(segments, &extract, *fb_index, "down", "2buy") {
-            points.push(second_buy);
+// ─── 第二类买卖点 ─────────────────────────────────────
+
+/// 二买：一买后回抽不破一买低点
+/// 二卖：一卖后回抽不过一卖高点
+fn find_buy2_sell2(
+    seg_infos: &[SegInfo],
+    first_points: &[BuySellPoint],
+) -> (Vec<BuySellPoint>, Vec<BuySellPoint>) {
+    let mut buy2_list = Vec::new();
+    let mut sell2_list = Vec::new();
+
+    for buy1 in first_points.iter().filter(|p| p.bs_type == "1buy") {
+        if let Some(buy2) = find_buy2_after_buy1(seg_infos, buy1) {
+            buy2_list.push(buy2);
         }
     }
 
-    for fs_index in &first_sell_indices {
-        if let Some(second_sell) = find_second_point(segments, &extract, *fs_index, "up", "2sell") {
-            points.push(second_sell);
+    for sell1 in first_points.iter().filter(|p| p.bs_type == "1sell") {
+        if let Some(sell2) = find_sell2_after_sell1(seg_infos, sell1) {
+            sell2_list.push(sell2);
         }
     }
 
-    // === 三买/三卖：基于中枢 ===
+    (buy2_list, sell2_list)
+}
+
+fn find_buy2_after_buy1(seg_infos: &[SegInfo], buy1: &BuySellPoint) -> Option<BuySellPoint> {
+    let after_segs: Vec<&SegInfo> = seg_infos.iter().filter(|s| s.start_idx >= buy1.index).collect();
+    if after_segs.len() < 2 { return None; }
+
+    // 第一段向上（离开段），第二段向下（回抽段）
+    if after_segs[0].direction != "up" || after_segs[1].direction != "down" {
+        return None;
+    }
+
+    let pullback_low = after_segs[1].end_val.min(after_segs[1].start_val);
+    if pullback_low > buy1.price {
+        Some(BuySellPoint {
+            bs_type: "2buy".to_string(),
+            index: after_segs[1].end_idx,
+            dt: String::new(),
+            price: pullback_low,
+        })
+    } else {
+        None
+    }
+}
+
+fn find_sell2_after_sell1(seg_infos: &[SegInfo], sell1: &BuySellPoint) -> Option<BuySellPoint> {
+    let after_segs: Vec<&SegInfo> = seg_infos.iter().filter(|s| s.start_idx >= sell1.index).collect();
+    if after_segs.len() < 2 { return None; }
+
+    // 第一段向下（离开段），第二段向上（回抽段）
+    if after_segs[0].direction != "down" || after_segs[1].direction != "up" {
+        return None;
+    }
+
+    let pullback_high = after_segs[1].end_val.max(after_segs[1].start_val);
+    if pullback_high < sell1.price {
+        Some(BuySellPoint {
+            bs_type: "2sell".to_string(),
+            index: after_segs[1].end_idx,
+            dt: String::new(),
+            price: pullback_high,
+        })
+    } else {
+        None
+    }
+}
+
+// ─── 第三类买卖点 ─────────────────────────────────────
+
+/// 三买：向上离开中枢 + 回抽低点 > 中枢上沿(zg)
+/// 三卖：向下离开中枢 + 回抽高点 < 中枢下沿(zd)
+fn find_buy3_sell3(
+    seg_infos: &[SegInfo],
+    zs_list: &[ZhongShu],
+) -> (Vec<BuySellPoint>, Vec<BuySellPoint>) {
+    let mut buy3_list = Vec::new();
+    let mut sell3_list = Vec::new();
+
     for zs in zs_list {
-        find_third_buy_generic(segments, &extract, zs, &mut points);
-        find_third_sell_generic(segments, &extract, zs, &mut points);
-    }
+        let after_segs: Vec<&SegInfo> = seg_infos.iter().filter(|s| s.start_idx >= zs.end_index).collect();
+        if after_segs.len() < 2 { continue; }
 
-    points.sort_by_key(|p| p.index);
-    points.dedup_by(|a, b| a.index == b.index && a.bs_type == b.bs_type);
-    points
-}
+        let leave_seg = after_segs[0];
+        let back_seg = after_segs[1];
 
-/// 寻找二买/二卖
-///
-/// 二买：一买之后，回调形成的低点不破一买价格。
-/// 二卖：一卖之后，反弹形成的高点不过一卖价格。
-fn find_second_point<T, F>(
-    segments: &[T],
-    extract: &F,
-    first_index: u64,
-    target_dir: &str,
-    bs_type: &str,
-) -> Option<BuySellPoint>
-where
-    F: Fn(&T) -> (String, u64, u64, String, String, f64, f64),
-{
-    for seg in segments.iter() {
-        let (direction, _, end_index, _, end_dt, _, end_price) = extract(seg);
-        if end_index > first_index && direction == target_dir {
-            return Some(BuySellPoint {
-                bs_type: bs_type.to_string(),
-                index: end_index,
-                dt: end_dt,
-                price: end_price,
-            });
-        }
-    }
-    None
-}
-
-/// 寻找三买（通用版）
-///
-/// 对齐 czsc cxt_third_bs_V230319：
-/// 中枢之后的回调段，其低点 >= 中枢上沿(zg) → 三买
-/// 即：离开中枢后回调不进中枢。
-fn find_third_buy_generic<T, F>(
-    segments: &[T],
-    extract: &F,
-    zs: &ZhongShu,
-    points: &mut Vec<BuySellPoint>,
-) where
-    F: Fn(&T) -> (String, u64, u64, String, String, f64, f64),
-{
-    for seg in segments.iter() {
-        let (direction, start_index, _, _, _, _, _) = extract(seg);
-        if start_index <= zs.end_index {
-            continue;
+        // 三买：向上离开 + 回抽不破中枢上沿
+        if leave_seg.direction == "up" && back_seg.direction == "down" {
+            let leave_high = leave_seg.end_val.max(leave_seg.start_val);
+            if leave_high > zs.zg {
+                let back_low = back_seg.end_val.min(back_seg.start_val);
+                if back_low > zs.zg {
+                    buy3_list.push(BuySellPoint {
+                        bs_type: "3buy".to_string(),
+                        index: back_seg.end_idx,
+                        dt: String::new(),
+                        price: back_low,
+                    });
+                }
+            }
         }
 
-        if direction == "up" {
-            let (_, _, _end_index, _, _, start_price, end_price) = extract(seg);
-            let low_price = start_price.min(end_price);
-            if low_price >= zs.zg {
-                points.push(BuySellPoint {
-                    bs_type: "3buy".to_string(),
-                    index: start_index,
-                    dt: String::new(),
-                    price: low_price,
-                });
+        // 三卖：向下离开 + 回抽不破中枢下沿
+        if leave_seg.direction == "down" && back_seg.direction == "up" {
+            let leave_low = leave_seg.end_val.min(leave_seg.start_val);
+            if leave_low < zs.zd {
+                let back_high = back_seg.end_val.max(back_seg.start_val);
+                if back_high < zs.zd {
+                    sell3_list.push(BuySellPoint {
+                        bs_type: "3sell".to_string(),
+                        index: back_seg.end_idx,
+                        dt: String::new(),
+                        price: back_high,
+                    });
+                }
             }
         }
     }
+
+    (buy3_list, sell3_list)
 }
 
-/// 寻找三卖（通用版）
-///
-/// 中枢之后的反弹段，其高点 <= 中枢下沿(zd) → 三卖
-/// 即：离开中枢后反弹不进中枢。
-fn find_third_sell_generic<T, F>(
-    segments: &[T],
-    extract: &F,
-    zs: &ZhongShu,
-    points: &mut Vec<BuySellPoint>,
-) where
-    F: Fn(&T) -> (String, u64, u64, String, String, f64, f64),
-{
-    for seg in segments.iter() {
-        let (direction, start_index, _, _, _, _, _) = extract(seg);
-        if start_index <= zs.end_index {
-            continue;
-        }
+// ─── 中枢趋势分组辅助 ─────────────────────────────────
 
-        if direction == "down" {
-            let (_, _, _end_index, _, _, start_price, end_price) = extract(seg);
-            let high_price = start_price.max(end_price);
-            if high_price <= zs.zd {
-                points.push(BuySellPoint {
-                    bs_type: "3sell".to_string(),
-                    index: start_index,
-                    dt: String::new(),
-                    price: high_price,
-                });
-            }
+/// 将中枢索引按方向递进分组：连续同方向递进归为一组，方向改变开始新组
+/// 关键：需要追踪当前组的方向，后续中枢必须延续同方向才能加入
+fn group_zs_indices_by_trend(zs_list: &[ZhongShu], indices: &[usize]) -> Vec<Vec<usize>> {
+    if indices.is_empty() { return Vec::new(); }
+    if indices.len() == 1 { return vec![vec![indices[0]]]; }
+
+    let first_zs = &zs_list[indices[0]];
+    let mut current_dir: Option<&str> = None;
+
+    // 找到第一个能确定方向的中枢对
+    for i in 1..indices.len() {
+        let curr_zs = &zs_list[indices[i]];
+        if curr_zs.zd > first_zs.zg {
+            current_dir = Some("up");
+            break;
+        } else if curr_zs.zg < first_zs.zd {
+            current_dir = Some("down");
+            break;
         }
     }
+
+    let mut groups: Vec<Vec<usize>> = vec![vec![indices[0]]];
+
+    for i in 1..indices.len() {
+        let prev = &zs_list[indices[i - 1]];
+        let curr = &zs_list[indices[i]];
+
+        let pair_dir = if curr.zd > prev.zg {
+            Some("up")
+        } else if curr.zg < prev.zd {
+            Some("down")
+        } else {
+            None
+        };
+
+        let same = match (current_dir, pair_dir) {
+            (Some(d1), Some(d2)) => d1 == d2,
+            _ => false,
+        };
+
+        if same {
+            groups.last_mut().unwrap().push(indices[i]);
+        } else {
+            groups.push(vec![indices[i]]);
+            current_dir = pair_dir;
+        }
+    }
+
+    groups
 }
+
+/// 上涨递进：curr.zd > prev.zg；下跌递进：curr.zg < prev.zd
+#[allow(dead_code)]
+fn is_same_trend_direction(prev: &ZhongShu, curr: &ZhongShu) -> bool {
+    curr.zd > prev.zg || curr.zg < prev.zd
+}
+
+fn classify_trend_direction_from_indices(zs_list: &[ZhongShu], group: &[usize]) -> &'static str {
+    if group.len() < 2 { return "unknown"; }
+    let first = &zs_list[group[0]];
+    let last = &zs_list[group[group.len() - 1]];
+    if last.zd > first.zg { "up" } else if last.zg < first.zd { "down" } else { "unknown" }
+}
+
+fn find_seg_end_price(seg_infos: &[SegInfo], index: u64) -> f64 {
+    for seg in seg_infos {
+        if seg.end_idx == index || (seg.start_idx <= index && seg.end_idx >= index) {
+            return seg.end_val;
+        }
+    }
+    0.0
+}
+
+// ─── 测试 ─────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn make_bi(id: usize, dir: &str, start: f64, end: f64, start_idx: u64, end_idx: u64) -> Bi {
-        Bi {
-            direction: dir.to_string(),
-            start_index: start_idx,
-            end_index: end_idx,
-            start_dt: format!("t{}", id),
-            end_dt: format!("t{}", id + 1),
-            start_price: start,
-            end_price: end,
-            is_finished: true,
-        }
+    fn make_bi(id: usize, dir: &str, start: f64, end: f64, si: u64, ei: u64) -> Bi {
+        Bi { direction: dir.to_string(), start_index: si, end_index: ei,
+             start_dt: format!("t{}", id), end_dt: format!("t{}", id+1),
+             start_price: start, end_price: end, is_finished: true }
+    }
+    fn make_xd(id: usize, dir: &str, start: f64, end: f64, si: u64, ei: u64) -> XianDuan {
+        XianDuan { direction: dir.to_string(), start_index: si, end_index: ei,
+                   start_dt: format!("t{}", id), end_dt: format!("t{}", id+1),
+                   start_price: start, end_price: end, is_finished: true }
+    }
+    fn make_zs(zt: &str, si: u64, ei: u64, zg: f64, zd: f64) -> ZhongShu {
+        ZhongShu { zs_type: zt.to_string(), start_index: si, end_index: ei,
+                   start_dt: "t0".into(), end_dt: "t1".into(),
+                   zg, zd, gg: zg + 1.0, dd: zd - 1.0 }
+    }
+    fn make_bc(bct: &str, idx: u64, dir: &str, sub: &str) -> BeiChi {
+        BeiChi { bc_type: bct.to_string(), index: idx, dt: String::new(),
+                 direction: dir.to_string(), bc_sub_type: sub.to_string(), reason: String::new() }
     }
 
     #[test]
-    fn test_first_buy_from_beichi() {
-        // 下跌背驰 → 一买
+    fn test_first_buy_from_trend_beichi() {
         let bis = vec![
-            make_bi(0, "down", 20.0, 10.0, 0, 5),
-            make_bi(1, "up", 10.0, 15.0, 5, 10),
-            make_bi(2, "down", 15.0, 8.0, 10, 15),
-            make_bi(3, "up", 8.0, 12.0, 15, 20),
+            make_bi(0,"up",20.,25.,0,3), make_bi(1,"down",25.,18.,3,6),
+            make_bi(2,"up",18.,22.,6,9), make_bi(3,"down",22.,19.,9,12),
+            make_bi(4,"up",19.,16.,12,15), make_bi(5,"down",16.,10.,15,18),
+            make_bi(6,"up",10.,13.,18,21), make_bi(7,"down",13.,11.,21,24),
+            make_bi(8,"down",11.,8.,24,27),
         ];
-        let zs = vec![];
-        let beichi = vec![BeiChi {
-            bc_type: "bi_beichi".to_string(),
-            index: 15,
-            dt: "t2".to_string(),
-            direction: "down".to_string(),
-            bc_sub_type: "simple".to_string(),
-            reason: String::new(),
-        }];
+        let zs = vec![make_zs("bi_zs",6,12,22.,19.), make_zs("bi_zs",18,24,13.,11.)];
+        let bc = vec![make_bc("bi_beichi",27,"down","trend")];
+        let pts = detect_buy_sell(&bis, &zs, &bc);
+        let b1: Vec<_>=pts.iter().filter(|p|p.bs_type=="1buy").collect();
+        assert!(!b1.is_empty()); assert_eq!(b1[0].index, 27);
+    }
 
-        let points = detect_buy_sell(&bis, &zs, &beichi);
-        let first_buys: Vec<_> = points.iter().filter(|p| p.bs_type == "1buy").collect();
-        assert!(!first_buys.is_empty(), "应检测到一买");
+    #[test]
+    fn test_first_sell_from_trend_beichi() {
+        let bis = vec![
+            make_bi(0,"up",10.,15.,0,3), make_bi(1,"down",15.,12.,3,6),
+            make_bi(2,"up",12.,14.,6,9), make_bi(3,"down",14.,13.,9,12),
+            make_bi(4,"up",13.,22.,12,16), make_bi(5,"down",22.,17.,16,19),
+            make_bi(6,"up",17.,19.,19,22), make_bi(7,"down",19.,18.,22,25),
+            make_bi(8,"up",18.,23.,25,29),
+        ];
+        let zs = vec![make_zs("bi_zs",3,12,14.,12.), make_zs("bi_zs",16,25,19.,17.)];
+        let bc = vec![make_bc("bi_beichi",29,"up","trend")];
+        let pts = detect_buy_sell(&bis, &zs, &bc);
+        let s1: Vec<_>=pts.iter().filter(|p|p.bs_type=="1sell").collect();
+        assert!(!s1.is_empty()); assert_eq!(s1[0].index, 29);
+    }
+
+    #[test]
+    fn test_no_first_buy_from_panzheng() {
+        let bis = vec![
+            make_bi(0,"up",10.,15.,0,3), make_bi(1,"down",15.,12.,3,6),
+            make_bi(2,"up",12.,14.,6,9), make_bi(3,"down",14.,13.,9,12),
+        ];
+        let zs = vec![make_zs("bi_zs",3,12,14.,12.)];
+        let bc = vec![make_bc("bi_beichi",12,"down","panzheng")];
+        let pts = detect_buy_sell(&bis, &zs, &bc);
+        assert!(pts.iter().all(|p|p.bs_type!="1buy"));
+        assert!(pts.iter().all(|p|p.bs_type!="1sell"));
+    }
+
+    #[test]
+    fn test_no_first_with_single_zs() {
+        let bis = vec![
+            make_bi(0,"up",10.,15.,0,3), make_bi(1,"down",15.,12.,3,6),
+            make_bi(2,"up",12.,14.,6,9), make_bi(3,"down",14.,13.,9,12),
+            make_bi(4,"up",13.,16.,12,15),
+        ];
+        let zs = vec![make_zs("bi_zs",3,12,14.,12.)];
+        let bc = vec![make_bc("bi_beichi",15,"up","trend")];
+        let pts = detect_buy_sell(&bis, &zs, &bc);
+        assert!(pts.iter().all(|p|p.bs_type!="1buy"));
+        assert!(pts.iter().all(|p|p.bs_type!="1sell"));
     }
 
     #[test]
     fn test_third_buy() {
-        // 中枢 [12, 14]，之后回调到 14.5（不进中枢）→ 三买
         let bis = vec![
-            make_bi(0, "up", 10.0, 15.0, 0, 3),
-            make_bi(1, "down", 15.0, 12.0, 3, 6),
-            make_bi(2, "up", 12.0, 14.0, 6, 9),
-            make_bi(3, "down", 14.0, 13.0, 9, 12),
-            make_bi(4, "up", 13.0, 18.0, 12, 15),  // 离开中枢
-            make_bi(5, "down", 18.0, 14.5, 15, 18), // 回调但 14.5 > zg=14 → 三买
-            make_bi(6, "up", 14.5, 20.0, 18, 21),
+            make_bi(0,"up",10.,15.,0,3), make_bi(1,"down",15.,12.,3,6),
+            make_bi(2,"up",12.,14.,6,9), make_bi(3,"down",14.,13.,9,12),
+            make_bi(4,"up",13.,18.,12,16), make_bi(5,"down",18.,15.,16,19),
         ];
-        let zs = vec![ZhongShu {
-            zs_type: "bi_zs".to_string(),
-            start_index: 0,
-            end_index: 9,
-            start_dt: "t0".to_string(),
-            end_dt: "t2".to_string(),
-            zg: 14.0,
-            zd: 12.0,
-            gg: 15.0,
-            dd: 10.0,
-        }];
+        let zs = vec![make_zs("bi_zs",3,12,14.,12.)];
+        let pts = detect_buy_sell(&bis, &zs, &[]);
+        let b3: Vec<_>=pts.iter().filter(|p|p.bs_type=="3buy").collect();
+        assert!(!b3.is_empty()); assert!(b3[0].price > 14.0);
+    }
 
-        let points = detect_buy_sell(&bis, &zs, &[]);
-        let third_buys: Vec<_> = points.iter().filter(|p| p.bs_type == "3buy").collect();
-        assert!(!third_buys.is_empty(), "应检测到三买");
+    #[test]
+    fn test_third_sell() {
+        let bis = vec![
+            make_bi(0,"down",20.,15.,0,3), make_bi(1,"up",15.,18.,3,6),
+            make_bi(2,"down",18.,16.,6,9), make_bi(3,"up",16.,17.,9,12),
+            make_bi(4,"down",17.,12.,12,16), make_bi(5,"up",12.,14.,16,19),
+        ];
+        let zs = vec![make_zs("bi_zs",3,12,17.,15.)];
+        let pts = detect_buy_sell(&bis, &zs, &[]);
+        let s3: Vec<_>=pts.iter().filter(|p|p.bs_type=="3sell").collect();
+        assert!(!s3.is_empty()); assert!(s3[0].price < 15.0);
+    }
+
+    #[test]
+    fn test_no_third_buy_when_pullback_enters_zs() {
+        let bis = vec![
+            make_bi(0,"up",10.,15.,0,3), make_bi(1,"down",15.,12.,3,6),
+            make_bi(2,"up",12.,14.,6,9), make_bi(3,"down",14.,13.,9,12),
+            make_bi(4,"up",13.,18.,12,16), make_bi(5,"down",18.,11.,16,19),
+        ];
+        let zs = vec![make_zs("bi_zs",3,12,14.,12.)];
+        let pts = detect_buy_sell(&bis, &zs, &[]);
+        assert!(pts.iter().all(|p|p.bs_type!="3buy"));
+    }
+
+    #[test]
+    fn test_second_buy_after_first_buy() {
+        let bis = vec![
+            make_bi(0,"up",20.,25.,0,3), make_bi(1,"down",25.,18.,3,6),
+            make_bi(2,"up",18.,22.,6,9), make_bi(3,"down",22.,19.,9,12),
+            make_bi(4,"up",19.,16.,12,15), make_bi(5,"down",16.,10.,15,18),
+            make_bi(6,"up",10.,13.,18,21), make_bi(7,"down",13.,11.,21,24),
+            make_bi(8,"down",11.,8.,24,27),
+            make_bi(9,"up",8.,12.,27,30), make_bi(10,"down",12.,10.,30,33),
+        ];
+        let zs = vec![make_zs("bi_zs",6,12,22.,19.), make_zs("bi_zs",18,24,13.,11.)];
+        let bc = vec![make_bc("bi_beichi",27,"down","trend")];
+        let pts = detect_buy_sell(&bis, &zs, &bc);
+        let b1: Vec<_>=pts.iter().filter(|p|p.bs_type=="1buy").collect();
+        let b2: Vec<_>=pts.iter().filter(|p|p.bs_type=="2buy").collect();
+        assert!(!b1.is_empty());
+        assert!(!b2.is_empty());
+        assert!(b2[0].price > b1[0].price);
+    }
+
+    #[test]
+    fn test_second_sell_after_first_sell() {
+        let bis = vec![
+            make_bi(0,"up",10.,15.,0,3), make_bi(1,"down",15.,12.,3,6),
+            make_bi(2,"up",12.,14.,6,9), make_bi(3,"down",14.,13.,9,12),
+            make_bi(4,"up",13.,22.,12,16), make_bi(5,"down",22.,17.,16,19),
+            make_bi(6,"up",17.,19.,19,22), make_bi(7,"down",19.,18.,22,25),
+            make_bi(8,"up",18.,23.,25,29),
+            make_bi(9,"down",23.,19.,29,32), make_bi(10,"up",19.,21.,32,35),
+        ];
+        let zs = vec![make_zs("bi_zs",3,12,14.,12.), make_zs("bi_zs",16,25,19.,17.)];
+        let bc = vec![make_bc("bi_beichi",29,"up","trend")];
+        let pts = detect_buy_sell(&bis, &zs, &bc);
+        let s1: Vec<_>=pts.iter().filter(|p|p.bs_type=="1sell").collect();
+        let s2: Vec<_>=pts.iter().filter(|p|p.bs_type=="2sell").collect();
+        assert!(!s1.is_empty());
+        assert!(!s2.is_empty());
+        assert!(s2[0].price < s1[0].price);
     }
 
     #[test]
     fn test_xd_buy_sell() {
-        // 测试线段级别买卖点
-        fn make_xd(id: usize, dir: &str, start: f64, end: f64, start_idx: u64, end_idx: u64) -> XianDuan {
-            XianDuan {
-                direction: dir.to_string(),
-                start_index: start_idx,
-                end_index: end_idx,
-                start_dt: format!("t{}", id),
-                end_dt: format!("t{}", id + 1),
-                start_price: start,
-                end_price: end,
-                is_finished: true,
-            }
-        }
-
         let xds = vec![
-            make_xd(0, "up", 10.0, 20.0, 0, 5),
-            make_xd(1, "down", 20.0, 12.0, 5, 10),
-            make_xd(2, "up", 12.0, 18.0, 10, 15),
-            make_xd(3, "down", 18.0, 13.0, 15, 20),
+            make_xd(0,"up",10.,15.,0,3), make_xd(1,"down",15.,12.,3,6),
+            make_xd(2,"up",12.,14.,6,9), make_xd(3,"down",14.,13.,9,12),
+            make_xd(4,"up",13.,22.,12,16), make_xd(5,"down",22.,17.,16,19),
+            make_xd(6,"up",17.,19.,19,22), make_xd(7,"down",19.,18.,22,25),
+            make_xd(8,"up",18.,23.,25,29),
         ];
+        let zd_zs = vec![make_zs("xd_zs",3,12,14.,12.), make_zs("xd_zs",16,25,19.,17.)];
+        let bc = vec![make_bc("xd_beichi",29,"up","trend")];
+        let pts = detect_xd_buy_sell(&xds, &zd_zs, &bc);
+        assert!(pts.iter().any(|p|p.bs_type=="1sell"));
+    }
 
-        let xd_beichi = vec![BeiChi {
-            bc_type: "xd_beichi".to_string(),
-            index: 20,
-            dt: "t3".to_string(),
-            direction: "down".to_string(),
-            bc_sub_type: "simple".to_string(),
-            reason: String::new(),
-        }];
+    #[test]
+    fn test_empty_zs_no_points() {
+        let bis = vec![make_bi(0,"up",10.,15.,0,3), make_bi(1,"down",15.,12.,3,6)];
+        assert!(detect_buy_sell(&bis, &[], &[]).is_empty());
+    }
 
-        let points = detect_xd_buy_sell(&xds, &[], &xd_beichi);
-        let first_buys: Vec<_> = points.iter().filter(|p| p.bs_type == "1buy").collect();
-        assert!(!first_buys.is_empty(), "线段级别应检测到一买");
+    #[test]
+    fn test_few_segments_no_points() {
+        let bis = vec![make_bi(0,"up",10.,15.,0,3)];
+        let zs = vec![make_zs("bi_zs",0,3,14.,12.)];
+        assert!(detect_buy_sell(&bis, &zs, &[]).is_empty());
+    }
+
+    #[test]
+    fn test_group_zs_indices_by_trend() {
+        let z1 = make_zs("bi_zs",0,10,14.,12.);
+        let z2 = make_zs("bi_zs",15,25,19.,17.);
+        let z3 = make_zs("bi_zs",30,40,10.,8.);
+        let zs = vec![z1, z2, z3];
+        let groups = group_zs_indices_by_trend(&zs, &[0, 1, 2]);
+        assert!(groups.len() >= 2);
+        assert_eq!(groups[0].len(), 2);
+        assert_eq!(groups[1], vec![2]);
+    }
+
+    #[test]
+    fn test_classify_trend_direction() {
+        let z1 = make_zs("bi_zs", 0, 10, 14., 12.);
+        let z2 = make_zs("bi_zs", 15, 25, 19., 17.);
+        let zs = vec![z1, z2];
+        assert_eq!(classify_trend_direction_from_indices(&zs, &[0, 1]), "up");
+
+        let z3 = make_zs("bi_zs", 0, 10, 14., 12.);
+        let z4 = make_zs("bi_zs", 15, 25, 10., 8.);
+        let zs2 = vec![z3, z4];
+        assert_eq!(classify_trend_direction_from_indices(&zs2, &[0, 1]), "down");
     }
 }

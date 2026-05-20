@@ -250,7 +250,12 @@ export interface AnalysisSettings {
     showXd: boolean;
     showBiZs: boolean;
     showXdZs: boolean;
-    showBuySell: boolean;
+    show1buy: boolean;
+    show2buy: boolean;
+    show3buy: boolean;
+    show1sell: boolean;
+    show2sell: boolean;
+    show3sell: boolean;
     showBeichi: boolean;
   };
   wyckoff: {
@@ -287,7 +292,7 @@ export const DEFAULT_SETTINGS: AnalysisSettings = {
     showXd: true,
     showBiZs: true,
     showXdZs: false,
-    showBuySell: true,
+    show1buy: true, show2buy: true, show3buy: true, show1sell: true, show2sell: true, show3sell: true,
     showBeichi: true,
   },
   wyckoff: {
@@ -325,7 +330,7 @@ export const VIEW_MODE_SETTINGS: Record<ViewMode, Omit<AnalysisSettings, "styles
   pure: {
     czsc: {
       showFenxing: false, showBi: false, showXd: false,
-      showBiZs: false, showXdZs: false, showBuySell: false, showBeichi: false,
+      showBiZs: false, showXdZs: false, show1buy: false, show2buy: false, show3buy: false, show1sell: false, show2sell: false, show3sell: false, showBeichi: false,
     },
     wyckoff: {
       showPhase: false, showTR: false, showIceLine: false, showSupplyDemand: false,
@@ -339,7 +344,7 @@ export const VIEW_MODE_SETTINGS: Record<ViewMode, Omit<AnalysisSettings, "styles
   czsc: {
     czsc: {
       showFenxing: false, showBi: true, showXd: true,
-      showBiZs: true, showXdZs: false, showBuySell: true, showBeichi: true,
+      showBiZs: true, showXdZs: false, show1buy: true, show2buy: true, show3buy: true, show1sell: true, show2sell: true, show3sell: true, showBeichi: true,
     },
     wyckoff: {
       showPhase: false, showTR: false, showIceLine: false, showSupplyDemand: false,
@@ -353,7 +358,7 @@ export const VIEW_MODE_SETTINGS: Record<ViewMode, Omit<AnalysisSettings, "styles
   wyckoff: {
     czsc: {
       showFenxing: false, showBi: false, showXd: false,
-      showBiZs: false, showXdZs: false, showBuySell: false, showBeichi: false,
+      showBiZs: false, showXdZs: false, show1buy: false, show2buy: false, show3buy: false, show1sell: false, show2sell: false, show3sell: false, showBeichi: false,
     },
     wyckoff: {
       showPhase: true, showTR: true, showIceLine: true, showSupplyDemand: true,
@@ -367,7 +372,7 @@ export const VIEW_MODE_SETTINGS: Record<ViewMode, Omit<AnalysisSettings, "styles
   fusion: {
     czsc: {
       showFenxing: false, showBi: true, showXd: true,
-      showBiZs: true, showXdZs: false, showBuySell: true, showBeichi: true,
+      showBiZs: true, showXdZs: false, show1buy: true, show2buy: true, show3buy: true, show1sell: true, show2sell: true, show3sell: true, showBeichi: true,
     },
     wyckoff: {
       showPhase: true, showTR: true, showIceLine: true, showSupplyDemand: true,
@@ -425,11 +430,11 @@ export const WYCKOFF_PHASE_COLORS: Record<string, string> = {
 
 // ===== 缠论买卖点颜色 =====
 
-export const CZSC_BS_COLORS: Record<string, { color: string; text: string }> = {
-  "1buy":  { color: "#00e676", text: "1B" },
-  "2buy":  { color: "#69f0ae", text: "2B" },
-  "3buy":  { color: "#b9f6ca", text: "3B" },
-  "1sell": { color: "#ff1744", text: "1S" },
-  "2sell": { color: "#ff5252", text: "2S" },
-  "3sell": { color: "#ff8a80", text: "3S" },
+export const CZSC_BS_COLORS: Record<string, { color: string; text: string; shape: string }> = {
+  "1buy":  { color: "#00e676", text: "1B", shape: "arrowUp" },
+  "2buy":  { color: "#69f0ae", text: "2B", shape: "circle" },
+  "3buy":  { color: "#b9f6ca", text: "3B", shape: "square" },
+  "1sell": { color: "#ff1744", text: "1S", shape: "arrowDown" },
+  "2sell": { color: "#ff5252", text: "2S", shape: "circle" },
+  "3sell": { color: "#ff8a80", text: "3S", shape: "square" },
 };

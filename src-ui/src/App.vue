@@ -257,7 +257,10 @@ async function loadData() {
 }
 
 function hasAnyCzscEnabled(): boolean {
-  return Object.values(settings.value.czsc).some(Boolean);
+  const c = settings.value.czsc;
+  return c.showFenxing || c.showBi || c.showXd || c.showBiZs || c.showXdZs
+    || c.show1buy || c.show2buy || c.show3buy || c.show1sell || c.show2sell || c.show3sell
+    || c.showBeichi;
 }
 
 // ===== 时间格式化 =====
@@ -529,22 +532,32 @@ function renderChart() {
       } catch (e) { console.error("[线段渲染异常]", e); }
     }
 
-    // 4) 买卖点
+    // 4) 买卖点（6类独立控制，不同形状标记）
     _diagnosePhase = "买卖点";
-    if (settings.value.czsc.showBuySell && czsc.buy_sell.length > 0) {
+    if (czsc.buy_sell.length > 0) {
+      const bsVisibility: Record<string, boolean> = {
+        "1buy": settings.value.czsc.show1buy,
+        "2buy": settings.value.czsc.show2buy,
+        "3buy": settings.value.czsc.show3buy,
+        "1sell": settings.value.czsc.show1sell,
+        "2sell": settings.value.czsc.show2sell,
+        "3sell": settings.value.czsc.show3sell,
+      };
       for (const bs of czsc.buy_sell) {
+        if (!bsVisibility[bs.bs_type]) continue;
         const k = data.klines[bs.index];
         if (!k) continue;
         const isBuy = bs.bs_type.includes("buy");
         const bsConf = CZSC_BS_COLORS[bs.bs_type] || {
           color: isBuy ? "#00e676" : "#ff1744",
           text: bs.bs_type,
+          shape: "circle",
         };
         allMarkers.push({
           time: toTime(k.dt),
           position: isBuy ? ("belowBar" as const) : ("aboveBar" as const),
           color: bsConf.color,
-          shape: "circle" as const,
+          shape: bsConf.shape as "circle" | "square" | "arrowUp" | "arrowDown",
           size: 2,
           text: bsConf.text,
         });
@@ -621,7 +634,12 @@ function renderChart() {
         showXd: settings.value.czsc.showXd,
         showBiZs: settings.value.czsc.showBiZs,
         showXdZs: settings.value.czsc.showXdZs,
-        showBuySell: settings.value.czsc.showBuySell,
+        show1buy: settings.value.czsc.show1buy,
+        show2buy: settings.value.czsc.show2buy,
+        show3buy: settings.value.czsc.show3buy,
+        show1sell: settings.value.czsc.show1sell,
+        show2sell: settings.value.czsc.show2sell,
+        show3sell: settings.value.czsc.show3sell,
         showBeichi: settings.value.czsc.showBeichi,
       },
     });

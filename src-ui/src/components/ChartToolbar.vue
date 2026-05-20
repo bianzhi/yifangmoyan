@@ -44,7 +44,8 @@ function selectTf(tf: TimeFrame) {
       <span v-if="settings.czsc.showXd" class="text-[#b388ff]">线段</span>
       <span v-if="settings.czsc.showBiZs" class="text-[#b388ff]/70">笔中枢</span>
       <span v-if="settings.czsc.showXdZs" class="text-[#b388ff]/50">段中枢</span>
-      <span v-if="settings.czsc.showBuySell" class="text-[#00e676]">买卖</span>
+      <span v-if="settings.czsc.show1buy || settings.czsc.show2buy || settings.czsc.show3buy" class="text-[#00e676]">买</span>
+      <span v-if="settings.czsc.show1sell || settings.czsc.show2sell || settings.czsc.show3sell" class="text-[#ff1744]">卖</span>
       <span v-if="settings.czsc.showBeichi" class="text-[#ff9800]">背驰</span>
     </div>
 

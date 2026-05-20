@@ -63,7 +63,7 @@ function resetStyles() {
       <h3 class="text-[10px] font-bold text-[#b388ff] uppercase tracking-wider mb-1.5">缠论分析</h3>
       <div class="space-y-1">
         <label
-          v-for="(label, key) in ({ showFenxing: '分型', showBi: '笔', showXd: '线段', showBiZs: '笔中枢', showXdZs: '段中枢', showBuySell: '买卖点', showBeichi: '背驰' } as const)"
+          v-for="(label, key) in ({ showFenxing: '分型', showBi: '笔', showXd: '线段', showBiZs: '笔中枢', showXdZs: '段中枢', show1buy: '一买', show2buy: '二买', show3buy: '三买', show1sell: '一卖', show2sell: '二卖', show3sell: '三卖', showBeichi: '背驰' } as const)"
           :key="key"
           class="flex items-center gap-2 cursor-pointer group"
         >

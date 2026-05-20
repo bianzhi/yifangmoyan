@@ -108,14 +108,6 @@ const bgSyncCompleted = ref(0);
 const bgSyncRetrying = ref(false);
 const bgSyncRetryRound = ref(0);
 
-// 页面状态
-type PageState = "idle" | "syncing" | "result";
-const pageState = computed<PageState>(() => {
-  if (syncing.value) return "syncing";
-  if (showSyncResult.value) return "result";
-  return "idle";
-});
-
 // 校验
 const validateSymbol = ref("");
 const validateResults = ref<ValidateStockResult[]>([]);
@@ -360,6 +352,8 @@ async function startSync() {
           syncingBoard.value = null;
           stopSyncTimer();
           showSyncResult.value = true;
+          // 5秒后自动隐藏成功提示
+          setTimeout(() => { showSyncResult.value = false; }, 5_000);
           refreshStatus();
           loadBoardOnlineInfo();
         }
@@ -646,7 +640,7 @@ onMounted(async () => {
   <div class="h-full flex flex-col bg-[#1a1a2e]">
 
     <!-- 后台同步横幅 -->
-    <div v-if="bgSyncRunning && pageState !== 'syncing'" class="shrink-0 px-4 py-2 bg-[#e94560]/10 border-b border-[#e94560]/20 flex items-center justify-between">
+    <div v-if="bgSyncRunning && !syncing" class="shrink-0 px-4 py-2 bg-[#e94560]/10 border-b border-[#e94560]/20 flex items-center justify-between">
       <div class="flex items-center gap-2">
         <div class="w-2 h-2 rounded-full animate-pulse" :class="bgSyncRetrying ? 'bg-[#ff9800]' : 'bg-[#e94560]'"></div>
         <span class="text-xs" :class="bgSyncRetrying ? 'text-[#ff9800]' : 'text-[#e94560]'">
@@ -660,139 +654,63 @@ onMounted(async () => {
     </div>
 
     <!-- ═══════════════════════════════════════════════════════════
-         同步中：全屏进度（最核心的体验）
+         同步中：顶部紧凑进度条（不遮挡已有数据）
          ═══════════════════════════════════════════════════════════ -->
-    <div v-if="pageState === 'syncing'" class="flex-1 flex flex-col">
-      <!-- 顶栏 -->
-      <div class="shrink-0 px-6 py-4 flex items-center justify-between">
-        <div class="flex items-center gap-3">
+    <div v-if="syncing" class="shrink-0 bg-[#16213e] border-b border-[#e94560]/20">
+      <!-- 第一行：状态 + 百分比 + 取消 -->
+      <div class="px-4 py-2 flex items-center justify-between">
+        <div class="flex items-center gap-2">
           <div class="w-2 h-2 rounded-full animate-pulse" :class="syncRetrying ? 'bg-[#ff9800]' : 'bg-[#e94560]'"></div>
-          <span class="text-sm font-bold text-white">{{ syncRetrying ? `重试中 第${syncRetryRound}轮` : `正在同步${selectedBoardLabel()}` }}</span>
+          <span class="text-xs font-bold" :class="syncRetrying ? 'text-[#ff9800]' : 'text-[#e94560]'">
+            {{ syncRetrying ? `重试中 第${syncRetryRound}轮` : `正在同步${selectedBoardLabel()}` }}
+          </span>
+          <span class="text-lg font-black text-white tabular-nums">{{ syncPercent }}%</span>
         </div>
-        <span class="text-xs text-[#9e9e9e]">{{ syncElapsed }}<span v-if="syncETA" class="text-[#ff9800]"> · 约{{ syncETA }}</span></span>
-      </div>
-
-      <!-- 进度环 -->
-      <div class="flex-1 flex items-center justify-center">
-        <div class="relative w-52 h-52">
-          <svg class="w-52 h-52 -rotate-90" viewBox="0 0 208 208">
-            <circle cx="104" cy="104" r="92" fill="none" stroke="#0f3460" stroke-width="10"/>
-            <circle cx="104" cy="104" r="92" fill="none"
-              :stroke="progressColor(syncPercent)" stroke-width="10"
-              stroke-linecap="round"
-              :stroke-dasharray="`${syncPercent * 5.78} 578`"
-              class="transition-all duration-300"/>
-          </svg>
-          <div class="absolute inset-0 flex flex-col items-center justify-center">
-            <span class="text-5xl font-black text-white tabular-nums">{{ syncPercent }}</span>
-            <span class="text-sm text-[#9e9e9e] -mt-1">%</span>
-            <span class="text-[11px] text-[#666] mt-2 font-mono tabular-nums">{{ syncCompleted }} / {{ syncTotal }}</span>
-          </div>
+        <div class="flex items-center gap-3">
+          <span class="text-[10px] text-[#9e9e9e]">{{ syncElapsed }}<span v-if="syncETA" class="text-[#ff9800]"> · 约{{ syncETA }}</span></span>
+          <span class="text-[10px] text-[#666] font-mono tabular-nums">{{ syncCompleted }}/{{ syncTotal }}</span>
+          <button @click="cancelSync" class="text-[10px] px-2 py-0.5 rounded border border-[#e94560]/40 text-[#e94560] hover:bg-[#e94560]/20 transition">取消</button>
         </div>
       </div>
-
-      <!-- 统计 + 板块 -->
-      <div class="shrink-0 px-6 pb-6 space-y-4">
-        <div class="grid grid-cols-3 gap-3 text-center">
-          <div class="bg-[#16213e] rounded-xl p-3">
-            <div class="text-2xl font-bold text-[#26a69a] tabular-nums">{{ syncCompleted - syncFailedDetails.length }}</div>
-            <div class="text-[10px] text-[#9e9e9e] mt-0.5">成功</div>
-          </div>
-          <div class="bg-[#16213e] rounded-xl p-3">
-            <div class="text-2xl font-bold tabular-nums" :class="syncFailedDetails.length > 0 ? 'text-[#ff5722]' : 'text-[#555]'">
-              {{ syncFailedDetails.length }}
-            </div>
-            <div class="text-[10px] text-[#9e9e9e] mt-0.5">失败</div>
-          </div>
-          <div class="bg-[#16213e] rounded-xl p-3">
-            <div class="text-2xl font-bold text-white tabular-nums">{{ syncTotal - syncCompleted }}</div>
-            <div class="text-[10px] text-[#9e9e9e] mt-0.5">剩余</div>
-          </div>
+      <!-- 第二行：进度条 -->
+      <div class="px-4 pb-2">
+        <div class="w-full h-1.5 bg-[#0f3460] rounded-full overflow-hidden">
+          <div class="h-full rounded-full transition-all duration-300"
+            :style="{ width: `${syncPercent}%`, backgroundColor: progressColor(syncPercent) }"></div>
         </div>
-
-        <!-- 当前正在同步的股票 -->
-        <div v-if="currentSymbols.length > 0" class="text-[10px] text-[#9e9e9e] flex items-center gap-1.5 flex-wrap">
-          <span class="text-[#26a69a]">同步中:</span>
-          <span v-for="sym in currentSymbols.slice(0, 6)" :key="sym" class="bg-[#0f3460] px-1.5 py-0.5 rounded text-white font-mono">{{ sym }}</span>
-          <span v-if="currentSymbols.length > 6" class="text-[#666]">+{{ currentSymbols.length - 6 }}</span>
+      </div>
+      <!-- 第三行：成功/失败/剩余 + 当前同步符号 -->
+      <div class="px-4 pb-2 flex items-center justify-between text-[10px]">
+        <div class="flex items-center gap-3">
+          <span class="text-[#26a69a]">{{ syncCompleted - syncFailedDetails.length }} 成功</span>
+          <span :class="syncFailedDetails.length > 0 ? 'text-[#ff5722]' : 'text-[#555]'">{{ syncFailedDetails.length }} 失败</span>
+          <span class="text-[#666]">{{ syncTotal - syncCompleted }} 剩余</span>
         </div>
-
-        <!-- 各板块进度 -->
-        <div class="space-y-1.5">
-          <div v-for="bd in BOARDS" :key="bd.id" class="flex items-center gap-2 text-[10px]">
-            <span class="w-2.5 h-2.5 rounded-sm shrink-0" :style="{ backgroundColor: bd.color }"></span>
-            <span class="w-12 text-[#9e9e9e]">{{ bd.name }}</span>
-            <div class="flex-1 h-1 bg-[#0f3460] rounded-full overflow-hidden">
-              <div class="h-full rounded-full transition-all duration-500"
-                :style="{ width: `${boardPercent(bd.id)}%`, backgroundColor: bd.color }"></div>
-            </div>
-            <span class="w-16 text-right text-[#666] font-mono">{{ boardLocalCount(bd.id) }}/{{ boardOnlineTotal(bd.id) ?? '—' }}</span>
-          </div>
+        <div v-if="currentSymbols.length > 0" class="flex items-center gap-1 overflow-hidden">
+          <span v-for="sym in currentSymbols.slice(0, 5)" :key="sym" class="bg-[#0f3460] px-1 py-0.5 rounded text-white font-mono whitespace-nowrap">{{ sym }}</span>
+          <span v-if="currentSymbols.length > 5" class="text-[#666]">+{{ currentSymbols.length - 5 }}</span>
         </div>
-
-        <button @click="cancelSync"
-          class="w-full py-2.5 text-xs rounded-xl border border-[#e94560]/30 text-[#e94560] hover:bg-[#e94560]/10 transition">
-          取消同步
-        </button>
       </div>
     </div>
 
     <!-- ═══════════════════════════════════════════════════════════
-         同步完成
+         同步完成：短暂成功提示（3秒后自动消失）
          ═══════════════════════════════════════════════════════════ -->
-    <div v-else-if="pageState === 'result'" class="flex-1 flex flex-col items-center justify-center px-8">
-      <div class="w-full max-w-sm space-y-6 text-center">
-        <!-- 成功图标 -->
-        <div class="w-20 h-20 mx-auto rounded-full flex items-center justify-center"
-          :class="lastSyncFailed > 0 ? 'bg-[#ff9800]/20' : 'bg-[#26a69a]/20'">
-          <svg v-if="lastSyncFailed === 0" class="w-10 h-10 text-[#26a69a]" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/>
-          </svg>
-          <svg v-else class="w-10 h-10 text-[#ff9800]" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L3.232 16.5c-.77.833.192 2.5 1.732 2.5z"/>
-          </svg>
-        </div>
-
-        <div>
-          <div class="text-xl font-bold text-white">{{ lastSyncFailed === 0 ? '同步完成' : '同步完成（有失败）' }}</div>
-          <div class="text-sm text-[#9e9e9e] mt-1">耗时 {{ lastSyncElapsed }}</div>
-        </div>
-
-        <div class="grid grid-cols-2 gap-3">
-          <div class="bg-[#16213e] rounded-xl p-3 text-center">
-            <div class="text-2xl font-bold text-[#26a69a]">{{ lastSyncSuccess }}</div>
-            <div class="text-[10px] text-[#9e9e9e]">成功</div>
-          </div>
-          <div class="bg-[#16213e] rounded-xl p-3 text-center">
-            <div class="text-2xl font-bold" :class="lastSyncFailed > 0 ? 'text-[#ff5722]' : 'text-[#555]'">{{ lastSyncFailed }}</div>
-            <div class="text-[10px] text-[#9e9e9e]">失败</div>
-          </div>
-        </div>
-
-        <!-- 当前覆盖率 -->
-        <div class="bg-[#16213e] rounded-xl p-4">
-          <div class="flex items-center justify-between mb-2">
-            <span class="text-[11px] text-[#9e9e9e]">A 股覆盖率</span>
-            <span class="text-xl font-black" :style="{ color: progressColor(allASyncPercent) }">{{ allASyncPercent }}%</span>
-          </div>
-          <div class="w-full h-2 bg-[#0f3460] rounded-full overflow-hidden">
-            <div class="h-full rounded-full transition-all duration-700"
-              :style="{ width: `${allASyncPercent}%`, backgroundColor: progressColor(allASyncPercent) }"></div>
-          </div>
-          <div class="text-[10px] text-[#666] mt-1.5 text-center">{{ allALocalCount }} / {{ allAOnlineTotal ?? '—' }} 只</div>
-        </div>
-
-        <button @click="showSyncResult = false"
-          class="w-full py-3 rounded-xl text-sm font-bold bg-gradient-to-r from-[#e94560] to-[#9c27b0] text-white hover:brightness-110 transition shadow-lg shadow-[#e94560]/15">
-          返回
-        </button>
+    <div v-if="showSyncResult" class="shrink-0 px-4 py-2 bg-[#26a69a]/10 border-b border-[#26a69a]/20 flex items-center justify-between">
+      <div class="flex items-center gap-2">
+        <svg class="w-4 h-4 text-[#26a69a]" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/>
+        </svg>
+        <span class="text-xs text-[#26a69a] font-bold">同步完成</span>
+        <span class="text-[10px] text-[#9e9e9e]">成功 {{ lastSyncSuccess }}，失败 {{ lastSyncFailed }}，耗时 {{ lastSyncElapsed }}</span>
       </div>
+      <button @click="showSyncResult = false" class="text-[10px] text-[#666] hover:text-white transition">✕</button>
     </div>
 
     <!-- ═══════════════════════════════════════════════════════════
-         空闲状态：主操作区
-         ═══════════════════════════════════════════════════════════ -->
-    <div v-else class="flex-1 overflow-y-auto">
+         主操作区（始终显示，同步中禁用按钮）
+         ═════════════════════════════════════════════════════════ -->
+    <div class="flex-1 overflow-y-auto">
       <div class="max-w-xl mx-auto px-5 py-5 space-y-4">
 
         <!-- ──── 覆盖率顶栏 ──── -->
@@ -910,11 +828,11 @@ onMounted(async () => {
           </div>
 
           <!-- 主按钮 -->
-          <button @click="startSync" :disabled="selectedLevels.length === 0"
+          <button @click="startSync" :disabled="syncing || selectedLevels.length === 0"
             class="w-full py-3.5 rounded-xl text-sm font-bold transition-all disabled:opacity-30
               bg-gradient-to-r from-[#e94560] to-[#9c27b0] text-white
               hover:brightness-110 active:scale-[0.98] shadow-lg shadow-[#e94560]/20">
-            开始同步
+            {{ syncing ? '同步中...' : '开始同步' }}
           </button>
 
           <!-- 清空确认（全局） -->

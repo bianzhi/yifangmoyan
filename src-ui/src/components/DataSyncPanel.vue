@@ -70,6 +70,7 @@ const syncingBoard = ref<string | null>(null);
 const syncTotal = ref(0);
 const syncCompleted = ref(0);
 const syncFailedDetails = ref<{ symbol: string; level: string; msg: string }[]>([]);
+const currentSymbols = ref<string[]>([]);
 const syncStartTime = ref(0);
 const syncElapsed = ref("");
 let syncTimer: ReturnType<typeof setInterval> | null = null;
@@ -304,6 +305,7 @@ async function startSync() {
   syncTotal.value = 0;
   syncCompleted.value = 0;
   syncFailedDetails.value = [];
+  currentSymbols.value = [];
   syncElapsed.value = "0秒";
   showSyncResult.value = false;
   startSyncTimer();
@@ -331,10 +333,12 @@ async function startSync() {
           retrying: boolean;
           retry_round: number;
           cancelled: boolean;
+          current_symbols: string[];
         }>("get_sync_status");
 
         syncTotal.value = status.total;
         syncCompleted.value = status.completed;
+        currentSymbols.value = status.current_symbols ?? [];
         syncFailedDetails.value = status.failures.map(f => ({
           symbol: f[0],
           level: f[1],
@@ -356,7 +360,7 @@ async function startSync() {
       } catch {
         // 轮询失败不中断
       }
-    }, 60_000);
+    }, 2_000);
   } catch (e: any) {
     error.value = `启动同步失败: ${e}`;
     syncing.value = false;
@@ -583,6 +587,7 @@ onMounted(async () => {
       retrying: boolean;
       retry_round: number;
       cancelled: boolean;
+      current_symbols: string[];
     }>("get_sync_status");
 
     if (status.running) {
@@ -605,6 +610,7 @@ onMounted(async () => {
             retrying: boolean;
             retry_round: number;
             cancelled: boolean;
+            current_symbols: string[];
           }>("get_sync_status");
 
           bgSyncTotal.value = s.total;
@@ -620,7 +626,7 @@ onMounted(async () => {
         } catch {
           // 轮询失败不中断
         }
-      }, 60_000);
+      }, 2_000);
     }
   } catch {
     // 获取状态失败不影响页面
@@ -667,9 +673,9 @@ onMounted(async () => {
               class="transition-all duration-300"/>
           </svg>
           <div class="absolute inset-0 flex flex-col items-center justify-center">
-            <span class="text-5xl font-black text-white">{{ syncPercent }}</span>
+            <span class="text-5xl font-black text-white tabular-nums">{{ syncPercent }}</span>
             <span class="text-sm text-[#9e9e9e] -mt-1">%</span>
-            <span class="text-[11px] text-[#666] mt-2 font-mono">{{ syncCompleted }} / {{ syncTotal }}</span>
+            <span class="text-[11px] text-[#666] mt-2 font-mono tabular-nums">{{ syncCompleted }} / {{ syncTotal }}</span>
           </div>
         </div>
       </div>
@@ -678,19 +684,26 @@ onMounted(async () => {
       <div class="shrink-0 px-6 pb-6 space-y-4">
         <div class="grid grid-cols-3 gap-3 text-center">
           <div class="bg-[#16213e] rounded-xl p-3">
-            <div class="text-2xl font-bold text-[#26a69a]">{{ syncCompleted - syncFailedDetails.length }}</div>
+            <div class="text-2xl font-bold text-[#26a69a] tabular-nums">{{ syncCompleted - syncFailedDetails.length }}</div>
             <div class="text-[10px] text-[#9e9e9e] mt-0.5">成功</div>
           </div>
           <div class="bg-[#16213e] rounded-xl p-3">
-            <div class="text-2xl font-bold" :class="syncFailedDetails.length > 0 ? 'text-[#ff5722]' : 'text-[#555]'">
+            <div class="text-2xl font-bold tabular-nums" :class="syncFailedDetails.length > 0 ? 'text-[#ff5722]' : 'text-[#555]'">
               {{ syncFailedDetails.length }}
             </div>
             <div class="text-[10px] text-[#9e9e9e] mt-0.5">失败</div>
           </div>
           <div class="bg-[#16213e] rounded-xl p-3">
-            <div class="text-2xl font-bold text-white">{{ syncTotal - syncCompleted }}</div>
+            <div class="text-2xl font-bold text-white tabular-nums">{{ syncTotal - syncCompleted }}</div>
             <div class="text-[10px] text-[#9e9e9e] mt-0.5">剩余</div>
           </div>
+        </div>
+
+        <!-- 当前正在同步的股票 -->
+        <div v-if="currentSymbols.length > 0" class="text-[10px] text-[#9e9e9e] flex items-center gap-1.5 flex-wrap">
+          <span class="text-[#26a69a]">同步中:</span>
+          <span v-for="sym in currentSymbols.slice(0, 6)" :key="sym" class="bg-[#0f3460] px-1.5 py-0.5 rounded text-white font-mono">{{ sym }}</span>
+          <span v-if="currentSymbols.length > 6" class="text-[#666]">+{{ currentSymbols.length - 6 }}</span>
         </div>
 
         <!-- 各板块进度 -->

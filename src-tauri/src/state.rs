@@ -26,6 +26,8 @@ pub struct SyncProgress {
     pub retry_round: usize,
     /// 是否已被用户取消
     pub cancelled: bool,
+    /// 当前正在同步的股票代码（多线程时为最后一批）
+    pub current_symbols: Vec<String>,
 }
 
 impl Default for SyncProgress {
@@ -41,6 +43,7 @@ impl Default for SyncProgress {
             retrying: false,
             retry_round: 0,
             cancelled: false,
+            current_symbols: Vec::new(),
         }
     }
 }

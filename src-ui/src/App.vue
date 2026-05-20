@@ -14,7 +14,7 @@ import {
   type ISeriesPrimitivePaneRenderer,
   type SeriesAttachedParameter,
 } from "lightweight-charts";
-import { getChartData, searchStocks, getAllStockCodes, getSubLevelData, autoSyncOnStartup, getSyncStatus, cancelSync } from "./composables/useApi";
+import { getChartData, searchStocks, getAllStockCodes, getSubLevelData, cancelSync } from "./composables/useApi";
 import type { SyncProgress } from "./composables/useApi";
 import {
   type ChartData,
@@ -118,8 +118,6 @@ const showSearch = ref(false);
 // ===== 后台同步状态 =====
 const bgSyncProgress = ref<SyncProgress | null>(null);
 let bgSyncTimer: ReturnType<typeof setInterval> | null = null;
-const bgSyncElapsed = ref(0);
-let bgSyncStartTs = 0;
 
 // ===== 自选股 & 持久化 =====
 const { addToWatchlist, isInWatchlist } = useWatchlist();
@@ -736,10 +734,10 @@ function renderChart() {
       }
     }
 
-    // 查找威科夫事件
+    // 查找威科夫事件（同一K线可能有多个事件）
     if (data.wyckoff) {
-      const evt = data.wyckoff.events.find((e) => e.index === idx);
-      if (evt) {
+      const evts = data.wyckoff.events.filter((e) => e.index === idx);
+      for (const evt of evts) {
         items.push({ type: "wyckoff", data: evt });
       }
       // 供需线：当光标所在K线在某条供需线范围内时显示
@@ -1103,27 +1101,6 @@ function selectStock(sym: string, name?: string) {
 }
 
 // ===== 后台同步轮询 =====
-function startBgSyncPolling() {
-  if (bgSyncTimer) return;
-  bgSyncStartTs = Date.now();
-  bgSyncTimer = setInterval(async () => {
-    try {
-      const status = await getSyncStatus();
-      bgSyncProgress.value = status;
-      bgSyncElapsed.value = Math.floor((Date.now() - bgSyncStartTs) / 1000);
-      // 同步完成后停止轮询
-      if (!status.running) {
-        if (bgSyncTimer) {
-          clearInterval(bgSyncTimer);
-          bgSyncTimer = null;
-        }
-      }
-    } catch {
-      // 轮询失败不影响主流程
-    }
-  }, 60_000);
-}
-
 async function stopBgSyncFromChart() {
   try {
     await cancelSync();
@@ -1132,7 +1109,7 @@ async function stopBgSyncFromChart() {
     clearInterval(bgSyncTimer);
     bgSyncTimer = null;
   }
-  bgSyncProgress.value = { running: false, board: "", levels: [], total: 0, completed: 0, success: 0, failures: [], retrying: false, retry_round: 0, cancelled: false };
+  bgSyncProgress.value = { running: false, board: "", levels: [], total: 0, completed: 0, success: 0, failures: [], retrying: false, retry_round: 0, cancelled: false, current_symbols: [] };
 }
 
 // ===== 事件处理 =====
@@ -1297,14 +1274,13 @@ onMounted(async () => {
 
   nextTick(() => loadData());
 
-  // 启动后台自动增量同步（非阻塞，失败自动重试直到0失败）
-  try {
-    await autoSyncOnStartup(["d"]);
-    // 开始轮询同步状态
-    startBgSyncPolling();
-  } catch {
-    // 自动同步启动失败不影响主流程
-  }
+  // 自动同步已禁用 —— 用户可在数据同步面板手动启动
+  // try {
+  //   await autoSyncOnStartup(["d"]);
+  //   startBgSyncPolling();
+  // } catch {
+  //   // 自动同步启动失败不影响主流程
+  // }
 
   // autoSize: true 会自动追踪容器大小，无需手动 ResizeObserver
   // 仅在 autoSize 不生效时作为兜底
@@ -1460,7 +1436,7 @@ watch(currentView, (val) => {
         <template v-if="crosshairKline">
           <!-- 威科夫事件 -->
           <template v-if="chartData?.wyckoff?.events">
-            <template v-for="evt in chartData.wyckoff.events.filter(e => e.index === crosshairKline!.id)" :key="evt.index + evt.event_type">
+            <template v-for="(evt, ei) in chartData.wyckoff.events.filter(e => e.index === crosshairKline!.id)" :key="evt.index + '-' + evt.event_type + '-' + ei">
               <span class="text-xs font-semibold" :style="{ color: WYCKOFF_EVENT_COLORS[evt.event_type] || '#fff' }">
                 {{ evt.event_type }}
               </span>
@@ -1614,7 +1590,7 @@ watch(currentView, (val) => {
                 <div class="font-bold" :style="{ color: WYCKOFF_EVENT_COLORS[item.data.event_type] || '#fff' }">
                   {{ item.data.event_type }}
                 </div>
-                <div>{{ item.data.description }}</div>
+                <div>{{ WYCKOFF_EVENT_DESC[item.data.event_type] || item.data.description || '' }}</div>
                 <div v-if="item.data.reason" class="text-[#ccc] mt-0.5 leading-snug">{{ item.data.reason }}</div>
               </template>
               <!-- 供需线 -->

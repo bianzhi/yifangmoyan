@@ -193,7 +193,7 @@ pub fn sync_stock(
         return Err("未指定有效的 K 线级别".into());
     }
 
-    let start = start_date.unwrap_or_else(|| "2023-01-01".into());
+    let start = start_date.unwrap_or_else(|| "2024-01-01".into());
 
     Ok(yifang_data::sync_stock(&data_dir, &symbol, &tf_list, &start, force))
 }
@@ -221,7 +221,7 @@ pub fn sync_stocks_batch(
         return Err("未指定有效的 K 线级别".into());
     }
 
-    let start = start_date.unwrap_or_else(|| "2023-01-01".into());
+    let start = start_date.unwrap_or_else(|| "2024-01-01".into());
 
     let results: Vec<SyncStockResult> = symbols
         .iter()
@@ -416,7 +416,7 @@ pub fn start_sync_board(
         let manager = state.manager.read().map_err(|e| e.to_string())?;
         manager.data_dir().to_path_buf()
     };
-    let start = start_date.unwrap_or_else(|| "2023-01-01".into());
+    let start = start_date.unwrap_or_else(|| "2024-01-01".into());
 
     // 获取股票列表
     let codes = yifang_data::fetch_board_stock_codes(&board)
@@ -440,117 +440,15 @@ pub fn start_sync_board(
             retrying: false,
             retry_round: 0,
             cancelled: false,
+            current_symbols: Vec::new(),
         };
     }
 
-    // 在后台线程中执行同步
+    // 在后台线程中执行并行同步（4 线程）
     let progress_state = state.sync_progress.clone();
     std::thread::spawn(move || {
-        let board_label = board.clone();
-        let tf_list = tfs;
-
-        // ── 第一轮：全量同步 ──
-        for (i, symbol) in codes.iter().enumerate() {
-            // 检查是否被取消
-            {
-                let p = progress_state.lock().unwrap();
-                if p.cancelled {
-                    let mut p = progress_state.lock().unwrap();
-                    p.running = false;
-                    return;
-                }
-            }
-
-            let result = yifang_data::sync_stock(&data_dir, symbol, &tf_list, &start, force);
-
-            // 更新进度
-            {
-                let mut p = progress_state.lock().unwrap();
-                p.completed = i + 1;
-                let mut has_failure = false;
-                for lv in &result.levels {
-                    if lv.status != "ok" && lv.status != "skip" {
-                        has_failure = true;
-                        p.failures.push((result.symbol.clone(), lv.level.clone(), lv.msg.clone()));
-                    }
-                }
-                if !has_failure {
-                    p.success += 1;
-                }
-            }
-        }
-
-        // ── 自动重试失败项 ──
-        let max_retry_rounds = 5u32;
-        for round in 1..=max_retry_rounds {
-            let failed_symbols: Vec<String> = {
-                let p = progress_state.lock().unwrap();
-                p.failures.iter().map(|(sym, _lv, _msg): &(String, String, String)| sym.clone()).collect()
-            };
-            // 去重
-            let mut unique: Vec<String> = failed_symbols.into_iter().collect::<std::collections::HashSet<_>>().into_iter().collect();
-            unique.sort();
-
-            if unique.is_empty() {
-                break;
-            }
-
-            {
-                let mut p = progress_state.lock().unwrap();
-                if p.cancelled {
-                    p.running = false;
-                    return;
-                }
-                p.retrying = true;
-                p.retry_round = round as usize;
-                // 重置进度：total = 失败数, completed = 0
-                p.total = unique.len();
-                p.completed = 0;
-                p.success = 0;
-                p.failures.clear();
-            }
-
-            eprintln!("[后台同步] 第 {} 轮重试: {} 只股票", round, unique.len());
-
-            for (i, symbol) in unique.iter().enumerate() {
-                {
-                    let p = progress_state.lock().unwrap();
-                    if p.cancelled {
-                        let mut p = progress_state.lock().unwrap();
-                        p.running = false;
-                        return;
-                    }
-                }
-
-                let result = yifang_data::sync_stock(&data_dir, symbol, &tf_list, &start, true);
-
-                {
-                    let mut p = progress_state.lock().unwrap();
-                    p.completed = i + 1;
-                    let mut has_failure = false;
-                    for lv in &result.levels {
-                        if lv.status != "ok" && lv.status != "skip" {
-                            has_failure = true;
-                            p.failures.push((result.symbol.clone(), lv.level.clone(), lv.msg.clone()));
-                        }
-                    }
-                    if !has_failure {
-                        p.success += 1;
-                    }
-                }
-
-                // 重试间隔长一些，避免被封
-                std::thread::sleep(std::time::Duration::from_millis(200));
-            }
-        }
-
-        {
-            let mut p = progress_state.lock().unwrap();
-            p.retrying = false;
-            p.running = false;
-        }
-
-        eprintln!("[后台同步] 板块 {} 同步完成", board_label);
+        run_sync_parallel(&progress_state, &data_dir, &codes, &tfs, &start, force, 4);
+        eprintln!("[后台同步] 板块 {} 同步完成", board);
     });
 
     Ok(())
@@ -587,7 +485,7 @@ pub fn auto_sync_on_startup(
         let manager = state.manager.read().map_err(|e| e.to_string())?;
         manager.data_dir().to_path_buf()
     };
-    let start = "2023-01-01".to_string();
+    let start = "2024-01-01".to_string();
 
     // 获取所有已有股票代码（增量同步：只为本地已有数据的股票更新）
     let local_codes: Vec<String> = {
@@ -604,7 +502,7 @@ pub fn auto_sync_on_startup(
             return Ok(());
         }
 
-        // 初始化进度
+        // 初始化进度（引导数据）
         {
             let mut progress = state.sync_progress.lock().map_err(|e| e.to_string())?;
             *progress = SyncProgress {
@@ -618,6 +516,7 @@ pub fn auto_sync_on_startup(
                 retrying: false,
                 retry_round: 0,
                 cancelled: false,
+                current_symbols: Vec::new(),
             };
         }
 
@@ -625,7 +524,7 @@ pub fn auto_sync_on_startup(
         let tf_list = tfs.clone();
         let force = false;
         std::thread::spawn(move || {
-            run_sync_with_retry(&progress_state, &data_dir, &initial, &tf_list, &start, force);
+            run_sync_parallel(&progress_state, &data_dir, &initial, &tf_list, &start, force, 4);
             eprintln!("[启动同步] 引导数据同步完成");
         });
         return Ok(());
@@ -646,6 +545,7 @@ pub fn auto_sync_on_startup(
             retrying: false,
             retry_round: 0,
             cancelled: false,
+            current_symbols: Vec::new(),
         };
     }
 
@@ -653,53 +553,101 @@ pub fn auto_sync_on_startup(
     let tf_list = tfs;
     let force = false;
     std::thread::spawn(move || {
-        run_sync_with_retry(&progress_state, &data_dir, &local_codes, &tf_list, &start, force);
+        run_sync_parallel(&progress_state, &data_dir, &local_codes, &tf_list, &start, force, 4);
         eprintln!("[启动同步] 增量同步完成");
-
-        // 同步完成后重新加载 manager 的本地索引
-        // （数据文件可能已更新）
     });
 
     Ok(())
 }
 
-/// 内部函数：执行同步并自动重试失败项
-fn run_sync_with_retry(
+/// 内部函数：并行执行同步并自动重试失败项
+/// concurrency: 并发线程数
+fn run_sync_parallel(
     progress_state: &std::sync::Arc<std::sync::Mutex<SyncProgress>>,
     data_dir: &std::path::Path,
     codes: &[String],
     tf_list: &[TimeFrame],
     start: &str,
     force: bool,
+    concurrency: usize,
 ) {
-    let force = force;
+    let codes_vec: Vec<String> = codes.to_vec();
+    let total = codes_vec.len();
+    let idx_lock = std::sync::Arc::new(std::sync::Mutex::new(0usize));
+    let mut handles = Vec::new();
 
-    // ── 第一轮：全量同步 ──
-    for (i, symbol) in codes.iter().enumerate() {
-        {
-            let p = progress_state.lock().unwrap();
-            if p.cancelled {
-                let mut p = progress_state.lock().unwrap();
-                p.running = false;
-                return;
-            }
-        }
+    // ── 第一轮：全量并行同步 ──
+    for _ in 0..concurrency {
+        let idx_lock = idx_lock.clone();
+        let codes_ref = codes_vec.clone();
+        let progress_state = progress_state.clone();
+        let data_dir = data_dir.to_path_buf();
+        let tf_list = tf_list.to_vec();
+        let start = start.to_string();
 
-        let result = yifang_data::sync_stock(data_dir, symbol, tf_list, start, force);
+        let handle = std::thread::spawn(move || {
+            loop {
+                // 检查取消
+                {
+                    let p = progress_state.lock().unwrap();
+                    if p.cancelled {
+                        return;
+                    }
+                }
 
-        {
-            let mut p = progress_state.lock().unwrap();
-            p.completed = i + 1;
-            let mut has_failure = false;
-            for lv in &result.levels {
-                if lv.status != "ok" && lv.status != "skip" {
-                    has_failure = true;
-                    p.failures.push((result.symbol.clone(), lv.level.clone(), lv.msg.clone()));
+                // 取下一个任务
+                let i = {
+                    let mut idx = idx_lock.lock().unwrap();
+                    let current = *idx;
+                    *idx += 1;
+                    current
+                };
+
+                if i >= total {
+                    return;
+                }
+
+                let symbol = &codes_ref[i];
+
+                // 更新当前正在同步的股票
+                {
+                    let mut p = progress_state.lock().unwrap();
+                    p.current_symbols.push(symbol.clone());
+                }
+
+                let result = yifang_data::sync_stock(&data_dir, symbol, &tf_list, &start, force);
+
+                // 更新进度
+                {
+                    let mut p = progress_state.lock().unwrap();
+                    p.current_symbols.retain(|s| s != symbol);
+                    p.completed += 1;
+                    let mut has_failure = false;
+                    for lv in &result.levels {
+                        if lv.status != "ok" && lv.status != "skip" {
+                            has_failure = true;
+                            p.failures.push((result.symbol.clone(), lv.level.clone(), lv.msg.clone()));
+                        }
+                    }
+                    if !has_failure {
+                        p.success += 1;
+                    }
                 }
             }
-            if !has_failure {
-                p.success += 1;
-            }
+        });
+        handles.push(handle);
+    }
+
+    for h in handles {
+        let _ = h.join();
+    }
+
+    {
+        let p = progress_state.lock().unwrap();
+        if p.cancelled {
+            let mut p = progress_state.lock().unwrap();
+            p.running = false;
+            return;
         }
     }
 
@@ -714,7 +662,6 @@ fn run_sync_with_retry(
         unique.sort();
 
         if unique.is_empty() {
-            eprintln!("[自动重试] 第 {} 轮：0 失败，重试结束", round);
             break;
         }
 
@@ -734,34 +681,77 @@ fn run_sync_with_retry(
 
         eprintln!("[自动重试] 第 {} 轮：{} 只股票需重试", round, unique.len());
 
-        for (i, symbol) in unique.iter().enumerate() {
-            {
-                let p = progress_state.lock().unwrap();
-                if p.cancelled {
-                    let mut p = progress_state.lock().unwrap();
-                    p.running = false;
-                    return;
-                }
-            }
+        // 并行重试（2线程）
+        let retry_concurrency = 2usize.min(unique.len());
+        let retry_total = unique.len();
+        let retry_idx = std::sync::Arc::new(std::sync::Mutex::new(0usize));
+        let mut retry_handles = Vec::new();
 
-            let result = yifang_data::sync_stock(data_dir, symbol, tf_list, start, true);
+        for _ in 0..retry_concurrency {
+            let retry_idx = retry_idx.clone();
+            let unique_ref = unique.clone();
+            let progress_state = progress_state.clone();
+            let data_dir = data_dir.to_path_buf();
+            let tf_list = tf_list.to_vec();
+            let start = start.to_string();
 
-            {
-                let mut p = progress_state.lock().unwrap();
-                p.completed = i + 1;
-                let mut has_failure = false;
-                for lv in &result.levels {
-                    if lv.status != "ok" && lv.status != "skip" {
-                        has_failure = true;
-                        p.failures.push((result.symbol.clone(), lv.level.clone(), lv.msg.clone()));
+            let handle = std::thread::spawn(move || {
+                loop {
+                    {
+                        let p = progress_state.lock().unwrap();
+                        if p.cancelled {
+                            return;
+                        }
                     }
-                }
-                if !has_failure {
-                    p.success += 1;
-                }
-            }
 
-            std::thread::sleep(std::time::Duration::from_millis(200));
+                    let i = {
+                        let mut idx = retry_idx.lock().unwrap();
+                        let current = *idx;
+                        *idx += 1;
+                        current
+                    };
+
+                    if i >= retry_total {
+                        return;
+                    }
+
+                    let symbol = &unique_ref[i];
+
+                    let result = yifang_data::sync_stock(&data_dir, symbol, &tf_list, &start, true);
+
+                    {
+                        let mut p = progress_state.lock().unwrap();
+                        p.completed += 1;
+                        let mut has_failure = false;
+                        for lv in &result.levels {
+                            if lv.status != "ok" && lv.status != "skip" {
+                                has_failure = true;
+                                p.failures.push((result.symbol.clone(), lv.level.clone(), lv.msg.clone()));
+                            }
+                        }
+                        if !has_failure {
+                            p.success += 1;
+                        }
+                    }
+
+                    // 重试间隔长一些，避免被封
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                }
+            });
+            retry_handles.push(handle);
+        }
+
+        for h in retry_handles {
+            let _ = h.join();
+        }
+
+        {
+            let p = progress_state.lock().unwrap();
+            if p.cancelled {
+                let mut p = progress_state.lock().unwrap();
+                p.running = false;
+                return;
+            }
         }
     }
 

@@ -430,11 +430,11 @@ export const WYCKOFF_PHASE_COLORS: Record<string, string> = {
 
 // ===== 缠论买卖点颜色 =====
 
-export const CZSC_BS_COLORS: Record<string, { color: string; text: string; shape: string }> = {
-  "1buy":  { color: "#00e676", text: "1B", shape: "arrowUp" },
-  "2buy":  { color: "#69f0ae", text: "2B", shape: "circle" },
-  "3buy":  { color: "#b9f6ca", text: "3B", shape: "square" },
-  "1sell": { color: "#ff1744", text: "1S", shape: "arrowDown" },
-  "2sell": { color: "#ff5252", text: "2S", shape: "circle" },
-  "3sell": { color: "#ff8a80", text: "3S", shape: "square" },
+export const CZSC_BS_COLORS: Record<string, { color: string; text: string; shape: string; label: string }> = {
+  "1buy":  { color: "#00e676", text: "1B", shape: "arrowUp",   label: "一买" },
+  "2buy":  { color: "#69f0ae", text: "2B", shape: "circle",     label: "二买" },
+  "3buy":  { color: "#b9f6ca", text: "3B", shape: "square",     label: "三买" },
+  "1sell": { color: "#ff1744", text: "1S", shape: "arrowDown",  label: "一卖" },
+  "2sell": { color: "#ff5252", text: "2S", shape: "circle",     label: "二卖" },
+  "3sell": { color: "#ff8a80", text: "3S", shape: "square",     label: "三卖" },
 };

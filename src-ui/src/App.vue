@@ -139,9 +139,12 @@ let candleSeries: ISeriesApi<"Candlestick"> | null = null;
 let volumeSeries: ISeriesApi<"Histogram"> | null = null;
 
 // ===== 信息弹窗 =====
-const tooltipInfo = ref<{
-  type: string;
+interface TooltipItem {
+  type: string;   // "bi" | "xd" | "zs" | "bs" | "beichi" | "wyckoff"
   data: any;
+}
+const tooltipInfo = ref<{
+  items: TooltipItem[];
   x: number;
   y: number;
 } | null>(null);
@@ -558,7 +561,7 @@ function renderChart() {
           position: isBuy ? ("belowBar" as const) : ("aboveBar" as const),
           color: bsConf.color,
           shape: bsConf.shape as "circle" | "square" | "arrowUp" | "arrowDown",
-          size: 2,
+          size: 1,
           text: bsConf.text,
         });
       }
@@ -683,43 +686,45 @@ function renderChart() {
     // 更新光标位置 K 线信息（用于 header 显示涨跌幅）
     crosshairKline.value = data.klines[idx];
 
-    let info: any = null;
+    // 聚合该K线位置的所有缠论+威科夫信息
+    const items: TooltipItem[] = [];
 
-    // 查找笔
+    // 查找缠论信息
     if (data.czsc) {
+      // 查找笔
       const bi = data.czsc.bi.find(
         (b) => idx >= b.start_index && idx <= b.end_index
       );
       if (bi) {
-        info = { type: "bi", data: bi, x: param.point.x, y: param.point.y };
+        items.push({ type: "bi", data: bi });
       }
 
       // 查找线段
       const xd = data.czsc.xd.find(
         (x) => idx >= x.start_index && idx <= x.end_index
       );
-      if (xd && !info) {
-        info = { type: "xd", data: xd, x: param.point.x, y: param.point.y };
+      if (xd) {
+        items.push({ type: "xd", data: xd });
       }
 
       // 查找中枢
       const zs = [...data.czsc.bi_zs, ...data.czsc.xd_zs].find(
         (z) => idx >= z.start_index && idx <= z.end_index
       );
-      if (zs && !info) {
-        info = { type: "zs", data: zs, x: param.point.x, y: param.point.y };
+      if (zs) {
+        items.push({ type: "zs", data: zs });
       }
 
       // 查找买卖点
       const bs = data.czsc.buy_sell.find((b) => b.index === idx);
-      if (bs && !info) {
-        info = { type: "bs", data: bs, x: param.point.x, y: param.point.y };
+      if (bs) {
+        items.push({ type: "bs", data: bs });
       }
 
       // 查找背驰
       const bc = data.czsc.beichi.find((b) => b.index === idx);
-      if (bc && !info) {
-        info = { type: "beichi", data: bc, x: param.point.x, y: param.point.y };
+      if (bc) {
+        items.push({ type: "beichi", data: bc });
       }
     }
 
@@ -727,11 +732,13 @@ function renderChart() {
     if (data.wyckoff) {
       const evt = data.wyckoff.events.find((e) => e.index === idx);
       if (evt) {
-        info = info || { type: "wyckoff", data: evt, x: param.point.x, y: param.point.y };
+        items.push({ type: "wyckoff", data: evt });
       }
     }
 
-    tooltipInfo.value = info;
+    tooltipInfo.value = items.length > 0
+      ? { items, x: param.point.x, y: param.point.y }
+      : null;
   });
 }
 
@@ -1421,6 +1428,25 @@ watch(currentView, (val) => {
           </template>
         </template>
 
+        <!-- 光标位置买卖点信息 -->
+        <template v-if="crosshairKline && chartData?.czsc?.buy_sell">
+          <template v-for="bs in chartData.czsc.buy_sell.filter(b => b.index === crosshairKline!.id)" :key="bs.index + bs.bs_type">
+            <span class="text-xs font-semibold" :class="bs.bs_type.includes('buy') ? 'text-[#00e676]' : 'text-[#ff1744]'">
+              {{ CZSC_BS_COLORS[bs.bs_type]?.label || bs.bs_type }}
+            </span>
+            <span class="text-[10px] text-[#9e9e9e]">{{ bs.price.toFixed(2) }}</span>
+          </template>
+        </template>
+
+        <!-- 光标位置威科夫事件 -->
+        <template v-if="crosshairKline && chartData?.wyckoff?.events">
+          <template v-for="evt in chartData.wyckoff.events.filter(e => e.index === crosshairKline!.id)" :key="evt.index + evt.event_type">
+            <span class="text-xs font-semibold" :style="{ color: WYCKOFF_EVENT_COLORS[evt.event_type] || '#fff' }">
+              {{ evt.event_type }}
+            </span>
+          </template>
+        </template>
+
         <!-- 自选股按钮 -->
         <button
           @click="isInWatchlist(symbol) ? null : addToWatchlist(symbol)"
@@ -1483,49 +1509,59 @@ watch(currentView, (val) => {
             class="absolute z-20 bg-[#16213e] border border-[#2a2a4a] rounded shadow-lg p-2 text-xs max-w-xs"
             :style="{ left: Math.min(tooltipInfo.x + 10, 400) + 'px', top: Math.min(tooltipInfo.y - 60, 50) + 'px' }"
           >
-            <template v-if="tooltipInfo.type === 'bi'">
-              <div class="text-[#4a90d9] font-bold">笔</div>
-              <div>方向: {{ tooltipInfo.data.direction === 'up' ? '上升' : '下降' }}</div>
-              <div>{{ tooltipInfo.data.start_price.toFixed(2) }} → {{ tooltipInfo.data.end_price.toFixed(2) }}</div>
-              <div>幅度: {{ ((tooltipInfo.data.end_price - tooltipInfo.data.start_price) / tooltipInfo.data.start_price * 100).toFixed(2) }}%</div>
-            </template>
-            <template v-else-if="tooltipInfo.type === 'xd'">
-              <div class="text-[#b388ff] font-bold">线段</div>
-              <div>方向: {{ tooltipInfo.data.direction === 'up' ? '上升' : '下降' }}</div>
-              <div>{{ tooltipInfo.data.start_price.toFixed(2) }} → {{ tooltipInfo.data.end_price.toFixed(2) }}</div>
-              <button
-                class="mt-1 text-[#00bcd4] hover:text-white underline"
-                @click="loadSubLevel(tooltipInfo.data)"
-              >
-                查看次级别 →
-              </button>
-            </template>
-            <template v-else-if="tooltipInfo.type === 'zs'">
-              <div class="text-[#b388ff] font-bold">{{ tooltipInfo.data.zs_type === 'bi_zs' ? '笔中枢' : '段中枢' }}</div>
-              <div>zg: {{ tooltipInfo.data.zg.toFixed(2) }} zd: {{ tooltipInfo.data.zd.toFixed(2) }}</div>
-              <div>gg: {{ tooltipInfo.data.gg.toFixed(2) }} dd: {{ tooltipInfo.data.dd.toFixed(2) }}</div>
-            </template>
-            <template v-else-if="tooltipInfo.type === 'bs'">
-              <div class="font-bold" :class="tooltipInfo.data.bs_type.includes('buy') ? 'text-[#00e676]' : 'text-[#ff1744]'">
-                {{ tooltipInfo.data.bs_type }}
-              </div>
-              <div>价格: {{ tooltipInfo.data.price.toFixed(2) }}</div>
-              <div>时间: {{ tooltipInfo.data.dt }}</div>
-            </template>
-            <template v-else-if="tooltipInfo.type === 'beichi'">
-              <div class="font-bold" :class="tooltipInfo.data.direction === 'up' ? 'text-[#ff5252]' : 'text-[#69f0ae]'">
-                {{ tooltipInfo.data.direction === 'up' ? '顶背驰' : '底背驰' }}
-                <span class="font-normal text-[#9e9e9e]">
-                  ({{ tooltipInfo.data.bc_type === 'xd_beichi' ? '线段' : '笔' }}{{ tooltipInfo.data.bc_sub_type === 'panzheng' ? '·盘整' : tooltipInfo.data.bc_sub_type === 'trend' ? '·趋势' : '' }})
-                </span>
-              </div>
-              <div v-if="tooltipInfo.data.reason" class="text-[#ccc] mt-0.5 leading-snug">{{ tooltipInfo.data.reason }}</div>
-            </template>
-            <template v-else-if="tooltipInfo.type === 'wyckoff'">
-              <div class="font-bold" :style="{ color: WYCKOFF_EVENT_COLORS[tooltipInfo.data.event_type] || '#fff' }">
-                {{ tooltipInfo.data.event_type }}
-              </div>
-              <div>{{ tooltipInfo.data.description }}</div>
+            <template v-for="(item, i) in tooltipInfo.items" :key="i">
+              <!-- 分隔线 -->
+              <div v-if="i > 0" class="border-t border-[#2a2a4a] my-1"></div>
+              <!-- 笔 -->
+              <template v-if="item.type === 'bi'">
+                <div class="text-[#4a90d9] font-bold">笔</div>
+                <div>方向: {{ item.data.direction === 'up' ? '上升' : '下降' }}</div>
+                <div>{{ item.data.start_price.toFixed(2) }} → {{ item.data.end_price.toFixed(2) }}</div>
+                <div>幅度: {{ ((item.data.end_price - item.data.start_price) / item.data.start_price * 100).toFixed(2) }}%</div>
+              </template>
+              <!-- 线段 -->
+              <template v-else-if="item.type === 'xd'">
+                <div class="text-[#b388ff] font-bold">线段</div>
+                <div>方向: {{ item.data.direction === 'up' ? '上升' : '下降' }}</div>
+                <div>{{ item.data.start_price.toFixed(2) }} → {{ item.data.end_price.toFixed(2) }}</div>
+                <button
+                  class="mt-1 text-[#00bcd4] hover:text-white underline"
+                  @click="loadSubLevel(item.data)"
+                >
+                  查看次级别 →
+                </button>
+              </template>
+              <!-- 中枢 -->
+              <template v-else-if="item.type === 'zs'">
+                <div class="text-[#b388ff] font-bold">{{ item.data.zs_type === 'bi_zs' ? '笔中枢' : '段中枢' }}</div>
+                <div>zg: {{ item.data.zg.toFixed(2) }} zd: {{ item.data.zd.toFixed(2) }}</div>
+                <div>gg: {{ item.data.gg.toFixed(2) }} dd: {{ item.data.dd.toFixed(2) }}</div>
+              </template>
+              <!-- 买卖点 -->
+              <template v-else-if="item.type === 'bs'">
+                <div class="font-bold" :class="item.data.bs_type.includes('buy') ? 'text-[#00e676]' : 'text-[#ff1744]'">
+                  {{ CZSC_BS_COLORS[item.data.bs_type]?.label || item.data.bs_type }}
+                </div>
+                <div>价格: {{ item.data.price.toFixed(2) }}</div>
+                <div v-if="item.data.dt">时间: {{ item.data.dt }}</div>
+              </template>
+              <!-- 背驰 -->
+              <template v-else-if="item.type === 'beichi'">
+                <div class="font-bold" :class="item.data.direction === 'up' ? 'text-[#ff5252]' : 'text-[#69f0ae]'">
+                  {{ item.data.direction === 'up' ? '顶背驰' : '底背驰' }}
+                  <span class="font-normal text-[#9e9e9e]">
+                    ({{ item.data.bc_type === 'xd_beichi' ? '线段' : '笔' }}{{ item.data.bc_sub_type === 'panzheng' ? '·盘整' : item.data.bc_sub_type === 'trend' ? '·趋势' : '' }})
+                  </span>
+                </div>
+                <div v-if="item.data.reason" class="text-[#ccc] mt-0.5 leading-snug">{{ item.data.reason }}</div>
+              </template>
+              <!-- 威科夫 -->
+              <template v-else-if="item.type === 'wyckoff'">
+                <div class="font-bold" :style="{ color: WYCKOFF_EVENT_COLORS[item.data.event_type] || '#fff' }">
+                  {{ item.data.event_type }}
+                </div>
+                <div>{{ item.data.description }}</div>
+              </template>
             </template>
           </div>
 

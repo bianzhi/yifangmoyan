@@ -48,9 +48,8 @@ pub fn detect_xd_buy_sell(
     )
 }
 
-// ─── 内部统一实现 ──────────────────────────────────────
+// ─── 核心实现 ──────────────────────────────────────────
 
-/// 从笔或线段序列中识别三类买卖点。
 fn detect_buy_sell_from_segments<T, F>(
     segments: &[T],
     zs_list: &[ZhongShu],
@@ -91,7 +90,7 @@ where
     results.extend(buy2_list);
     results.extend(sell2_list);
 
-    // 第三类买卖点
+    // 第三类买卖点（扫描中枢后所有离开+回抽段对）
     let (buy3_list, sell3_list) = find_buy3_sell3(&seg_infos, zs_list);
     results.extend(buy3_list);
     results.extend(sell3_list);
@@ -197,19 +196,33 @@ fn find_buy2_sell2(
 }
 
 fn find_buy2_after_buy1(seg_infos: &[SegInfo], buy1: &BuySellPoint) -> Option<BuySellPoint> {
+    // 买点之后的段：从一买位置开始找
     let after_segs: Vec<&SegInfo> = seg_infos.iter().filter(|s| s.start_idx >= buy1.index).collect();
     if after_segs.len() < 2 { return None; }
 
-    // 第一段向上（离开段），第二段向下（回抽段）
-    if after_segs[0].direction != "up" || after_segs[1].direction != "down" {
-        return None;
+    // 找第一段向上（离开段），然后第一段向下（回抽段）
+    let mut leave_idx = None;
+    let mut pullback_idx = None;
+
+    for (i, seg) in after_segs.iter().enumerate() {
+        if leave_idx.is_none() && seg.direction == "up" {
+            leave_idx = Some(i);
+        }
+        if leave_idx.is_some() && seg.direction == "down" {
+            pullback_idx = Some(i);
+            break;
+        }
     }
 
-    let pullback_low = after_segs[1].end_val.min(after_segs[1].start_val);
+    let _li = leave_idx?;
+    let pi = pullback_idx?;
+    let pullback = after_segs[pi];
+
+    let pullback_low = pullback.end_val.min(pullback.start_val);
     if pullback_low > buy1.price {
         Some(BuySellPoint {
             bs_type: "2buy".to_string(),
-            index: after_segs[1].end_idx,
+            index: pullback.end_idx,
             dt: String::new(),
             price: pullback_low,
         })
@@ -222,16 +235,29 @@ fn find_sell2_after_sell1(seg_infos: &[SegInfo], sell1: &BuySellPoint) -> Option
     let after_segs: Vec<&SegInfo> = seg_infos.iter().filter(|s| s.start_idx >= sell1.index).collect();
     if after_segs.len() < 2 { return None; }
 
-    // 第一段向下（离开段），第二段向上（回抽段）
-    if after_segs[0].direction != "down" || after_segs[1].direction != "up" {
-        return None;
+    // 找第一段向下（离开段），然后第一段向上（回抽段）
+    let mut leave_idx = None;
+    let mut pullback_idx = None;
+
+    for (i, seg) in after_segs.iter().enumerate() {
+        if leave_idx.is_none() && seg.direction == "down" {
+            leave_idx = Some(i);
+        }
+        if leave_idx.is_some() && seg.direction == "up" {
+            pullback_idx = Some(i);
+            break;
+        }
     }
 
-    let pullback_high = after_segs[1].end_val.max(after_segs[1].start_val);
+    let _li = leave_idx?;
+    let pi = pullback_idx?;
+    let pullback = after_segs[pi];
+
+    let pullback_high = pullback.end_val.max(pullback.start_val);
     if pullback_high < sell1.price {
         Some(BuySellPoint {
             bs_type: "2sell".to_string(),
-            index: after_segs[1].end_idx,
+            index: pullback.end_idx,
             dt: String::new(),
             price: pullback_high,
         })
@@ -244,6 +270,9 @@ fn find_sell2_after_sell1(seg_infos: &[SegInfo], sell1: &BuySellPoint) -> Option
 
 /// 三买：向上离开中枢 + 回抽低点 > 中枢上沿(zg)
 /// 三卖：向下离开中枢 + 回抽高点 < 中枢下沿(zd)
+///
+/// 关键改进：扫描中枢后**所有**离开+回抽段对，而不是仅检查紧邻的前2段。
+/// 原因：中枢后可能有多段震荡（中枢扩展），真正的离开+回抽不一定紧邻中枢。
 fn find_buy3_sell3(
     seg_infos: &[SegInfo],
     zs_list: &[ZhongShu],
@@ -252,40 +281,46 @@ fn find_buy3_sell3(
     let mut sell3_list = Vec::new();
 
     for zs in zs_list {
+        // 中枢结束后的所有段
         let after_segs: Vec<&SegInfo> = seg_infos.iter().filter(|s| s.start_idx >= zs.end_index).collect();
         if after_segs.len() < 2 { continue; }
 
-        let leave_seg = after_segs[0];
-        let back_seg = after_segs[1];
+        // 关键改进：扫描所有相邻的离开段+回抽段对
+        // 离开段 = 价格超出中枢范围的段
+        // 回抽段 = 紧跟离开段之后反方向的段
+        for i in 0..after_segs.len() - 1 {
+            let leave_seg = after_segs[i];
+            let back_seg = after_segs[i + 1];
 
-        // 三买：向上离开 + 回抽不破中枢上沿
-        if leave_seg.direction == "up" && back_seg.direction == "down" {
-            let leave_high = leave_seg.end_val.max(leave_seg.start_val);
-            if leave_high > zs.zg {
-                let back_low = back_seg.end_val.min(back_seg.start_val);
-                if back_low > zs.zg {
-                    buy3_list.push(BuySellPoint {
-                        bs_type: "3buy".to_string(),
-                        index: back_seg.end_idx,
-                        dt: String::new(),
-                        price: back_low,
-                    });
+            // 三买：向上离开 + 回抽不破中枢上沿
+            if leave_seg.direction == "up" && back_seg.direction == "down" {
+                let leave_high = leave_seg.end_val.max(leave_seg.start_val);
+                if leave_high > zs.zg {
+                    let back_low = back_seg.end_val.min(back_seg.start_val);
+                    if back_low > zs.zg {
+                        buy3_list.push(BuySellPoint {
+                            bs_type: "3buy".to_string(),
+                            index: back_seg.end_idx,
+                            dt: String::new(),
+                            price: back_low,
+                        });
+                    }
                 }
             }
-        }
 
-        // 三卖：向下离开 + 回抽不破中枢下沿
-        if leave_seg.direction == "down" && back_seg.direction == "up" {
-            let leave_low = leave_seg.end_val.min(leave_seg.start_val);
-            if leave_low < zs.zd {
-                let back_high = back_seg.end_val.max(back_seg.start_val);
-                if back_high < zs.zd {
-                    sell3_list.push(BuySellPoint {
-                        bs_type: "3sell".to_string(),
-                        index: back_seg.end_idx,
-                        dt: String::new(),
-                        price: back_high,
-                    });
+            // 三卖：向下离开 + 回抽不破中枢下沿
+            if leave_seg.direction == "down" && back_seg.direction == "up" {
+                let leave_low = leave_seg.end_val.min(leave_seg.start_val);
+                if leave_low < zs.zd {
+                    let back_high = back_seg.end_val.max(back_seg.start_val);
+                    if back_high < zs.zd {
+                        sell3_list.push(BuySellPoint {
+                            bs_type: "3sell".to_string(),
+                            index: back_seg.end_idx,
+                            dt: String::new(),
+                            price: back_high,
+                        });
+                    }
                 }
             }
         }
@@ -348,25 +383,24 @@ fn group_zs_indices_by_trend(zs_list: &[ZhongShu], indices: &[usize]) -> Vec<Vec
 }
 
 /// 上涨递进：curr.zd > prev.zg；下跌递进：curr.zg < prev.zd
-#[allow(dead_code)]
-fn is_same_trend_direction(prev: &ZhongShu, curr: &ZhongShu) -> bool {
+fn _is_same_trend_direction(prev: &ZhongShu, curr: &ZhongShu) -> bool {
     curr.zd > prev.zg || curr.zg < prev.zd
 }
 
-fn classify_trend_direction_from_indices(zs_list: &[ZhongShu], group: &[usize]) -> &'static str {
-    if group.len() < 2 { return "unknown"; }
+fn classify_trend_direction_from_indices(zs_list: &[ZhongShu], group: &[usize]) -> String {
+    if group.len() < 2 { return "unknown".to_string(); }
     let first = &zs_list[group[0]];
     let last = &zs_list[group[group.len() - 1]];
-    if last.zd > first.zg { "up" } else if last.zg < first.zd { "down" } else { "unknown" }
+    if last.zd > first.zg { "up".to_string() }
+    else if last.zg < first.zd { "down".to_string() }
+    else { "unknown".to_string() }
 }
 
 fn find_seg_end_price(seg_infos: &[SegInfo], index: u64) -> f64 {
-    for seg in seg_infos {
-        if seg.end_idx == index || (seg.start_idx <= index && seg.end_idx >= index) {
-            return seg.end_val;
-        }
-    }
-    0.0
+    seg_infos.iter()
+        .find(|s| s.end_idx == index)
+        .map(|s| s.end_val)
+        .unwrap_or(0.0)
 }
 
 // ─── 测试 ─────────────────────────────────────────────
@@ -374,21 +408,24 @@ fn find_seg_end_price(seg_infos: &[SegInfo], index: u64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use yifang_data::{Bi, ZhongShu, BeiChi};
 
     fn make_bi(id: usize, dir: &str, start: f64, end: f64, si: u64, ei: u64) -> Bi {
-        Bi { direction: dir.to_string(), start_index: si, end_index: ei,
-             start_dt: format!("t{}", id), end_dt: format!("t{}", id+1),
-             start_price: start, end_price: end, is_finished: true }
+        let _ = id;
+        Bi { direction: dir.to_string(), start_price: start, end_price: end,
+             start_index: si, end_index: ei, start_dt: String::new(), end_dt: String::new(),
+             is_finished: true }
     }
     fn make_xd(id: usize, dir: &str, start: f64, end: f64, si: u64, ei: u64) -> XianDuan {
-        XianDuan { direction: dir.to_string(), start_index: si, end_index: ei,
-                   start_dt: format!("t{}", id), end_dt: format!("t{}", id+1),
-                   start_price: start, end_price: end, is_finished: true }
+        let _ = id;
+        XianDuan { direction: dir.to_string(), start_price: start, end_price: end,
+                   start_index: si, end_index: ei, start_dt: String::new(), end_dt: String::new(),
+                   is_finished: true }
     }
     fn make_zs(zt: &str, si: u64, ei: u64, zg: f64, zd: f64) -> ZhongShu {
         ZhongShu { zs_type: zt.to_string(), start_index: si, end_index: ei,
-                   start_dt: "t0".into(), end_dt: "t1".into(),
-                   zg, zd, gg: zg + 1.0, dd: zd - 1.0 }
+                   start_dt: String::new(), end_dt: String::new(),
+                   zg, zd, gg: zg + 1.0, dd: (zd - 1.0).max(0.0) }
     }
     fn make_bc(bct: &str, idx: u64, dir: &str, sub: &str) -> BeiChi {
         BeiChi { bc_type: bct.to_string(), index: idx, dt: String::new(),
@@ -583,5 +620,23 @@ mod tests {
         let z4 = make_zs("bi_zs", 15, 25, 10., 8.);
         let zs2 = vec![z3, z4];
         assert_eq!(classify_trend_direction_from_indices(&zs2, &[0, 1]), "down");
+    }
+
+    #[test]
+    fn test_third_buy_from_later_segs() {
+        // 中枢后有震荡段，真正的离开+回抽在后面
+        let bis = vec![
+            make_bi(0,"up",10.,15.,0,3), make_bi(1,"down",15.,12.,3,6),
+            make_bi(2,"up",12.,14.,6,9), make_bi(3,"down",14.,13.,9,12),
+            // 中枢结束于12
+            // 震荡段（还在中枢范围内）
+            make_bi(4,"up",13.,14.,12,15), make_bi(5,"down",14.,12.5,15,18),
+            // 真正的离开+回抽
+            make_bi(6,"up",12.5,18.,18,22), make_bi(7,"down",18.,14.5,22,25),
+        ];
+        let zs = vec![make_zs("bi_zs",3,12,14.,12.)];
+        let pts = detect_buy_sell(&bis, &zs, &[]);
+        let b3: Vec<_>=pts.iter().filter(|p|p.bs_type=="3buy").collect();
+        assert!(!b3.is_empty()); assert!(b3[0].price > 14.0);
     }
 }

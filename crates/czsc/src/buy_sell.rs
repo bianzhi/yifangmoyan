@@ -175,6 +175,7 @@ fn find_buy1_sell1(
                     index: bd.index,
                     dt: bd.dt.clone(),
                     price,
+                    reason: format!("下跌趋势底背驰 → 一买（17课）[{}]", bd.reason),
                 });
             }
             // 上涨趋势 + 顶背驰 → 一卖
@@ -185,6 +186,7 @@ fn find_buy1_sell1(
                     index: bd.index,
                     dt: bd.dt.clone(),
                     price,
+                    reason: format!("上涨趋势顶背驰 → 一卖（17课）[{}]", bd.reason),
                 });
             }
         }
@@ -255,11 +257,17 @@ fn find_buy2_after_buy1(seg_infos: &[SegInfo], buy1: &BuySellPoint) -> Option<Bu
             } else {
                 "2buy_break" // 破一买：破位二买（一买可能误判）
             };
+            let reason = if pullback_low >= buy1.price {
+                format!("一买后回抽{:.2}不破一买价{:.2} → 二买（21课）", pullback_low, buy1.price)
+            } else {
+                format!("一买后回抽{:.2}破一买价{:.2} → 破位二买（一买可能误判）", pullback_low, buy1.price)
+            };
             return Some(BuySellPoint {
                 bs_type: bs_type.to_string(),
                 index: seg.end_idx,
                 dt: String::new(),
                 price: pullback_low,
+                reason,
             });
         }
     }
@@ -291,11 +299,17 @@ fn find_sell2_after_sell1(seg_infos: &[SegInfo], sell1: &BuySellPoint) -> Option
             } else {
                 "2sell_break" // 破一卖：破位二卖（一卖可能误判）
             };
+            let reason = if pullback_high <= sell1.price {
+                format!("一卖后回抽{:.2}不破一卖价{:.2} → 二卖（21课）", pullback_high, sell1.price)
+            } else {
+                format!("一卖后回抽{:.2}破一卖价{:.2} → 破位二卖（一卖可能误判）", pullback_high, sell1.price)
+            };
             return Some(BuySellPoint {
                 bs_type: bs_type.to_string(),
                 index: seg.end_idx,
                 dt: String::new(),
                 price: pullback_high,
+                reason,
             });
         }
     }
@@ -352,6 +366,10 @@ fn find_buy3_sell3(
                             index: back_seg.end_idx,
                             dt: String::new(),
                             price: back_low,
+                            reason: format!(
+                                "离开中枢高点{:.2}>ZG{:.2}, 回抽低点{:.2}≥ZG{:.2} → 三买（17课：不跌破ZG）",
+                                leave_high, zs.zg, back_low, zs.zg
+                            ),
                         });
                     }
                     // 无论回抽是否成功，离开段已经脱离中枢，
@@ -372,6 +390,10 @@ fn find_buy3_sell3(
                             index: back_seg.end_idx,
                             dt: String::new(),
                             price: back_high,
+                            reason: format!(
+                                "离开中枢低点{:.2}<ZD{:.2}, 回抽高点{:.2}≤ZD{:.2} → 三卖（17课：不升破ZD）",
+                                leave_low, zs.zd, back_high, zs.zd
+                            ),
                         });
                     }
                 }
@@ -505,6 +527,10 @@ fn merge_overlapping_2_3(mut points: Vec<BuySellPoint>) -> Vec<BuySellPoint> {
             }
         };
         points[*idx_2x].bs_type = new_type.to_string();
+        // 合并reason：保留原始2x和3x的判断依据
+        let reason_2x = &points[*idx_2x].reason;
+        let reason_3x = &points[*idx_3x].reason;
+        points[*idx_2x].reason = format!("{} | {}", reason_2x, reason_3x);
         remove_set.insert(*idx_3x);
     }
 

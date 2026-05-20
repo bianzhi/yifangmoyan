@@ -67,6 +67,7 @@ export interface BuySellPoint {
   index: number;
   dt: string;
   price: number;
+  reason: string;
 }
 
 export interface BeiChi {
@@ -443,4 +444,19 @@ export const CZSC_BS_COLORS: Record<string, { color: string; text: string; shape
   "3sell":         { color: "#ff8a80", text: "3S",  shape: "square",     label: "三卖" },
   "2+3sell":       { color: "#ff1744", text: "2+3S", shape: "diamond",   label: "二三卖重合" },
   "2+3sell_break": { color: "#ffab40", text: "2+3S!", shape: "diamond", label: "二三卖重合(破位)" },
+};
+
+export const CZSC_BS_DESC: Record<string, string> = {
+  "1buy":          "下跌趋势底背驰 → 一买（17课：趋势背驰产生第一类买点）",
+  "2buy":          "一买后回抽不破一买价 → 二买（21课：第一买点后第二段低点）",
+  "2buy_break":    "一买后回抽破一买价 → 破位二买（一买可能误判）",
+  "3buy":          "离开中枢后回抽不破ZG → 三买（17课：不跌破ZG）",
+  "2+3buy":        "二买与三买重合 → 二三买重合（21课：大级别上涨往往出现）",
+  "2+3buy_break":  "破位二买与三买重合 → 二三买重合(破位)",
+  "1sell":         "上涨趋势顶背驰 → 一卖（17课：趋势背驰产生第一类卖点）",
+  "2sell":         "一卖后回抽不破一卖价 → 二卖（21课：第一卖点后第二段高点）",
+  "2sell_break":   "一卖后回抽破一卖价 → 破位二卖（一卖可能误判）",
+  "3sell":         "离开中枢后回抽不破ZD → 三卖（17课：不升破ZD）",
+  "2+3sell":       "二卖与三卖重合 → 二三卖重合（21课：大级别下跌往往出现）",
+  "2+3sell_break": "破位二卖与三卖重合 → 二三卖重合(破位)",
 };

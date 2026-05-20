@@ -317,6 +317,20 @@ pub struct BuySellPoint {
     pub dt: String,
     /// 价格
     pub price: f64,
+    /// 买卖点理由描述
+    pub reason: String,
+}
+
+impl Default for BuySellPoint {
+    fn default() -> Self {
+        Self {
+            bs_type: String::new(),
+            index: 0,
+            dt: String::new(),
+            price: 0.0,
+            reason: String::new(),
+        }
+    }
 }
 
 /// 背驰标记

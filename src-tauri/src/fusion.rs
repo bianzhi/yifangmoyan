@@ -199,6 +199,7 @@ mod tests {
                 index: 100,
                 dt: "2024-03-15".to_string(),
                 price: 10.0,
+            reason: String::new(),
             }],
             ..Default::default()
         };
@@ -228,6 +229,7 @@ mod tests {
                 index: 200,
                 dt: "2024-06-01".to_string(),
                 price: 50.0,
+            reason: String::new(),
             }],
             ..Default::default()
         };
@@ -256,6 +258,7 @@ mod tests {
                 index: 100,
                 dt: "2024-03-15".to_string(),
                 price: 10.0,
+            reason: String::new(),
             }],
             ..Default::default()
         };
@@ -282,6 +285,7 @@ mod tests {
                 index: 100,
                 dt: "2024-03-15".to_string(),
                 price: 10.0,
+            reason: String::new(),
             }],
             ..Default::default()
         };

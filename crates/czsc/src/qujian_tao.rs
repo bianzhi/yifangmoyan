@@ -174,12 +174,14 @@ mod tests {
             index: 100,
             dt: "2024-01-01".to_string(),
             price: 10.0,
+            reason: String::new(),
         }];
         let low_bs = vec![BuySellPoint {
             bs_type: "1buy".to_string(),
             index: 102,
             dt: "2024-01-01".to_string(),
             price: 10.2,
+            reason: String::new(),
         }];
 
         let data = MultiLevelData {
@@ -206,12 +208,14 @@ mod tests {
             index: 100,
             dt: "2024-01-01".to_string(),
             price: 10.0,
+            reason: String::new(),
         }];
         let low_bs = vec![BuySellPoint {
             bs_type: "2buy".to_string(),
             index: 105,
             dt: "2024-01-01".to_string(),
             price: 10.5,
+            reason: String::new(),
         }];
 
         let data = MultiLevelData {
@@ -237,12 +241,14 @@ mod tests {
             index: 100,
             dt: "2024-01-01".to_string(),
             price: 10.0,
+            reason: String::new(),
         }];
         let low_bs = vec![BuySellPoint {
             bs_type: "1sell".to_string(),
             index: 102,
             dt: "2024-01-01".to_string(),
             price: 10.2,
+            reason: String::new(),
         }];
 
         let data = MultiLevelData {

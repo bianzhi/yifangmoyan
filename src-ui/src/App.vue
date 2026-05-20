@@ -1441,6 +1441,7 @@ watch(currentView, (val) => {
               {{ CZSC_BS_COLORS[bs.bs_type]?.label || bs.bs_type }}
             </span>
             <span class="text-[10px] text-[#9e9e9e]">{{ bs.price.toFixed(2) }}</span>
+            <span v-if="bs.reason" class="text-[10px] text-[#9e9e9e] max-w-[200px] truncate" :title="bs.reason">{{ bs.reason }}</span>
           </template>
         </template>
 
@@ -1550,6 +1551,7 @@ watch(currentView, (val) => {
                 </div>
                 <div>价格: {{ item.data.price.toFixed(2) }}</div>
                 <div v-if="item.data.dt">时间: {{ item.data.dt }}</div>
+                <div v-if="item.data.reason" class="text-[#ccc] mt-0.5 leading-snug">{{ item.data.reason }}</div>
               </template>
               <!-- 背驰 -->
               <template v-else-if="item.type === 'beichi'">

@@ -840,6 +840,7 @@ pub async fn open_data_dir(state: State<'_, AppState>) -> Result<(), String> {
 pub fn cancel_sync(state: State<'_, AppState>) -> Result<(), String> {
     let mut progress = state.sync_progress.lock().map_err(|e| e.to_string())?;
     progress.cancelled = true;
+    progress.running = false;
     Ok(())
 }
 

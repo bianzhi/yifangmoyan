@@ -76,6 +76,7 @@ const syncRetryRound = ref(0);
 const syncStartTime = ref(0);
 const syncElapsed = ref("");
 let syncTimer: ReturnType<typeof setInterval> | null = null;
+let syncPollTimer: ReturnType<typeof setInterval> | null = null;
 
 // 同步选项
 const selectedLevels = ref<string[]>(["d"]);
@@ -293,6 +294,16 @@ function stopSyncTimer() {
 
 async function startSync() {
   if (syncing.value) return;
+
+  // 安全检查：如后端残留 running=true（上次取消后未清理），先重置
+  try {
+    const st = await invoke<{ running: boolean; cancelled: boolean }>("get_sync_status");
+    if (st.running) {
+      // 后端残留 running=true，无论 cancelled 与否，强制清理
+      await invoke("cancel_sync");
+    }
+  } catch { /* ignore */ }
+
   if (selectedLevels.value.length === 0) {
     error.value = "请至少选择一个同步级别";
     return;
@@ -320,7 +331,7 @@ async function startSync() {
     });
 
     // 轮询后台同步进度
-    const pollTimer = setInterval(async () => {
+    syncPollTimer = setInterval(async () => {
       try {
         const status = await invoke<{
           running: boolean;
@@ -348,7 +359,7 @@ async function startSync() {
         }));
 
         if (!status.running) {
-          clearInterval(pollTimer);
+          if (syncPollTimer) { clearInterval(syncPollTimer); syncPollTimer = null; }
           lastSyncSuccess.value = status.success;
           lastSyncFailed.value = status.failures.length;
           lastSyncElapsed.value = syncElapsed.value;
@@ -375,6 +386,7 @@ async function startSync() {
 
 function cancelSync() {
   invoke("cancel_sync").catch(() => {});
+  if (syncPollTimer) { clearInterval(syncPollTimer); syncPollTimer = null; }
   syncing.value = false;
   syncingBoard.value = null;
   stopSyncTimer();
@@ -610,7 +622,7 @@ onMounted(async () => {
       current_symbols: string[];
     }>("get_sync_status");
 
-    if (status.running) {
+    if (status.running && !status.cancelled) {
       bgSyncRunning.value = true;
       bgSyncBoard.value = status.board;
       bgSyncTotal.value = status.total;

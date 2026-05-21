@@ -100,6 +100,9 @@ const selectedBoard = ref("all_a");
 const lastSyncSuccess = ref(0);
 const lastSyncFailed = ref(0);
 const lastSyncElapsed = ref("");
+const lastSyncLatestDate = ref("");
+const lastSyncStockCount = ref(0);
+const syncAllSkipped = ref(false);
 const showSyncResult = ref(false);
 
 // 后台同步状态（仅用于横幅提示，不自动进入 syncing 页面状态）
@@ -315,7 +318,7 @@ async function startSync() {
   syncingBoard.value = boardId;
   error.value = "";
   syncing.value = true;
-  syncPreparing.value = true; // 正在获取股票列表
+  syncPreparing.value = true; // 正在获取股票列表或快速检查
   syncTotal.value = 0;
   syncCompleted.value = 0;
   syncFailedDetails.value = [];
@@ -333,12 +336,50 @@ async function startSync() {
       startDate: startDate.value || null,
       force: forceSync.value,
     });
-    // start_sync_board 立即返回，后台线程获取列表+同步
-    // 开始轮询
+    // start_sync_board 返回后，检查状态
+    // 如果快速检查发现已是最新，后端已设置 all_skipped=true, running=false
+    const status = await invoke<{
+      running: boolean;
+      board: string;
+      levels: string[];
+      total: number;
+      completed: number;
+      success: number;
+      failures: [string, string, string][];
+      retrying: boolean;
+      retry_round: number;
+      cancelled: boolean;
+      current_symbols: string[];
+      preparing: boolean;
+      prepare_error: string;
+      all_skipped: boolean;
+      skipped_count: number;
+      latest_date: string;
+    }>("get_sync_status");
+
+    if (status.all_skipped && !status.running) {
+      // 快速检查：数据已是最新，无需网络请求
+      syncing.value = false;
+      syncPreparing.value = false;
+      syncingBoard.value = null;
+      stopSyncTimer();
+      lastSyncSuccess.value = status.success;
+      lastSyncFailed.value = status.failures.length;
+      lastSyncElapsed.value = "即时";
+      lastSyncLatestDate.value = status.latest_date;
+      lastSyncStockCount.value = status.total;
+      showSyncResult.value = true;
+      syncAllSkipped.value = true;
+      setTimeout(() => { showSyncResult.value = false; }, 5_000);
+      return;
+    }
+
+    // 需要实际同步，开始轮询
     startStatusPolling();
   } catch (e: any) {
     error.value = `启动同步失败: ${e}`;
     syncing.value = false;
+    syncPreparing.value = false;
     syncingBoard.value = null;
     stopSyncTimer();
   }
@@ -365,6 +406,9 @@ function startStatusPolling() {
         current_symbols: string[];
         preparing: boolean;
         prepare_error: string;
+        all_skipped: boolean;
+        skipped_count: number;
+        latest_date: string;
       }>("get_sync_status");
 
       // 更新前端状态
@@ -395,21 +439,22 @@ function startStatusPolling() {
         if (syncPollTimer) { clearInterval(syncPollTimer); syncPollTimer = null; }
         lastSyncSuccess.value = status.success;
         lastSyncFailed.value = status.failures.length;
-        lastSyncElapsed.value = syncElapsed.value;
+        lastSyncElapsed.value = status.all_skipped ? "已是最新" : syncElapsed.value;
+        lastSyncLatestDate.value = status.latest_date;
+        lastSyncStockCount.value = status.skipped_count;
+        syncAllSkipped.value = status.all_skipped;
         syncing.value = false;
         syncingBoard.value = null;
         stopSyncTimer();
-        if (status.success > 0 || status.failures.length > 0) {
-          showSyncResult.value = true;
-          setTimeout(() => { showSyncResult.value = false; }, 5_000);
-        }
+        showSyncResult.value = true;
+        setTimeout(() => { showSyncResult.value = false; }, 5_000);
         refreshStatus();
         loadBoardOnlineInfo();
       }
     } catch {
       // 轮询失败不中断，继续重试
     }
-  }, 1_500); // 1.5秒轮询，更频繁以快速检测 preparing→running 的变化
+  }, 1_500); // 1.5秒轮询
 }
 
 function cancelSync() {
@@ -651,6 +696,9 @@ onMounted(async () => {
       current_symbols: string[];
       preparing: boolean;
       prepare_error: string;
+      all_skipped: boolean;
+      skipped_count: number;
+      latest_date: string;
     }>("get_sync_status");
 
     if (status.running && !status.cancelled) {
@@ -676,6 +724,9 @@ onMounted(async () => {
             current_symbols: string[];
             preparing: boolean;
             prepare_error: string;
+            all_skipped: boolean;
+            skipped_count: number;
+            latest_date: string;
           }>("get_sync_status");
 
           bgSyncTotal.value = s.total;
@@ -764,15 +815,28 @@ onMounted(async () => {
     </div>
 
     <!-- ═══════════════════════════════════════════════════════════
-         同步完成：短暂成功提示（3秒后自动消失）
+         同步完成：短暂成功提示（5秒后自动消失）
          ═══════════════════════════════════════════════════════════ -->
-    <div v-if="showSyncResult" class="shrink-0 px-4 py-2 bg-[#26a69a]/10 border-b border-[#26a69a]/20 flex items-center justify-between">
+    <div v-if="showSyncResult" class="shrink-0 px-4 py-2 border-b flex items-center justify-between"
+      :class="syncAllSkipped ? 'bg-[#2196f3]/10 border-[#2196f3]/20' : 'bg-[#26a69a]/10 border-[#26a69a]/20'">
       <div class="flex items-center gap-2">
-        <svg class="w-4 h-4 text-[#26a69a]" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
+        <svg v-if="syncAllSkipped" class="w-4 h-4 text-[#2196f3]" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+        </svg>
+        <svg v-else class="w-4 h-4 text-[#26a69a]" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
           <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/>
         </svg>
-        <span class="text-xs text-[#26a69a] font-bold">同步完成</span>
-        <span class="text-[10px] text-[#9e9e9e]">成功 {{ lastSyncSuccess }}，失败 {{ lastSyncFailed }}，耗时 {{ lastSyncElapsed }}</span>
+        <span class="text-xs font-bold" :class="syncAllSkipped ? 'text-[#2196f3]' : 'text-[#26a69a]'">
+          {{ syncAllSkipped ? '数据已是最新' : '同步完成' }}
+        </span>
+        <template v-if="syncAllSkipped">
+          <span class="text-[10px] text-[#9e9e9e]">
+            {{ lastSyncStockCount }} 只股票，最近同步 {{ lastSyncLatestDate }}
+          </span>
+        </template>
+        <template v-else>
+          <span class="text-[10px] text-[#9e9e9e]">成功 {{ lastSyncSuccess }}，失败 {{ lastSyncFailed }}，耗时 {{ lastSyncElapsed }}</span>
+        </template>
       </div>
       <button @click="showSyncResult = false" class="text-[10px] text-[#666] hover:text-white transition">✕</button>
     </div>

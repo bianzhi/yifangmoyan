@@ -131,4 +131,7 @@ export interface SyncProgress {
   current_symbols: string[];
   preparing: boolean;
   prepare_error: string;
+  all_skipped: boolean;
+  skipped_count: number;
+  latest_date: string;
 }

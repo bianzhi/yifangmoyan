@@ -1109,7 +1109,7 @@ async function stopBgSyncFromChart() {
     clearInterval(bgSyncTimer);
     bgSyncTimer = null;
   }
-  bgSyncProgress.value = { running: false, board: "", levels: [], total: 0, completed: 0, success: 0, failures: [], retrying: false, retry_round: 0, cancelled: false, current_symbols: [], preparing: false, prepare_error: "" };
+  bgSyncProgress.value = { running: false, board: "", levels: [], total: 0, completed: 0, success: 0, failures: [], retrying: false, retry_round: 0, cancelled: false, current_symbols: [], preparing: false, prepare_error: "", all_skipped: false, skipped_count: 0, latest_date: "" };
 }
 
 // ===== 事件处理 =====

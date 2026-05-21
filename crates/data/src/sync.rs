@@ -2664,6 +2664,72 @@ fn get_parquet_last_date(filepath: &Path) -> Option<String> {
     None
 }
 
+/// 快速检查一个板块的本地数据是否已是最新（纯本地文件检查，无网络请求）
+/// 返回 (本地股票数, 今日更新数, 是否全部最新, 最近同步日期)
+/// 仅使用文件修改时间判断，不解析 parquet，极快
+pub fn quick_check_board_up_to_date(
+    data_dir: &Path,
+    board: &str,
+    levels: &[TimeFrame],
+) -> (usize, usize, bool, String) {
+    let cache_dir = data_dir.join("kline_cache");
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+
+    // 收集该板块的所有本地股票代码（从第一个级别目录扫描）
+    let first_dir_name = tf_dir_name(levels[0]);
+    let first_dir = cache_dir.join(first_dir_name);
+    let local_codes: Vec<String> = if first_dir.exists() {
+        extract_codes_from_dir(&first_dir)
+            .into_iter()
+            .filter(|code| classify_board(code) == board)
+            .collect()
+    } else {
+        return (0, 0, false, String::new());
+    };
+
+    let total = local_codes.len();
+    if total == 0 {
+        return (0, 0, false, String::new());
+    }
+
+    // 检查每只股票的每个级别文件修改时间
+    let mut today_count = 0usize;
+    let mut latest_date = String::new();
+
+    for code in &local_codes {
+        let mut all_today = true;
+        for &tf in levels {
+            let dir_name = tf_dir_name(tf);
+            let filepath = cache_dir.join(dir_name).join(format!("{}.parquet", code));
+            if let Ok(metadata) = std::fs::metadata(&filepath) {
+                if let Ok(modified) = metadata.modified() {
+                    let modified_date: chrono::DateTime<chrono::Local> = modified.into();
+                    let mod_str = modified_date.format("%Y-%m-%d").to_string();
+                    if mod_str > latest_date {
+                        latest_date = mod_str.clone();
+                    }
+                    if mod_str != today {
+                        // 不是今天修改，用 is_local_up_to_date 进一步检查
+                        if !is_local_up_to_date(&filepath) {
+                            all_today = false;
+                        }
+                    }
+                } else {
+                    all_today = false;
+                }
+            } else {
+                all_today = false;
+            }
+        }
+        if all_today {
+            today_count += 1;
+        }
+    }
+
+    let all_up_to_date = today_count == total && total > 0;
+    (total, today_count, all_up_to_date, latest_date)
+}
+
 /// 快速检查一只股票在所有指定级别是否已是最新（不需要发网络请求）
 /// 用于批量预过滤，避免对已最新的股票发无意义的网络请求
 pub fn is_stock_up_to_date(data_dir: &Path, symbol: &str, levels: &[TimeFrame]) -> bool {

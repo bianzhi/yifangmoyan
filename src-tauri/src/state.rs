@@ -32,6 +32,12 @@ pub struct SyncProgress {
     pub preparing: bool,
     /// 获取列表失败的错误信息
     pub prepare_error: String,
+    /// 快速检查后所有股票都已最新，完全跳过
+    pub all_skipped: bool,
+    /// 跳过的股票数量
+    pub skipped_count: usize,
+    /// 最近同步日期（来自文件修改时间）
+    pub latest_date: String,
 }
 
 impl Default for SyncProgress {
@@ -50,6 +56,9 @@ impl Default for SyncProgress {
             current_symbols: Vec::new(),
             preparing: false,
             prepare_error: String::new(),
+            all_skipped: false,
+            skipped_count: 0,
+            latest_date: String::new(),
         }
     }
 }

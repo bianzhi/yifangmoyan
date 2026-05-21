@@ -129,4 +129,6 @@ export interface SyncProgress {
   retry_round: number;
   cancelled: boolean;
   current_symbols: string[];
+  preparing: boolean;
+  prepare_error: string;
 }

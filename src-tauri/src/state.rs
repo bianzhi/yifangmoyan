@@ -28,6 +28,10 @@ pub struct SyncProgress {
     pub cancelled: bool,
     /// 当前正在同步的股票代码（多线程时为最后一批）
     pub current_symbols: Vec<String>,
+    /// 是否正在获取股票列表（预热阶段）
+    pub preparing: bool,
+    /// 获取列表失败的错误信息
+    pub prepare_error: String,
 }
 
 impl Default for SyncProgress {
@@ -44,6 +48,8 @@ impl Default for SyncProgress {
             retry_round: 0,
             cancelled: false,
             current_symbols: Vec::new(),
+            preparing: false,
+            prepare_error: String::new(),
         }
     }
 }

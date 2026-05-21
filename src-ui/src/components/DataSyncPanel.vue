@@ -66,6 +66,7 @@ const loadingOnlineInfo = ref(false);
 
 // 同步
 const syncing = ref(false);
+const syncPreparing = ref(false); // 正在获取股票列表
 const syncingBoard = ref<string | null>(null);
 const syncTotal = ref(0);
 const syncCompleted = ref(0);
@@ -297,10 +298,11 @@ async function startSync() {
 
   // 安全检查：如后端残留 running=true（上次取消后未清理），先重置
   try {
-    const st = await invoke<{ running: boolean; cancelled: boolean }>("get_sync_status");
+    const st = await invoke<{ running: boolean; cancelled: boolean; preparing: boolean; prepare_error: string }>("get_sync_status");
     if (st.running) {
-      // 后端残留 running=true，无论 cancelled 与否，强制清理
       await invoke("cancel_sync");
+      // 等一小段时间让后端线程清理完成
+      await new Promise(r => setTimeout(r, 200));
     }
   } catch { /* ignore */ }
 
@@ -313,69 +315,27 @@ async function startSync() {
   syncingBoard.value = boardId;
   error.value = "";
   syncing.value = true;
+  syncPreparing.value = true; // 正在获取股票列表
   syncTotal.value = 0;
   syncCompleted.value = 0;
   syncFailedDetails.value = [];
   currentSymbols.value = [];
+  syncRetrying.value = false;
+  syncRetryRound.value = 0;
   syncElapsed.value = "0秒";
   showSyncResult.value = false;
   startSyncTimer();
 
   try {
-    // 使用非阻塞后台同步，不阻塞 UI
     await invoke("start_sync_board", {
       board: boardId,
       levels: selectedLevels.value,
       startDate: startDate.value || null,
       force: forceSync.value,
     });
-
-    // 轮询后台同步进度
-    syncPollTimer = setInterval(async () => {
-      try {
-        const status = await invoke<{
-          running: boolean;
-          board: string;
-          levels: string[];
-          total: number;
-          completed: number;
-          success: number;
-          failures: [string, string, string][];
-          retrying: boolean;
-          retry_round: number;
-          cancelled: boolean;
-          current_symbols: string[];
-        }>("get_sync_status");
-
-        syncTotal.value = status.total;
-        syncCompleted.value = status.completed;
-        currentSymbols.value = status.current_symbols ?? [];
-        syncRetrying.value = status.retrying;
-        syncRetryRound.value = status.retry_round;
-        syncFailedDetails.value = status.failures.map(f => ({
-          symbol: f[0],
-          level: f[1],
-          msg: f[2],
-        }));
-
-        if (!status.running) {
-          if (syncPollTimer) { clearInterval(syncPollTimer); syncPollTimer = null; }
-          lastSyncSuccess.value = status.success;
-          lastSyncFailed.value = status.failures.length;
-          lastSyncElapsed.value = syncElapsed.value;
-          syncing.value = false;
-          syncingBoard.value = null;
-          stopSyncTimer();
-          showSyncResult.value = true;
-          // 5秒后自动隐藏成功提示
-          setTimeout(() => { showSyncResult.value = false; }, 5_000);
-          refreshStatus();
-          loadBoardOnlineInfo();
-        }
-      } catch {
-        // 轮询失败不中断
-      }
-    }, 2_000);
+    // start_sync_board 立即返回，后台线程获取列表+同步
+    // 开始轮询
+    startStatusPolling();
   } catch (e: any) {
     error.value = `启动同步失败: ${e}`;
     syncing.value = false;
@@ -384,10 +344,79 @@ async function startSync() {
   }
 }
 
+/** 轮询后端同步状态，直到同步完成/失败/取消 */
+function startStatusPolling() {
+  // 清理旧的轮询
+  if (syncPollTimer) { clearInterval(syncPollTimer); syncPollTimer = null; }
+
+  syncPollTimer = setInterval(async () => {
+    try {
+      const status = await invoke<{
+        running: boolean;
+        board: string;
+        levels: string[];
+        total: number;
+        completed: number;
+        success: number;
+        failures: [string, string, string][];
+        retrying: boolean;
+        retry_round: number;
+        cancelled: boolean;
+        current_symbols: string[];
+        preparing: boolean;
+        prepare_error: string;
+      }>("get_sync_status");
+
+      // 更新前端状态
+      syncTotal.value = status.total;
+      syncCompleted.value = status.completed;
+      currentSymbols.value = status.current_symbols ?? [];
+      syncRetrying.value = status.retrying;
+      syncRetryRound.value = status.retry_round;
+      syncPreparing.value = status.preparing;
+      syncFailedDetails.value = status.failures.map(f => ({
+        symbol: f[0],
+        level: f[1],
+        msg: f[2],
+      }));
+
+      // 检查获取列表是否失败
+      if (status.prepare_error && !status.running) {
+        error.value = status.prepare_error;
+        syncing.value = false;
+        syncingBoard.value = null;
+        stopSyncTimer();
+        if (syncPollTimer) { clearInterval(syncPollTimer); syncPollTimer = null; }
+        return;
+      }
+
+      // 同步完成（非 preparing 且非 running）
+      if (!status.running && !status.preparing) {
+        if (syncPollTimer) { clearInterval(syncPollTimer); syncPollTimer = null; }
+        lastSyncSuccess.value = status.success;
+        lastSyncFailed.value = status.failures.length;
+        lastSyncElapsed.value = syncElapsed.value;
+        syncing.value = false;
+        syncingBoard.value = null;
+        stopSyncTimer();
+        if (status.success > 0 || status.failures.length > 0) {
+          showSyncResult.value = true;
+          setTimeout(() => { showSyncResult.value = false; }, 5_000);
+        }
+        refreshStatus();
+        loadBoardOnlineInfo();
+      }
+    } catch {
+      // 轮询失败不中断，继续重试
+    }
+  }, 1_500); // 1.5秒轮询，更频繁以快速检测 preparing→running 的变化
+}
+
 function cancelSync() {
   invoke("cancel_sync").catch(() => {});
   if (syncPollTimer) { clearInterval(syncPollTimer); syncPollTimer = null; }
   syncing.value = false;
+  syncPreparing.value = false;
   syncingBoard.value = null;
   stopSyncTimer();
 }
@@ -620,6 +649,8 @@ onMounted(async () => {
       retry_round: number;
       cancelled: boolean;
       current_symbols: string[];
+      preparing: boolean;
+      prepare_error: string;
     }>("get_sync_status");
 
     if (status.running && !status.cancelled) {
@@ -643,6 +674,8 @@ onMounted(async () => {
             retry_round: number;
             cancelled: boolean;
             current_symbols: string[];
+            preparing: boolean;
+            prepare_error: string;
           }>("get_sync_status");
 
           bgSyncTotal.value = s.total;
@@ -694,25 +727,30 @@ onMounted(async () => {
         <div class="flex items-center gap-2">
           <div class="w-2 h-2 rounded-full animate-pulse" :class="syncRetrying ? 'bg-[#ff9800]' : 'bg-[#e94560]'"></div>
           <span class="text-xs font-bold" :class="syncRetrying ? 'text-[#ff9800]' : 'text-[#e94560]'">
-            {{ syncRetrying ? `重试中 第${syncRetryRound}轮` : `正在同步${selectedBoardLabel()}` }}
+            <template v-if="syncPreparing">正在获取{{ selectedBoardLabel() }}股票列表...</template>
+            <template v-else-if="syncRetrying">重试中 第{{ syncRetryRound }}轮</template>
+            <template v-else>正在同步{{ selectedBoardLabel() }}</template>
           </span>
-          <span class="text-lg font-black text-white tabular-nums">{{ syncPercent }}%</span>
+          <span v-if="!syncPreparing" class="text-lg font-black text-white tabular-nums">{{ syncPercent }}%</span>
         </div>
         <div class="flex items-center gap-3">
-          <span class="text-[10px] text-[#9e9e9e]">{{ syncElapsed }}<span v-if="syncETA" class="text-[#ff9800]"> · 约{{ syncETA }}</span></span>
-          <span class="text-[10px] text-[#666] font-mono tabular-nums">{{ syncCompleted }}/{{ syncTotal }}</span>
+          <template v-if="!syncPreparing">
+            <span class="text-[10px] text-[#9e9e9e]">{{ syncElapsed }}<span v-if="syncETA" class="text-[#ff9800]"> · 约{{ syncETA }}</span></span>
+            <span class="text-[10px] text-[#666] font-mono tabular-nums">{{ syncCompleted }}/{{ syncTotal }}</span>
+          </template>
           <button @click="cancelSync" class="text-[10px] px-2 py-0.5 rounded border border-[#e94560]/40 text-[#e94560] hover:bg-[#e94560]/20 transition">取消</button>
         </div>
       </div>
       <!-- 第二行：进度条 -->
       <div class="px-4 pb-2">
         <div class="w-full h-1.5 bg-[#0f3460] rounded-full overflow-hidden">
-          <div class="h-full rounded-full transition-all duration-300"
+          <div v-if="syncPreparing" class="h-full rounded-full bg-[#e94560] animate-pulse" style="width: 30%"></div>
+          <div v-else class="h-full rounded-full transition-all duration-300"
             :style="{ width: `${syncPercent}%`, backgroundColor: progressColor(syncPercent) }"></div>
         </div>
       </div>
       <!-- 第三行：成功/失败/剩余 + 当前同步符号 -->
-      <div class="px-4 pb-2 flex items-center justify-between text-[10px]">
+      <div v-if="!syncPreparing" class="px-4 pb-2 flex items-center justify-between text-[10px]">
         <div class="flex items-center gap-3">
           <span class="text-[#26a69a]">{{ syncCompleted - syncFailedDetails.length }} 成功</span>
           <span :class="syncFailedDetails.length > 0 ? 'text-[#ff5722]' : 'text-[#555]'">{{ syncFailedDetails.length }} 失败</span>

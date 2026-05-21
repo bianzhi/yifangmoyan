@@ -391,6 +391,7 @@ use crate::state::SyncProgress;
 
 /// 启动后台异步同步（非阻塞）。前端通过 `get_sync_status` 轮询进度。
 /// 同步完成后自动重试失败项，直到 0 失败或被取消。
+/// 获取股票列表也在后台线程中完成，不阻塞 Tauri command 线程。
 #[tauri::command]
 pub fn start_sync_board(
     state: State<'_, AppState>,
@@ -418,22 +419,14 @@ pub fn start_sync_board(
     };
     let start = start_date.unwrap_or_else(|| "2024-01-01".into());
 
-    // 获取股票列表
-    let codes = yifang_data::fetch_board_stock_codes(&board)
-        .map_err(|e| format!("获取板块 {} 股票列表失败: {}", board, e))?;
-
-    if codes.is_empty() {
-        return Err(format!("板块 {} 没有可同步的股票", board));
-    }
-
-    // 初始化进度
+    // 初始化进度：先进入 preparing 阶段（后台获取股票列表）
     {
         let mut progress = state.sync_progress.lock().map_err(|e| e.to_string())?;
         *progress = SyncProgress {
             running: true,
             board: board.clone(),
             levels: levels.clone(),
-            total: codes.len(),
+            total: 0,
             completed: 0,
             success: 0,
             failures: Vec::new(),
@@ -441,12 +434,43 @@ pub fn start_sync_board(
             retry_round: 0,
             cancelled: false,
             current_symbols: Vec::new(),
+            preparing: true,
+            prepare_error: String::new(),
         };
     }
 
-    // 在后台线程中执行并行同步（4 线程）
+    // 获取股票列表 + 执行同步 全部在后台线程中完成
     let progress_state = state.sync_progress.clone();
     std::thread::spawn(move || {
+        // ── 阶段1：获取股票列表 ──
+        let codes = match yifang_data::fetch_board_stock_codes(&board) {
+            Ok(codes) => codes,
+            Err(e) => {
+                let mut p = progress_state.lock().unwrap();
+                p.running = false;
+                p.preparing = false;
+                p.prepare_error = format!("获取板块 {} 股票列表失败: {}", board, e);
+                eprintln!("[同步] {}", p.prepare_error);
+                return;
+            }
+        };
+
+        if codes.is_empty() {
+            let mut p = progress_state.lock().unwrap();
+            p.running = false;
+            p.preparing = false;
+            p.prepare_error = format!("板块 {} 没有可同步的股票", board);
+            return;
+        }
+
+        // ── 阶段2：更新进度，退出 preparing 状态，开始同步 ──
+        {
+            let mut p = progress_state.lock().unwrap();
+            p.preparing = false;
+            p.total = codes.len();
+        }
+
+        eprintln!("[后台同步] 板块 {} 获取到 {} 只股票，开始同步", board, codes.len());
         run_sync_parallel(&progress_state, &data_dir, &codes, &tfs, &start, force, 4);
         eprintln!("[后台同步] 板块 {} 同步完成", board);
     });
@@ -464,6 +488,7 @@ pub fn get_sync_status(state: State<'_, AppState>) -> Result<SyncProgress, Strin
 /// 启动时自动同步 — 对所有板块做增量同步，失败自动重试
 /// 与 start_sync_board 类似，但会按板块依次同步
 /// 自动清理退市股数据 + 发现新股并同步
+/// 所有网络请求（获取股票列表等）均在后台线程中完成，不阻塞 Tauri command 线程
 #[tauri::command]
 pub fn auto_sync_on_startup(
     state: State<'_, AppState>,
@@ -488,6 +513,26 @@ pub fn auto_sync_on_startup(
     };
     let start = "2024-01-01".to_string();
 
+    // 初始化进度：先进入 preparing 阶段
+    {
+        let mut progress = state.sync_progress.lock().map_err(|e| e.to_string())?;
+        *progress = SyncProgress {
+            running: true,
+            board: "全部(增量)".into(),
+            levels: levels.clone(),
+            total: 0,
+            completed: 0,
+            success: 0,
+            failures: Vec::new(),
+            retrying: false,
+            retry_round: 0,
+            cancelled: false,
+            current_symbols: Vec::new(),
+            preparing: true,
+            prepare_error: String::new(),
+        };
+    }
+
     // ── 1. 清理退市股（异步不阻塞，失败不影响同步） ──
     let delisted_dir = data_dir.clone();
     std::thread::spawn(move || {
@@ -500,75 +545,57 @@ pub fn auto_sync_on_startup(
         }
     });
 
-    // ── 2. 从在线获取全量在市股票列表（用于发现新股+增量同步） ──
-    let online_codes = yifang_data::fetch_all_listed_codes().unwrap_or_else(|e| {
-        eprintln!("[启动同步] 获取在线股票列表失败: {}, 回退到本地列表", e);
-        // 回退：只用本地列表
-        let manager = state.manager.read().unwrap();
-        yifang_data::get_all_stock_codes(manager.data_dir())
-    });
-
-    if online_codes.is_empty() {
-        // 本地没数据，从沪主板同步前100只作为引导
-        eprintln!("[启动同步] 本地无数据，从沪主板同步引导数据...");
-        let codes = yifang_data::fetch_board_stock_codes("sh_main").unwrap_or_default();
-        let initial: Vec<String> = codes.into_iter().take(100).collect();
-        if initial.is_empty() {
-            return Ok(());
-        }
-
-        // 初始化进度（引导数据）
-        {
-            let mut progress = state.sync_progress.lock().map_err(|e| e.to_string())?;
-            *progress = SyncProgress {
-                running: true,
-                board: "sh_main(引导)".into(),
-                levels: levels.clone(),
-                total: initial.len(),
-                completed: 0,
-                success: 0,
-                failures: Vec::new(),
-                retrying: false,
-                retry_round: 0,
-                cancelled: false,
-                current_symbols: Vec::new(),
-            };
-        }
-
-        let progress_state = state.sync_progress.clone();
-        let tf_list = tfs.clone();
-        let force = false;
-        std::thread::spawn(move || {
-            run_sync_parallel(&progress_state, &data_dir, &initial, &tf_list, &start, force, 4);
-            eprintln!("[启动同步] 引导数据同步完成");
-        });
-        return Ok(());
-    }
-
-    // 本地有数据，增量更新（online_codes 包含在市全量列表，含新股）
-    eprintln!("[启动同步] 增量同步 {} 只股票（含新股）...", online_codes.len());
-    {
-        let mut progress = state.sync_progress.lock().map_err(|e| e.to_string())?;
-        *progress = SyncProgress {
-            running: true,
-            board: "全部(增量)".into(),
-            levels: levels.clone(),
-            total: online_codes.len(),
-            completed: 0,
-            success: 0,
-            failures: Vec::new(),
-            retrying: false,
-            retry_round: 0,
-            cancelled: false,
-            current_symbols: Vec::new(),
-        };
-    }
-
+    // ── 2. 所有网络获取 + 同步 在后台线程中完成 ──
     let progress_state = state.sync_progress.clone();
     let tf_list = tfs;
-    let force = false;
+    let data_dir_for_bg = {
+        let manager = state.manager.read().map_err(|e| e.to_string())?;
+        manager.data_dir().to_path_buf()
+    };
     std::thread::spawn(move || {
-        run_sync_parallel(&progress_state, &data_dir, &online_codes, &tf_list, &start, force, 4);
+        // 获取全量在市股票列表
+        let online_codes = yifang_data::fetch_all_listed_codes().unwrap_or_else(|e| {
+            eprintln!("[启动同步] 获取在线股票列表失败: {}, 回退到本地列表", e);
+            yifang_data::get_all_stock_codes(&data_dir_for_bg)
+        });
+
+        if online_codes.is_empty() {
+            // 本地没数据，从沪主板同步前100只作为引导
+            eprintln!("[启动同步] 本地无数据，从沪主板同步引导数据...");
+            let codes = yifang_data::fetch_board_stock_codes("sh_main").unwrap_or_default();
+            let initial: Vec<String> = codes.into_iter().take(100).collect();
+            if initial.is_empty() {
+                let mut p = progress_state.lock().unwrap();
+                p.running = false;
+                p.preparing = false;
+                p.prepare_error = "无法获取引导数据".into();
+                return;
+            }
+
+            // 更新进度（引导数据）
+            {
+                let mut p = progress_state.lock().unwrap();
+                p.preparing = false;
+                p.board = "sh_main(引导)".into();
+                p.total = initial.len();
+            }
+
+            let force = false;
+            run_sync_parallel(&progress_state, &data_dir_for_bg, &initial, &tf_list, &start, force, 4);
+            eprintln!("[启动同步] 引导数据同步完成");
+            return;
+        }
+
+        // 本地有数据，增量更新
+        eprintln!("[启动同步] 增量同步 {} 只股票（含新股）...", online_codes.len());
+        {
+            let mut p = progress_state.lock().unwrap();
+            p.preparing = false;
+            p.total = online_codes.len();
+        }
+
+        let force = false;
+        run_sync_parallel(&progress_state, &data_dir_for_bg, &online_codes, &tf_list, &start, force, 4);
         eprintln!("[启动同步] 增量同步完成");
     });
 

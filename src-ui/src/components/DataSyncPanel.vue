@@ -9,7 +9,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 
 interface LevelStats { level: string; dir_name: string; file_count: number; sample_symbol: string | null; sample_count: number | null; sample_start: string | null; sample_end: string | null; }
 interface BoardStats { id: string; name: string; count: number; }
-interface BoardOnlineInfo { id: string; name: string; total_count: number; local_count: number; }
+interface BoardOnlineInfo { id: string; name: string; total_count: number; local_count: number; latest_date: string; }
 interface DataStatus { data_dir: string; total_stocks: number; levels: LevelStats[]; boards: BoardStats[]; }
 interface ValidationIssue { severity: string; category: string; row_index: number | null; datetime: string | null; message: string; }
 interface ValidateLevelResult { level: string; total_rows: number; issues: ValidationIssue[]; score: number; }
@@ -218,6 +218,11 @@ function boardLocalCount(id: string): number {
     if (board) return board.count;
   }
   return 0;
+}
+
+function boardLatestDate(id: string): string {
+  const info = boardOnlineInfo.value.find(b => b.id === id);
+  return info?.latest_date ?? "";
 }
 
 function boardPercent(id: string): number {
@@ -829,6 +834,7 @@ onMounted(async () => {
                 :style="{ width: `${boardPercent(bd.id)}%`, backgroundColor: bd.color }"></div>
             </div>
             <div class="text-[9px] text-[#aaa] font-mono">{{ boardLocalCount(bd.id) }}<span class="text-[#555]">/{{ boardOnlineTotal(bd.id) ?? '—' }}</span></div>
+            <div v-if="boardLatestDate(bd.id)" class="text-[8px] text-[#666] font-mono mt-0.5">{{ boardLatestDate(bd.id) }}</div>
           </div>
         </div>
 

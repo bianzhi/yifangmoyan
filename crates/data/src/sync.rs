@@ -744,6 +744,8 @@ pub struct BoardOnlineInfo {
     pub total_count: usize,                              // 在线总股票数
     pub local_count: usize,                              // 本地有日线数据的股票数（兼容旧前端）
     pub level_counts: std::collections::HashMap<String, usize>,  // 每个级别的本地股票数
+    /// 该板块最新的数据文件修改日期 (YYYY-MM-DD)
+    pub latest_date: String,
 }
 
 /// 从在线 API 获取指定板块的股票总数
@@ -886,6 +888,9 @@ pub fn get_board_online_info(data_dir: &Path) -> Vec<BoardOnlineInfo> {
         std::collections::HashMap::new();
     let mut board_has_any: std::collections::HashMap<String, std::collections::HashSet<String>> =
         std::collections::HashMap::new(); // board_id -> set of codes
+    // 该板块最新的数据文件修改日期 (YYYY-MM-DD)
+    let mut board_latest: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
 
     for tf in all_tfs {
         let dir_name = tf_dir_name(*tf);
@@ -916,6 +921,19 @@ pub fn get_board_online_info(data_dir: &Path) -> Vec<BoardOnlineInfo> {
                 .entry(board.to_string())
                 .or_default()
                 .insert(code);
+            // 更新该板块的最新文件修改日期
+            if let Ok(metadata) = entry.metadata() {
+                if let Ok(modified) = metadata.modified() {
+                    let modified_date: chrono::DateTime<chrono::Local> = modified.into();
+                    let mod_str = modified_date.format("%Y-%m-%d").to_string();
+                    board_latest
+                        .entry(board.to_string())
+                        .and_modify(|d| {
+                            if mod_str > *d { *d = mod_str.clone(); }
+                        })
+                        .or_insert(mod_str);
+                }
+            }
         }
     }
 
@@ -955,6 +973,7 @@ pub fn get_board_online_info(data_dir: &Path) -> Vec<BoardOnlineInfo> {
             total_count: online_count,
             local_count,
             level_counts: lv_counts,
+            latest_date: board_latest.remove(*id).unwrap_or_default(),
         });
     }
 
@@ -976,6 +995,7 @@ pub fn get_board_online_info(data_dir: &Path) -> Vec<BoardOnlineInfo> {
         total_count: all_online_count,
         local_count: all_local_count,
         level_counts: all_level_counts,
+        latest_date: results.iter().map(|r| r.latest_date.as_str()).max().unwrap_or("").to_string(),
     });
 
     results

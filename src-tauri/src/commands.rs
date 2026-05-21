@@ -463,6 +463,7 @@ pub fn get_sync_status(state: State<'_, AppState>) -> Result<SyncProgress, Strin
 
 /// 启动时自动同步 — 对所有板块做增量同步，失败自动重试
 /// 与 start_sync_board 类似，但会按板块依次同步
+/// 自动清理退市股数据 + 发现新股并同步
 #[tauri::command]
 pub fn auto_sync_on_startup(
     state: State<'_, AppState>,
@@ -487,13 +488,27 @@ pub fn auto_sync_on_startup(
     };
     let start = "2024-01-01".to_string();
 
-    // 获取所有已有股票代码（增量同步：只为本地已有数据的股票更新）
-    let local_codes: Vec<String> = {
-        let manager = state.manager.read().map_err(|e| e.to_string())?;
-        yifang_data::get_all_stock_codes(manager.data_dir())
-    };
+    // ── 1. 清理退市股（异步不阻塞，失败不影响同步） ──
+    let delisted_dir = data_dir.clone();
+    std::thread::spawn(move || {
+        match yifang_data::clean_delisted_stocks(&delisted_dir) {
+            Ok((codes, files)) if !codes.is_empty() => {
+                eprintln!("[启动同步] 清理退市股: {} 只, 删除 {} 个文件", codes.len(), files);
+            }
+            Ok(_) => eprintln!("[启动同步] 无退市股需要清理"),
+            Err(e) => eprintln!("[启动同步] 清理退市股失败(不影响同步): {}", e),
+        }
+    });
 
-    if local_codes.is_empty() {
+    // ── 2. 从在线获取全量在市股票列表（用于发现新股+增量同步） ──
+    let online_codes = yifang_data::fetch_all_listed_codes().unwrap_or_else(|e| {
+        eprintln!("[启动同步] 获取在线股票列表失败: {}, 回退到本地列表", e);
+        // 回退：只用本地列表
+        let manager = state.manager.read().unwrap();
+        yifang_data::get_all_stock_codes(manager.data_dir())
+    });
+
+    if online_codes.is_empty() {
         // 本地没数据，从沪主板同步前100只作为引导
         eprintln!("[启动同步] 本地无数据，从沪主板同步引导数据...");
         let codes = yifang_data::fetch_board_stock_codes("sh_main").unwrap_or_default();
@@ -530,15 +545,15 @@ pub fn auto_sync_on_startup(
         return Ok(());
     }
 
-    // 本地有数据，增量更新
-    eprintln!("[启动同步] 增量同步 {} 只股票...", local_codes.len());
+    // 本地有数据，增量更新（online_codes 包含在市全量列表，含新股）
+    eprintln!("[启动同步] 增量同步 {} 只股票（含新股）...", online_codes.len());
     {
         let mut progress = state.sync_progress.lock().map_err(|e| e.to_string())?;
         *progress = SyncProgress {
             running: true,
             board: "全部(增量)".into(),
             levels: levels.clone(),
-            total: local_codes.len(),
+            total: online_codes.len(),
             completed: 0,
             success: 0,
             failures: Vec::new(),
@@ -553,7 +568,7 @@ pub fn auto_sync_on_startup(
     let tf_list = tfs;
     let force = false;
     std::thread::spawn(move || {
-        run_sync_parallel(&progress_state, &data_dir, &local_codes, &tf_list, &start, force, 4);
+        run_sync_parallel(&progress_state, &data_dir, &online_codes, &tf_list, &start, force, 4);
         eprintln!("[启动同步] 增量同步完成");
     });
 
@@ -826,6 +841,21 @@ pub fn cancel_sync(state: State<'_, AppState>) -> Result<(), String> {
     let mut progress = state.sync_progress.lock().map_err(|e| e.to_string())?;
     progress.cancelled = true;
     Ok(())
+}
+
+/// 清理退市股数据：对比本地与在线在市列表，删除已退市股票的所有 K 线文件
+/// 返回 { delisted_codes: string[], removed_files: number }
+#[tauri::command]
+pub fn clean_delisted_stocks(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+    let data_dir = {
+        let manager = state.manager.read().map_err(|e| e.to_string())?;
+        manager.data_dir().to_path_buf()
+    };
+    let (codes, files) = yifang_data::clean_delisted_stocks(&data_dir).map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({
+        "delisted_codes": codes,
+        "removed_files": files,
+    }))
 }
 
 /// 清空所有 K 线数据

@@ -127,6 +127,10 @@ const currentDataDir = ref("");
 const movingData = ref(false);
 const moveResult = ref<MoveDataResult | null>(null);
 
+// 清理退市股
+const cleaningDelisted = ref(false);
+const delistedResult = ref<{ codes: string[]; files: number } | null>(null);
+
 // 数据保留配置（持久化到 localStorage）
 const RETENTION_KEY = "moyan_retention_config";
 function loadRetention(): RetentionConfig {
@@ -548,6 +552,22 @@ async function doTrimOldData() {
     error.value = `清理过期数据失败: ${e}`;
   } finally {
     trimmingData.value = false;
+  }
+}
+
+// 清理退市股
+async function doCleanDelisted() {
+  cleaningDelisted.value = true;
+  delistedResult.value = null;
+  error.value = "";
+  try {
+    const result = await invoke<{ delisted_codes: string[]; removed_files: number }>("clean_delisted_stocks");
+    delistedResult.value = { codes: result.delisted_codes, files: result.removed_files };
+    await refreshStatus();
+  } catch (e: any) {
+    error.value = `清理退市股失败: ${e}`;
+  } finally {
+    cleaningDelisted.value = false;
   }
 }
 
@@ -1058,6 +1078,32 @@ onMounted(async () => {
               <div v-if="trimResult" class="text-[11px] mt-1.5 space-y-0.5">
                 <div class="text-[#26a69a]">✓ 裁剪 {{ trimResult.trimmed_files }} 个文件，删除 {{ trimResult.removed_files }} 个文件</div>
                 <div class="text-[#9e9e9e]">数据行: {{ trimResult.rows_before }} → {{ trimResult.rows_after }}（减少 {{ trimResult.rows_before - trimResult.rows_after }}）</div>
+              </div>
+            </div>
+
+            <!-- 清理退市股 -->
+            <div class="border-t border-[#2a2a4a]/30 pt-3">
+              <div class="text-[10px] text-[#9e9e9e] uppercase tracking-wider">清理退市股</div>
+              <div class="text-[9px] text-[#666] mt-0.5">对比在线在市列表，删除已退市股票的所有 K 线数据</div>
+              <button @click="doCleanDelisted" :disabled="cleaningDelisted"
+                class="w-full mt-2 py-2 text-[11px] rounded-lg bg-[#0f3460] text-[#ef5350] border border-[#ef5350]/20 hover:bg-[#1a4a7a] transition disabled:opacity-50 flex items-center justify-center gap-1.5">
+                <svg v-if="cleaningDelisted" class="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
+                  <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                  <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
+                <svg v-else class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636"/>
+                </svg>
+                {{ cleaningDelisted ? '清理中...' : '清理退市股' }}
+              </button>
+              <div v-if="delistedResult" class="text-[11px] mt-1.5 space-y-0.5">
+                <div v-if="delistedResult.codes.length > 0" class="text-[#26a69a]">
+                  ✓ 清理 {{ delistedResult.codes.length }} 只退市股，删除 {{ delistedResult.files }} 个文件
+                </div>
+                <div v-else class="text-[#9e9e9e]">✓ 无退市股需要清理</div>
+                <div v-if="delistedResult.codes.length > 0" class="text-[#9e9e9e] truncate" :title="delistedResult.codes.join(', ')">
+                  {{ delistedResult.codes.slice(0, 10).join(', ') }}{{ delistedResult.codes.length > 10 ? '...' : '' }}
+                </div>
               </div>
             </div>
 

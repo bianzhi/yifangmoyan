@@ -2882,6 +2882,84 @@ pub fn trim_old_data(data_dir: &Path, retention_months: &std::collections::HashM
     })
 }
 
+/// 从在线数据源获取全市场当前在市（list_status=L）的 A 股代码
+/// 用于与本地列表对比，发现退市股和新增股
+pub fn fetch_all_listed_codes() -> Result<Vec<String>> {
+    // 直接用 Tushare 的 all_a 获取全市场在市股票
+    fetch_board_codes_tushare("all_a")
+        .or_else(|_| {
+            // Tushare 失败，则合并各板块从东方财富/新浪获取
+            let mut all_codes = Vec::new();
+            let mut codes_set = std::collections::HashSet::new();
+            for board in &["sh_main", "sz_main", "gem", "star", "bse"] {
+                if let Ok(codes) = fetch_board_stock_codes(board) {
+                    for c in codes {
+                        if codes_set.insert(c.clone()) {
+                            all_codes.push(c);
+                        }
+                    }
+                }
+            }
+            if all_codes.is_empty() {
+                Err(anyhow::anyhow!("所有数据源均无法获取在市股票列表"))
+            } else {
+                Ok(all_codes)
+            }
+        })
+}
+
+/// 清理退市股数据：对比本地已有股票与在线在市列表，删除已退市股票的所有 K 线文件
+///
+/// 返回 (删除的股票代码列表, 删除的文件数)
+pub fn clean_delisted_stocks(data_dir: &Path) -> Result<(Vec<String>, usize)> {
+    let local_codes = get_all_stock_codes(data_dir);
+    if local_codes.is_empty() {
+        return Ok((Vec::new(), 0));
+    }
+
+    let online_codes = fetch_all_listed_codes()?;
+    let online_set: std::collections::HashSet<_> = online_codes.iter().collect();
+
+    // 本地有但在线没有的 = 退市
+    let delisted: Vec<String> = local_codes
+        .into_iter()
+        .filter(|code| !online_set.contains(code))
+        .collect();
+
+    if delisted.is_empty() {
+        return Ok((Vec::new(), 0));
+    }
+
+    eprintln!("[清理退市] 发现 {} 只退市股票: {:?}", delisted.len(), delisted);
+
+    let cache_dir = data_dir.join("kline_cache");
+    let mut removed_files = 0usize;
+
+    for code in &delisted {
+        // 删除该股票在所有级别下的 parquet 文件
+        if let Ok(entries) = std::fs::read_dir(&cache_dir) {
+            for tf_entry in entries.flatten() {
+                let tf_path = tf_entry.path();
+                if tf_path.is_dir() {
+                    let parquet_path = tf_path.join(format!("{}.parquet", code));
+                    if parquet_path.exists() {
+                        if let Err(e) = std::fs::remove_file(&parquet_path) {
+                            eprintln!("[清理退市] 删除 {} 失败: {}", parquet_path.display(), e);
+                        } else {
+                            removed_files += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 清理空目录
+    let _ = crate::kline_manager::try_remove_empty_dirs(&cache_dir);
+
+    Ok((delisted, removed_files))
+}
+
 pub fn sync_board(
     data_dir: &Path,
     board: &str,

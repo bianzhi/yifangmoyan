@@ -49,6 +49,7 @@ pub fn run() {
             commands::open_data_dir,
             commands::clear_all_data,
             commands::trim_old_data,
+            commands::clean_delisted_stocks,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

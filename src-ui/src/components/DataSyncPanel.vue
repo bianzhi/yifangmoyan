@@ -299,16 +299,6 @@ function stopSyncTimer() {
 async function startSync() {
   if (syncing.value) return;
 
-  // 安全检查：如后端残留 running=true（上次取消后未清理），先重置
-  try {
-    const st = await invoke<{ running: boolean; cancelled: boolean; preparing: boolean; prepare_error: string }>("get_sync_status");
-    if (st.running) {
-      await invoke("cancel_sync");
-      // 等一小段时间让后端线程清理完成
-      await new Promise(r => setTimeout(r, 200));
-    }
-  } catch { /* ignore */ }
-
   if (selectedLevels.value.length === 0) {
     error.value = "请至少选择一个同步级别";
     return;
@@ -336,45 +326,8 @@ async function startSync() {
       startDate: startDate.value || null,
       force: forceSync.value,
     });
-    // start_sync_board 返回后，检查状态
-    // 如果快速检查发现已是最新，后端已设置 all_skipped=true, running=false
-    const status = await invoke<{
-      running: boolean;
-      board: string;
-      levels: string[];
-      total: number;
-      completed: number;
-      success: number;
-      failures: [string, string, string][];
-      retrying: boolean;
-      retry_round: number;
-      cancelled: boolean;
-      current_symbols: string[];
-      preparing: boolean;
-      prepare_error: string;
-      all_skipped: boolean;
-      skipped_count: number;
-      latest_date: string;
-    }>("get_sync_status");
-
-    if (status.all_skipped && !status.running) {
-      // 快速检查：数据已是最新，无需网络请求
-      syncing.value = false;
-      syncPreparing.value = false;
-      syncingBoard.value = null;
-      stopSyncTimer();
-      lastSyncSuccess.value = status.success;
-      lastSyncFailed.value = status.failures.length;
-      lastSyncElapsed.value = "即时";
-      lastSyncLatestDate.value = status.latest_date;
-      lastSyncStockCount.value = status.total;
-      showSyncResult.value = true;
-      syncAllSkipped.value = true;
-      setTimeout(() => { showSyncResult.value = false; }, 5_000);
-      return;
-    }
-
-    // 需要实际同步，开始轮询
+    // start_sync_board 非阻塞，立即返回。所有工作（快速检查、获取列表、同步）在后台线程。
+    // 统一走轮询获取状态，不再单独 get_sync_status 判断 all_skipped
     startStatusPolling();
   } catch (e: any) {
     error.value = `启动同步失败: ${e}`;
@@ -390,7 +343,7 @@ function startStatusPolling() {
   // 清理旧的轮询
   if (syncPollTimer) { clearInterval(syncPollTimer); syncPollTimer = null; }
 
-  syncPollTimer = setInterval(async () => {
+  const poll = async () => {
     try {
       const status = await invoke<{
         running: boolean;
@@ -454,7 +407,11 @@ function startStatusPolling() {
     } catch {
       // 轮询失败不中断，继续重试
     }
-  }, 1_500); // 1.5秒轮询
+  };
+
+  // 立即调一次（快速检查几百毫秒就完成的情况，不用等1.5秒）
+  poll();
+  syncPollTimer = setInterval(poll, 1_500);
 }
 
 function cancelSync() {

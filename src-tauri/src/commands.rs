@@ -390,8 +390,7 @@ pub fn sync_board(
 use crate::state::SyncProgress;
 
 /// 启动后台异步同步（非阻塞）。前端通过 `get_sync_status` 轮询进度。
-/// 同步完成后自动重试失败项，直到 0 失败或被取消。
-/// 获取股票列表也在后台线程中完成，不阻塞 Tauri command 线程。
+/// 所有耗时操作（快速检查、网络获取列表、同步）全在后台线程，command 线程立即返回。
 #[tauri::command]
 pub fn start_sync_board(
     state: State<'_, AppState>,
@@ -419,42 +418,7 @@ pub fn start_sync_board(
     };
     let start = start_date.unwrap_or_else(|| "2024-01-01".into());
 
-    // ── 非 force 模式：先快速本地检查，如果数据已是最新直接返回 ──
-    if !force {
-        let (total, today_count, all_up_to_date, latest_date) =
-            yifang_data::quick_check_board_up_to_date(&data_dir, &board, &tfs);
-
-        if all_up_to_date && total > 0 {
-            eprintln!("[快速检查] 板块 {} 本地 {} 只股票已是最新（最近同步: {}），跳过网络请求", board, total, latest_date);
-            // 设置一个短暂的"已是最新"状态，前端可以识别
-            let mut progress = state.sync_progress.lock().map_err(|e| e.to_string())?;
-            *progress = SyncProgress {
-                running: false,
-                board: board.clone(),
-                levels: levels.clone(),
-                total,
-                completed: total,
-                success: total,
-                failures: Vec::new(),
-                retrying: false,
-                retry_round: 0,
-                cancelled: false,
-                current_symbols: Vec::new(),
-                preparing: false,
-                prepare_error: String::new(),
-                all_skipped: true,
-                skipped_count: total,
-                latest_date,
-            };
-            return Ok(());
-        }
-
-        if total > 0 {
-            eprintln!("[快速检查] 板块 {} 本地 {}/{} 只已是最新，需要增量同步", board, today_count, total);
-        }
-    }
-
-    // 初始化进度：先进入 preparing 阶段（后台获取股票列表）
+    // 初始化进度：进入 preparing 阶段，后台线程完成所有工作
     {
         let mut progress = state.sync_progress.lock().map_err(|e| e.to_string())?;
         *progress = SyncProgress {
@@ -477,10 +441,44 @@ pub fn start_sync_board(
         };
     }
 
-    // 获取股票列表 + 执行同步 全部在后台线程中完成
+    // 所有工作在后台线程完成，command 线程立即返回
     let progress_state = state.sync_progress.clone();
     std::thread::spawn(move || {
-        // ── 阶段1：获取股票列表 ──
+        // ── 阶段0：快速本地检查（非 force 模式） ──
+        if !force {
+            let (total, today_count, all_up_to_date, latest_date) =
+                yifang_data::quick_check_board_up_to_date(&data_dir, &board, &tfs);
+
+            if all_up_to_date && total > 0 {
+                eprintln!("[快速检查] 板块 {} 本地 {} 只股票已是最新（最近同步: {}），跳过", board, total, latest_date);
+                let mut p = progress_state.lock().unwrap();
+                *p = SyncProgress {
+                    running: false,
+                    board: board.clone(),
+                    levels: levels.clone(),
+                    total,
+                    completed: total,
+                    success: total,
+                    failures: Vec::new(),
+                    retrying: false,
+                    retry_round: 0,
+                    cancelled: false,
+                    current_symbols: Vec::new(),
+                    preparing: false,
+                    prepare_error: String::new(),
+                    all_skipped: true,
+                    skipped_count: total,
+                    latest_date,
+                };
+                return;
+            }
+
+            if total > 0 {
+                eprintln!("[快速检查] 板块 {} 本地 {}/{} 只已是最新，需要增量同步", board, today_count, total);
+            }
+        }
+
+        // ── 阶段1：获取股票列表（网络请求） ──
         let codes = match yifang_data::fetch_board_stock_codes(&board) {
             Ok(codes) => codes,
             Err(e) => {

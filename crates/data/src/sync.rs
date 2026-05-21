@@ -520,7 +520,7 @@ fn get_eastmoney_strategies(board: &str) -> Vec<EastMoneyBoardStrategy> {
                 fs: "m:0+t:81+s:2048",
                 fid: "f3",
                 max_pages: 5,
-                filter: |code| code.starts_with("8") || code.starts_with("4"),
+                filter: |code| code.starts_with("8") || code.starts_with("4") || code.starts_with("9"),
             },
             // 备用策略
             EastMoneyBoardStrategy {
@@ -528,7 +528,7 @@ fn get_eastmoney_strategies(board: &str) -> Vec<EastMoneyBoardStrategy> {
                 fs: "m:0+t:81",
                 fid: "f3",
                 max_pages: 5,
-                filter: |code| code.starts_with("8") || code.starts_with("4"),
+                filter: |code| code.starts_with("8") || code.starts_with("4") || code.starts_with("9"),
             },
         ],
         "all_a" => vec![
@@ -1074,7 +1074,10 @@ pub struct ValidateStockResult {
 
 /// 股票代码转新浪 symbol (sz000001, sh600000)
 fn code_to_sina(code: &str) -> String {
-    if code.starts_with('6') || code.starts_with('9') {
+    // 北交所（92/83/43开头）优先判断，否则9开头被误判为上海B股
+    if code.starts_with("92") || code.starts_with("93") || code.starts_with("83") || code.starts_with("43") {
+        format!("bj{}", code)
+    } else if code.starts_with('6') || code.starts_with('9') {
         format!("sh{}", code)
     } else if code.starts_with('0') || code.starts_with('3') {
         format!("sz{}", code)
@@ -1085,9 +1088,12 @@ fn code_to_sina(code: &str) -> String {
     }
 }
 
-/// 股票代码转腾讯 symbol (0sz000001, 0sh600000)
+/// 股票代码转腾讯 symbol (bj830799, sh600000, sz000001)
 fn code_to_tencent(code: &str) -> String {
-    if code.starts_with('6') || code.starts_with('9') {
+    // 北交所（92/83/43开头）优先判断
+    if code.starts_with("92") || code.starts_with("93") || code.starts_with("83") || code.starts_with("43") {
+        format!("bj{}", code)
+    } else if code.starts_with('6') || code.starts_with('9') {
         format!("sh{}", code)
     } else if code.starts_with('0') || code.starts_with('3') {
         format!("sz{}", code)
@@ -1098,9 +1104,12 @@ fn code_to_tencent(code: &str) -> String {
     }
 }
 
-/// 股票代码转东方财富 secid (上海: 1.600000, 深圳: 0.000001, 北京: 0.430001)
+/// 股票代码转东方财富 secid (上海: 1.600000, 深圳: 0.000001, 北京: 0.920001)
 fn code_to_eastmoney(code: &str) -> String {
-    if code.starts_with('6') || code.starts_with('9') {
+    // 北交所（92/83/43开头）优先判断，东方财富对北交所市场编号为0
+    if code.starts_with("92") || code.starts_with("93") || code.starts_with("83") || code.starts_with("43") {
+        format!("0.{}", code) // 北京
+    } else if code.starts_with('6') || code.starts_with('9') {
         format!("1.{}", code) // 上海
     } else if code.starts_with('0') || code.starts_with('3') {
         format!("0.{}", code) // 深圳
@@ -1111,9 +1120,12 @@ fn code_to_eastmoney(code: &str) -> String {
     }
 }
 
-/// 股票代码转 Tushare ts_code (600000.SH, 000001.SZ, 430001.BJ)
+/// 股票代码转 Tushare ts_code (600000.SH, 000001.SZ, 920001.BJ, 830001.BJ)
 fn code_to_tushare(code: &str) -> String {
-    if code.starts_with('6') || code.starts_with('9') {
+    // 北交所（92/83/43开头）优先判断，否则92开头被误判为上海
+    if code.starts_with("92") || code.starts_with("93") || code.starts_with("83") || code.starts_with("43") {
+        format!("{}.BJ", code)
+    } else if code.starts_with('6') || code.starts_with('9') {
         format!("{}.SH", code)
     } else if code.starts_with('0') || code.starts_with('3') {
         format!("{}.SZ", code)

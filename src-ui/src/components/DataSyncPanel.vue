@@ -9,7 +9,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 
 interface LevelStats { level: string; dir_name: string; file_count: number; sample_symbol: string | null; sample_count: number | null; sample_start: string | null; sample_end: string | null; }
 interface BoardStats { id: string; name: string; count: number; }
-interface BoardOnlineInfo { id: string; name: string; total_count: number; local_count: number; latest_date: string; }
+interface BoardOnlineInfo { id: string; name: string; total_count: number; local_count: number; latest_date: string; date_distribution: Record<string, number>; }
 interface DataStatus { data_dir: string; total_stocks: number; levels: LevelStats[]; boards: BoardStats[]; }
 interface ValidationIssue { severity: string; category: string; row_index: number | null; datetime: string | null; message: string; }
 interface ValidateLevelResult { level: string; total_rows: number; issues: ValidationIssue[]; score: number; }
@@ -220,9 +220,22 @@ function boardLocalCount(id: string): number {
   return 0;
 }
 
-function boardLatestDate(id: string): string {
+function boardDateDistribution(id: string): Record<string, number> | null {
   const info = boardOnlineInfo.value.find(b => b.id === id);
-  return info?.latest_date ?? "";
+  const dist = info?.date_distribution;
+  return dist && Object.keys(dist).length > 0 ? dist : null;
+}
+
+/** 将 date_distribution 排序并截取 top3，合并其余为"其他" */
+function dateDistributionItems(id: string): { date: string; count: number; isOther: boolean }[] {
+  const dist = boardDateDistribution(id);
+  if (!dist) return [];
+  const sorted = Object.entries(dist).sort((a, b) => b[0].localeCompare(a[0]));
+  const top3 = sorted.slice(0, 3);
+  const rest = sorted.slice(3);
+  const result = top3.map(([d, c]) => ({ date: d, count: c, isOther: false }));
+  if (rest.length > 0) result.push({ date: "其他", count: rest.reduce((s, r) => s + r[1], 0), isOther: true });
+  return result;
 }
 
 function boardPercent(id: string): number {
@@ -835,7 +848,14 @@ onMounted(async () => {
                 :style="{ width: `${boardPercent(bd.id)}%`, backgroundColor: bd.color }"></div>
             </div>
             <div class="text-[9px] text-[#aaa] font-mono">{{ boardLocalCount(bd.id) }}<span class="text-[#555]">/{{ boardOnlineTotal(bd.id) ?? '—' }}</span></div>
-            <div v-if="boardLatestDate(bd.id)" class="text-[8px] text-[#666] font-mono mt-0.5">{{ boardLatestDate(bd.id) }}</div>
+            <div v-if="boardDateDistribution(bd.id)" class="mt-0.5">
+              <template v-if="Object.keys(boardDateDistribution(bd.id)!).length === 1">
+                <div v-for="(count, date) in boardDateDistribution(bd.id)!" :key="date" class="text-[7px] font-mono" :style="{ color: bd.color }">{{ date }} <span class="text-[#aaa]">{{ count }}</span></div>
+              </template>
+              <template v-else>
+                <div v-for="(item, idx) in dateDistributionItems(bd.id)" :key="idx" class="text-[7px] font-mono" :style="{ color: idx === 0 && !item.isOther ? bd.color : '#666' }">{{ item.date }} <span class="text-[#aaa]">{{ item.count }}</span></div>
+              </template>
+            </div>
           </div>
         </div>
 

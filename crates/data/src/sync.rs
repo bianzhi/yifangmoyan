@@ -746,6 +746,8 @@ pub struct BoardOnlineInfo {
     pub level_counts: std::collections::HashMap<String, usize>,  // 每个级别的本地股票数
     /// 该板块最新的数据文件修改日期 (YYYY-MM-DD)
     pub latest_date: String,
+    /// 按日期统计股票数量 (日期 -> 股票数)
+    pub date_distribution: std::collections::HashMap<String, usize>,
 }
 
 /// 从在线 API 获取指定板块的股票总数
@@ -891,6 +893,9 @@ pub fn get_board_online_info(data_dir: &Path) -> Vec<BoardOnlineInfo> {
     // 该板块最新的数据文件修改日期 (YYYY-MM-DD)
     let mut board_latest: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
+    // board_stock_dates[board_id][code] = 所有级别中最晚的修改日期
+    let mut board_stock_dates: std::collections::HashMap<String, std::collections::HashMap<String, String>> =
+        std::collections::HashMap::new();
 
     for tf in all_tfs {
         let dir_name = tf_dir_name(*tf);
@@ -920,7 +925,7 @@ pub fn get_board_online_info(data_dir: &Path) -> Vec<BoardOnlineInfo> {
             board_has_any
                 .entry(board.to_string())
                 .or_default()
-                .insert(code);
+                .insert(code.clone());
             // 更新该板块的最新文件修改日期
             if let Ok(metadata) = entry.metadata() {
                 if let Ok(modified) = metadata.modified() {
@@ -928,6 +933,15 @@ pub fn get_board_online_info(data_dir: &Path) -> Vec<BoardOnlineInfo> {
                     let mod_str = modified_date.format("%Y-%m-%d").to_string();
                     board_latest
                         .entry(board.to_string())
+                        .and_modify(|d| {
+                            if mod_str > *d { *d = mod_str.clone(); }
+                        })
+                        .or_insert(mod_str.clone());
+                    // 更新 board_stock_dates[board][code] = max(现有, mod_str)
+                    board_stock_dates
+                        .entry(board.to_string())
+                        .or_default()
+                        .entry(code)
                         .and_modify(|d| {
                             if mod_str > *d { *d = mod_str.clone(); }
                         })
@@ -967,6 +981,13 @@ pub fn get_board_online_info(data_dir: &Path) -> Vec<BoardOnlineInfo> {
         let local_count = board_has_any.get(*id).map(|s| s.len()).unwrap_or(0);
         let online_count = *online_counts.get(*id).unwrap_or(&0);
         let lv_counts = level_counts.remove(*id).unwrap_or_default();
+        // 计算 date_distribution: 按 code 的最新修改日期归类计数
+        let date_distribution = board_stock_dates.remove(*id).unwrap_or_default()
+            .into_values()
+            .fold(std::collections::HashMap::new(), |mut acc, date| {
+                *acc.entry(date).or_insert(0usize) += 1;
+                acc
+            });
         results.push(BoardOnlineInfo {
             id: id.to_string(),
             name: name.to_string(),
@@ -974,6 +995,7 @@ pub fn get_board_online_info(data_dir: &Path) -> Vec<BoardOnlineInfo> {
             local_count,
             level_counts: lv_counts,
             latest_date: board_latest.remove(*id).unwrap_or_default(),
+            date_distribution,
         });
     }
 
@@ -989,6 +1011,14 @@ pub fn get_board_online_info(data_dir: &Path) -> Vec<BoardOnlineInfo> {
         }
     }
 
+    // 汇总 date_distribution: merge 各子板块
+    let mut all_date_distribution: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for r in &results {
+        for (date, cnt) in &r.date_distribution {
+            *all_date_distribution.entry(date.clone()).or_insert(0) += cnt;
+        }
+    }
+
     results.push(BoardOnlineInfo {
         id: "all_a".to_string(),
         name: "全 A 股".to_string(),
@@ -996,6 +1026,7 @@ pub fn get_board_online_info(data_dir: &Path) -> Vec<BoardOnlineInfo> {
         local_count: all_local_count,
         level_counts: all_level_counts,
         latest_date: results.iter().map(|r| r.latest_date.as_str()).max().unwrap_or("").to_string(),
+        date_distribution: all_date_distribution,
     });
 
     results

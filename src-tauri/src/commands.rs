@@ -893,7 +893,40 @@ fn run_sync_parallel(
         let mut p = progress_state.lock().unwrap();
         p.retrying = false;
         p.running = false;
+        // 同步完成后更新 latest_date（从本地文件 mtime 推算最新日期）
+        if p.latest_date.is_empty() {
+            p.latest_date = get_latest_mtime_date(data_dir);
+        }
     }
+}
+
+/// 扫描 kline_cache 目录，返回最新的 parquet 文件修改日期 (YYYY-MM-DD)
+fn get_latest_mtime_date(data_dir: &std::path::Path) -> String {
+    let cache_dir = data_dir.join("kline_cache");
+    if !cache_dir.exists() { return String::new(); }
+    let mut latest = String::new();
+    if let Ok(entries) = std::fs::read_dir(&cache_dir) {
+        for level_dir in entries.flatten() {
+            let level_path = level_dir.path();
+            if !level_path.is_dir() { continue; }
+            if let Ok(files) = std::fs::read_dir(&level_path) {
+                for file in files.flatten() {
+                    let path = file.path();
+                    if path.extension().and_then(|e| e.to_str()) != Some("parquet") { continue; }
+                    if let Ok(meta) = file.metadata() {
+                        if let Ok(modified) = meta.modified() {
+                            let dt: chrono::DateTime<chrono::Local> = modified.into();
+                            let date_str = dt.format("%Y-%m-%d").to_string();
+                            if date_str > latest {
+                                latest = date_str;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    latest
 }
 
 /// 在系统文件管理器中打开数据存储目录

@@ -172,8 +172,8 @@ const syncPercent = computed(() =>
 const allAOnlineTotal = computed(() => {
   const info = boardOnlineInfo.value.find(b => b.id === "all_a");
   if (info && info.total_count > 0) return info.total_count;
-  const sum = boardOnlineInfo.value.reduce((s, b) => s + b.total_count, 0);
-  return sum > 0 ? sum : null;
+  // 如果有本地数据但在线数为0（网络可能失败），用本地数估算
+  if (info && info.local_count > 0 && info.total_count === 0) return info.local_count;
 });
 
 const allALocalCount = computed(() => {
@@ -207,7 +207,10 @@ const syncETA = computed(() => {
 
 function boardOnlineTotal(id: string): number | null {
   const info = boardOnlineInfo.value.find(b => b.id === id);
-  return info && info.total_count > 0 ? info.total_count : null;
+  if (info && info.total_count > 0) return info.total_count;
+  // 网络请求失败时回退到本地文件数
+  if (info && info.local_count > 0) return info.local_count;
+  return null;
 }
 
 function boardLocalCount(id: string): number {
@@ -220,22 +223,10 @@ function boardLocalCount(id: string): number {
   return 0;
 }
 
-function boardDateDistribution(id: string): Record<string, number> | null {
+/** 获取板块最新数据日期 */
+function boardLatestDate(id: string): string | null {
   const info = boardOnlineInfo.value.find(b => b.id === id);
-  const dist = info?.date_distribution;
-  return dist && Object.keys(dist).length > 0 ? dist : null;
-}
-
-/** 将 date_distribution 排序并截取 top3，合并其余为"其他" */
-function dateDistributionItems(id: string): { date: string; count: number; isOther: boolean }[] {
-  const dist = boardDateDistribution(id);
-  if (!dist) return [];
-  const sorted = Object.entries(dist).sort((a, b) => b[0].localeCompare(a[0]));
-  const top3 = sorted.slice(0, 3);
-  const rest = sorted.slice(3);
-  const result = top3.map(([d, c]) => ({ date: d, count: c, isOther: false }));
-  if (rest.length > 0) result.push({ date: "其他", count: rest.reduce((s, r) => s + r[1], 0), isOther: true });
-  return result;
+  return info?.latest_date || null;
 }
 
 function boardPercent(id: string): number {
@@ -419,8 +410,8 @@ function startStatusPolling() {
         stopSyncTimer();
         showSyncResult.value = true;
         setTimeout(() => { showSyncResult.value = false; }, 5_000);
-        refreshStatus();
-        loadBoardOnlineInfo();
+        // 同步完成后刷新数据，await 确保UI更新
+        await Promise.all([refreshStatus(), loadBoardOnlineInfo()]);
       }
     } catch {
       // 轮询失败不中断，继续重试
@@ -450,7 +441,7 @@ async function stopBgSync() {
   bgSyncBoard.value = null;
   bgSyncTotal.value = 0;
   bgSyncCompleted.value = 0;
-  await refreshStatus();
+  await Promise.all([refreshStatus(), loadBoardOnlineInfo()]);
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -541,8 +532,8 @@ async function selectFolder() {
   try {
     const selected = await open({ directory: true, multiple: false, title: "选择数据存储目录" });
     if (selected) {
-      await invoke<string>("set_data_dir", { path: typeof selected === "string" ? selected : selected });
-      await refreshStatus();
+      await invoke("set_data_dir", { path: typeof selected === "string" ? selected : selected });
+      await Promise.all([refreshStatus(), loadBoardOnlineInfo()]);
     }
   } catch (e: any) {
     error.value = `选择目录失败: ${e}`;
@@ -555,11 +546,10 @@ async function moveDataToFolder() {
     if (!selected) return;
     movingData.value = true;
     moveResult.value = null;
-    error.value = "";
     moveResult.value = await invoke<MoveDataResult>("move_data_dir", {
       newPath: typeof selected === "string" ? selected : selected,
     });
-    await refreshStatus();
+    await Promise.all([refreshStatus(), loadBoardOnlineInfo()]);
   } catch (e: any) {
     error.value = `迁移数据失败: ${e}`;
   } finally {
@@ -585,8 +575,7 @@ async function doClearAllData() {
   showClearConfirm.value = false;
   try {
     const count = await invoke<number>("clear_all_data");
-    await refreshStatus();
-    loadBoardOnlineInfo();
+    await Promise.all([refreshStatus(), loadBoardOnlineInfo()]);
     error.value = `已清空 ${count} 个数据文件`;
   } catch (e: any) {
     error.value = `清空数据失败: ${e}`;
@@ -608,7 +597,7 @@ async function doTrimOldData() {
       "30m": retentionConfig.value.f30_months,
     };
     trimResult.value = await invoke<TrimResult>("trim_old_data", { retention });
-    await refreshStatus();
+    await Promise.all([refreshStatus(), loadBoardOnlineInfo()]);
   } catch (e: any) {
     error.value = `清理过期数据失败: ${e}`;
   } finally {
@@ -624,7 +613,7 @@ async function doCleanDelisted() {
   try {
     const result = await invoke<{ delisted_codes: string[]; removed_files: number }>("clean_delisted_stocks");
     delistedResult.value = { codes: result.delisted_codes, files: result.removed_files };
-    await refreshStatus();
+    await Promise.all([refreshStatus(), loadBoardOnlineInfo()]);
   } catch (e: any) {
     error.value = `清理退市股失败: ${e}`;
   } finally {
@@ -651,9 +640,8 @@ function severityColor(s: string) {
 // ═══════════════════════════════════════════════════════════════
 
 onMounted(async () => {
-  // 两个请求并行发起，不阻塞 UI 渲染
-  refreshStatus();
-  loadBoardOnlineInfo();
+  // 两个请求并行发起
+  await Promise.all([refreshStatus(), loadBoardOnlineInfo()]);
 
   // 检查是否有后台同步正在运行
   // 注意：不自动进入 syncing 页面状态，只显示顶部横幅提示
@@ -714,8 +702,7 @@ onMounted(async () => {
             clearInterval(pollTimer);
             bgSyncRunning.value = false;
             bgSyncBoard.value = null;
-            refreshStatus();
-            loadBoardOnlineInfo();
+            await Promise.all([refreshStatus(), loadBoardOnlineInfo()]);
           }
         } catch {
           // 轮询失败不中断
@@ -848,14 +835,7 @@ onMounted(async () => {
                 :style="{ width: `${boardPercent(bd.id)}%`, backgroundColor: bd.color }"></div>
             </div>
             <div class="text-[9px] text-[#aaa] font-mono">{{ boardLocalCount(bd.id) }}<span class="text-[#555]">/{{ boardOnlineTotal(bd.id) ?? '—' }}</span></div>
-            <div v-if="boardDateDistribution(bd.id)" class="mt-0.5">
-              <template v-if="Object.keys(boardDateDistribution(bd.id)!).length === 1">
-                <div v-for="(count, date) in boardDateDistribution(bd.id)!" :key="date" class="text-[7px] font-mono" :style="{ color: bd.color }">{{ date }} <span class="text-[#aaa]">{{ count }}</span></div>
-              </template>
-              <template v-else>
-                <div v-for="(item, idx) in dateDistributionItems(bd.id)" :key="idx" class="text-[7px] font-mono" :style="{ color: idx === 0 && !item.isOther ? bd.color : '#666' }">{{ item.date }} <span class="text-[#aaa]">{{ item.count }}</span></div>
-              </template>
-            </div>
+            <div v-if="boardLatestDate(bd.id)" class="text-[7px] font-mono" :style="{ color: bd.color }">{{ boardLatestDate(bd.id) }}</div>
           </div>
         </div>
 

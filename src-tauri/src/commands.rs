@@ -571,7 +571,35 @@ fn run_sync_parallel(
     force: bool,
     concurrency: usize,
 ) {
-    let codes_vec: Vec<String> = codes.to_vec();
+    // ── 非 force 模式下，先批量过滤已最新的股票 ──
+    let (skip_count, need_sync): (usize, Vec<String>) = if !force {
+        let (skipped, needed): (Vec<_>, Vec<_>) = codes.iter().partition(|code| {
+            yifang_data::is_stock_up_to_date(data_dir, code, tf_list)
+        });
+        let skip_count = skipped.len();
+        // 为跳过的股票批量更新进度
+        if skip_count > 0 {
+            let mut p = progress_state.lock().unwrap();
+            p.completed += skip_count;
+            p.success += skip_count;
+        }
+        (skip_count, needed.into_iter().cloned().collect())
+    } else {
+        (0, codes.to_vec())
+    };
+
+    if skip_count > 0 {
+        eprintln!("[批量跳过] {} 只股票数据已是最新，跳过网络请求", skip_count);
+    }
+
+    if need_sync.is_empty() {
+        // 全部跳过，直接完成
+        let mut p = progress_state.lock().unwrap();
+        p.running = false;
+        return;
+    }
+
+    let codes_vec = need_sync;
     let total = codes_vec.len();
     let idx_lock = std::sync::Arc::new(std::sync::Mutex::new(0usize));
     let mut handles = Vec::new();
@@ -634,8 +662,11 @@ fn run_sync_parallel(
                     }
                 }
 
-                // 每只股票同步后加 50ms 间隔，防止被 API 限流
-                std::thread::sleep(std::time::Duration::from_millis(50));
+                // 只对实际请求了网络的股票（非 skip）加 50ms 间隔防限流
+                let all_skipped = result.levels.iter().all(|lv| lv.status == "skip");
+                if !all_skipped {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
             }
         });
         handles.push(handle);

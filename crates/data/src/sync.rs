@@ -14,7 +14,7 @@
 //! 同步策略：主源失败 → 自动切换备源；多源数据交叉验证
 
 use anyhow::{Context, Result};
-use chrono::NaiveDate;
+use chrono::{Datelike, NaiveDate};
 use polars::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -2244,6 +2244,32 @@ pub fn sync_stock(
     let mut results = Vec::new();
     let cache_dir = data_dir.join("kline_cache");
 
+    // ─── 提前跳过检查: 非 force 时，如果所有级别本地数据都已是最新，直接跳过 ───
+    if !force {
+        let all_up_to_date = levels.iter().all(|&tf| {
+            let dir_name = tf_dir_name(tf);
+            let filepath = cache_dir.join(dir_name).join(format!("{}.parquet", symbol));
+            is_local_up_to_date(&filepath)
+        });
+        if all_up_to_date {
+            // 所有级别都已是最新，直接返回 skip，不发网络请求
+            for &tf in levels {
+                let dir_name = tf_dir_name(tf);
+                let filepath = cache_dir.join(dir_name).join(format!("{}.parquet", symbol));
+                let count = get_parquet_row_count(&filepath).unwrap_or(0);
+                results.push(SyncLevelResult {
+                    level: dir_name.to_string(), status: "skip".into(),
+                    count, source: "local".into(),
+                    msg: "already up to date (fast skip)".into(),
+                });
+            }
+            return SyncStockResult {
+                symbol: symbol.to_string(),
+                levels: results,
+            };
+        }
+    }
+
     // 缓存日线数据供周/月线重采样
     let mut daily_records: Option<Vec<KlineRecord>> = None;
 
@@ -2251,6 +2277,17 @@ pub fn sync_stock(
         let dir_name = tf_dir_name(tf);
         let filepath = cache_dir.join(dir_name).join(format!("{}.parquet", symbol));
         let level_str = dir_name.to_string();
+
+        // ─── 单级别提前跳过: 如果该级别已是最新，跳过不请求 ───
+        if !force && is_local_up_to_date(&filepath) {
+            let count = get_parquet_row_count(&filepath).unwrap_or(0);
+            results.push(SyncLevelResult {
+                level: level_str, status: "skip".into(),
+                count, source: "local".into(),
+                msg: "already up to date (fast skip)".into(),
+            });
+            continue;
+        }
 
         // ─── 增量逻辑: 非 force 时, 以本地最后日期的前一天作为增量起始点 ───
         let inc_since: Option<String> = if !force {
@@ -2282,18 +2319,22 @@ pub fn sync_stock(
                 match daily_records.as_ref().map(|d| resample_to_monthly(d)) {
                     Some(mut recs) => {
                         if !force {
-                            if let Ok(old) = load_existing_parquet(&filepath) {
-                                // 如果新数据没有新增（与旧数据最后日期相同），则跳过
-                                let old_last = old.last().map(|r| r.datetime.as_str()).unwrap_or("");
-                                let new_last = recs.last().map(|r| r.datetime.as_str()).unwrap_or("");
-                                if old_last == new_last && !old.is_empty() {
+                            // 快速判断：新数据最后日期 vs 本地最后日期
+                            let local_last = get_parquet_last_date(&filepath);
+                            let new_last = recs.last().map(|r| r.datetime.as_str()).unwrap_or("");
+                            if let Some(ref old_last) = local_last {
+                                if old_last == new_last && !new_last.is_empty() {
+                                    let count = get_parquet_row_count(&filepath).unwrap_or(0);
                                     results.push(SyncLevelResult {
                                         level: level_str, status: "skip".into(),
-                                        count: old.len(), source: "resample_from_daily".into(),
+                                        count, source: "resample_from_daily".into(),
                                         msg: "already up to date".into(),
                                     });
                                     continue;
                                 }
+                            }
+                            // 有新数据，需要 merge
+                            if let Ok(old) = load_existing_parquet(&filepath) {
                                 recs = merge_records(&old, &recs);
                             }
                         }
@@ -2328,17 +2369,22 @@ pub fn sync_stock(
                 match records {
                     Some(mut recs) => {
                         if !force {
-                            if let Ok(old) = load_existing_parquet(&filepath) {
-                                let old_last = old.last().map(|r| r.datetime.as_str()).unwrap_or("");
-                                let new_last = recs.last().map(|r| r.datetime.as_str()).unwrap_or("");
-                                if old_last == new_last && !old.is_empty() {
+                            // 快速判断：新数据最后日期 vs 本地最后日期
+                            let local_last = get_parquet_last_date(&filepath);
+                            let new_last = recs.last().map(|r| r.datetime.as_str()).unwrap_or("");
+                            if let Some(ref old_last) = local_last {
+                                if old_last == new_last && !new_last.is_empty() {
+                                    let count = get_parquet_row_count(&filepath).unwrap_or(0);
                                     results.push(SyncLevelResult {
                                         level: level_str, status: "skip".into(),
-                                        count: old.len(), source: fetch.source.clone(),
+                                        count, source: fetch.source.clone(),
                                         msg: "already up to date".into(),
                                     });
                                     continue;
                                 }
+                            }
+                            // 有新数据，需要 merge
+                            if let Ok(old) = load_existing_parquet(&filepath) {
                                 recs = merge_records(&old, &recs);
                             }
                         }
@@ -2365,17 +2411,16 @@ pub fn sync_stock(
                 let fetch = fetch_kline_multi_source(symbol, tf, inc_since.as_deref())
                     .unwrap_or(FetchResult { records: Vec::new(), source: "none".into() });
                 if fetch.records.is_empty() {
-                    // 如果本地已有数据且无新数据，跳过
+                    // 如果本地已有数据且无新数据，跳过（用快速判断避免全量加载）
                     if !force && filepath.exists() {
-                        if let Ok(old) = load_existing_parquet(&filepath) {
-                            if !old.is_empty() {
-                                results.push(SyncLevelResult {
-                                    level: level_str, status: "skip".into(),
-                                    count: old.len(), source: "local".into(),
-                                    msg: "already up to date".into(),
-                                });
-                                continue;
-                            }
+                        let count = get_parquet_row_count(&filepath).unwrap_or(0);
+                        if count > 0 {
+                            results.push(SyncLevelResult {
+                                level: level_str, status: "skip".into(),
+                                count, source: "local".into(),
+                                msg: "already up to date".into(),
+                            });
+                            continue;
                         }
                     }
                     SyncLevelResult {
@@ -2389,17 +2434,22 @@ pub fn sync_stock(
                         daily_records = Some(records.clone());
                     }
                     if !force {
-                        if let Ok(old) = load_existing_parquet(&filepath) {
-                            let old_last = old.last().map(|r| r.datetime.as_str()).unwrap_or("");
-                            let new_last = records.last().map(|r| r.datetime.as_str()).unwrap_or("");
-                            if old_last == new_last && !old.is_empty() {
+                        // 快速判断：新数据最后日期 vs 本地最后日期
+                        let local_last = get_parquet_last_date(&filepath);
+                        let new_last = records.last().map(|r| r.datetime.as_str()).unwrap_or("");
+                        if let Some(ref old_last) = local_last {
+                            if old_last == new_last && !new_last.is_empty() {
+                                let count = get_parquet_row_count(&filepath).unwrap_or(0);
                                 results.push(SyncLevelResult {
                                     level: level_str, status: "skip".into(),
-                                    count: old.len(), source: fetch.source.clone(),
+                                    count, source: fetch.source.clone(),
                                     msg: "already up to date".into(),
                                 });
                                 continue;
                             }
+                        }
+                        // 有新数据，需要 merge
+                        if let Ok(old) = load_existing_parquet(&filepath) {
                             records = merge_records(&old, &records);
                         }
                     }
@@ -2512,29 +2562,182 @@ pub fn get_data_status(data_dir: &Path) -> DataStatus {
 }
 
 fn get_parquet_row_count(path: &Path) -> Result<usize> {
-    let df = LazyFrame::scan_parquet(path, ScanArgsParquet::default())?
-        .collect()?;
-    Ok(df.height())
+    // 用 Polars LazyFrame 优化查询只获取行数
+    use polars::prelude::*;
+    let lf = LazyFrame::scan_parquet(path, ScanArgsParquet::default())?;
+    let count_df = lf.select([len().alias("count")]).collect()?;
+    Ok(count_df.column("count")
+        .ok()
+        .and_then(|s| s.idx().ok().and_then(|ca| ca.first().map(|v| v as usize)))
+        .unwrap_or(0))
 }
 
 fn get_parquet_date_range(path: &Path) -> (Option<String>, Option<String>) {
-    let records = load_existing_parquet(path).unwrap_or_default();
-    if records.is_empty() {
+    if !path.exists() {
         return (None, None);
     }
-    (
-        records.first().map(|r| r.datetime.clone()),
-        records.last().map(|r| r.datetime.clone()),
-    )
+
+    use polars::prelude::*;
+
+    let lf = match LazyFrame::scan_parquet(path, ScanArgsParquet::default()) {
+        Ok(lf) => lf,
+        Err(_) => return (None, None),
+    };
+
+    // 先 collect 1行来获取 schema
+    let sample = match lf.clone().slice(0, 1).collect() {
+        Ok(df) => df,
+        Err(_) => return (None, None),
+    };
+
+    let dt_name = match sample.get_column_names_str().iter()
+        .find(|c| ["dt", "datetime", "date", "time", "timestamp"].contains(c))
+    {
+        Some(n) => n.to_string(),
+        None => return (None, None),
+    };
+
+    // 只选 datetime 列，排序后取首尾各1行
+    let first = lf.clone()
+        .select([col(&dt_name)])
+        .sort([dt_name.as_str()], SortMultipleOptions::default())
+        .slice(0, 1)
+        .collect()
+        .ok();
+
+    let last = lf
+        .select([col(&dt_name)])
+        .sort([dt_name.as_str()], SortMultipleOptions::default().with_order_descending(true))
+        .slice(0, 1)
+        .collect()
+        .ok();
+
+    let extract = |df: Option<DataFrame>| -> Option<String> {
+        let df = df?;
+        if df.height() == 0 { return None; }
+        let s = df.column(&dt_name).ok()?;
+        let ca = s.str().ok()?;
+        let v = ca.get(0)?;
+        Some(if v.len() > 10 { v[..10].to_string() } else { v.to_string() })
+    };
+
+    (extract(first), extract(last))
 }
 
-/// 获取本地 parquet 文件的最后日期，用于增量同步起始点
+/// 利用 Parquet 文件的 metadata 快速获取最后日期（不需要加载全量数据）
+/// 使用 Polars LazyFrame 只选 datetime 列 + 倒序取1行，避免全量加载
+/// 返回 None 表示文件不存在或无法读取
 fn get_parquet_last_date(filepath: &Path) -> Option<String> {
     if !filepath.exists() {
         return None;
     }
-    let (_, end) = get_parquet_date_range(filepath);
-    end
+
+    use polars::prelude::*;
+
+    let lf = LazyFrame::scan_parquet(filepath, ScanArgsParquet::default()).ok()?;
+
+    // 先 collect 1行来获取 schema
+    let sample = lf.clone().slice(0, 1).collect().ok()?;
+    let dt_name = sample.get_column_names_str().iter()
+        .find(|c| ["dt", "datetime", "date", "time", "timestamp"].contains(c))
+        .map(|s| s.to_string())?;
+
+    // 只选 datetime 列，倒序取最后1行
+    let df = lf
+        .select([col(&dt_name)])
+        .sort([dt_name.as_str()], SortMultipleOptions::default().with_order_descending(true))
+        .slice(0, 1)
+        .collect()
+        .ok()?;
+
+    if df.height() > 0 {
+        if let Ok(s) = df.column(&dt_name) {
+            if let Ok(ca) = s.str() {
+                if let Some(v) = ca.get(0) {
+                    let dt = if v.len() > 10 { &v[..10] } else { v };
+                    return Some(dt.to_string());
+                }
+            }
+        }
+    }
+
+    None
+}
+
+/// 快速检查一只股票在所有指定级别是否已是最新（不需要发网络请求）
+/// 用于批量预过滤，避免对已最新的股票发无意义的网络请求
+pub fn is_stock_up_to_date(data_dir: &Path, symbol: &str, levels: &[TimeFrame]) -> bool {
+    let cache_dir = data_dir.join("kline_cache");
+    levels.iter().all(|&tf| {
+        let dir_name = tf_dir_name(tf);
+        let filepath = cache_dir.join(dir_name).join(format!("{}.parquet", symbol));
+        is_local_up_to_date(&filepath)
+    })
+}
+
+/// 快速检查本地数据文件是否已是最新（不需要发网络请求）
+/// 优先使用文件修改时间快速判断（极快，无 IO 解析）
+/// 如果文件今天修改过，则认为是最新；否则用 get_parquet_last_date 精确判断，
+/// 判断最后日期是否在工作日范围内（排除周末）
+fn is_local_up_to_date(filepath: &Path) -> bool {
+    if !filepath.exists() {
+        return false; // 文件不存在，不是最新
+    }
+
+    // 方法1: 文件修改时间检查（极快，不解析 parquet）
+    if let Ok(metadata) = std::fs::metadata(filepath) {
+        if let Ok(modified) = metadata.modified() {
+            let modified_date: chrono::DateTime<chrono::Local> = modified.into();
+            let now = chrono::Local::now();
+            let today = now.format("%Y-%m-%d").to_string();
+            let mod_date = modified_date.format("%Y-%m-%d").to_string();
+            // 文件今天被修改过，很大概率数据已是最新
+            if mod_date == today {
+                return true;
+            }
+        }
+    }
+
+    // 方法2: 精确检查——读取最后日期，判断是否在合理范围内
+    let last_date = match get_parquet_last_date(filepath) {
+        Some(d) => d,
+        None => return false,
+    };
+
+    let last_dt = if last_date.len() > 10 { &last_date[..10] } else { &last_date };
+
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+
+    // 如果最后日期就是今天，必定最新
+    if last_dt == today {
+        return true;
+    }
+
+    // 计算最近的工作日日期（排除周末）
+    // 如果最后日期 >= 最近工作日，则认为数据已是最新
+    let last_naive = chrono::NaiveDate::parse_from_str(last_dt, "%Y-%m-%d");
+    if let Ok(last) = last_naive {
+        let today_naive = chrono::Local::now().date_naive();
+        // 从今天往前找最近的工作日
+        let mut check = today_naive;
+        for _ in 0..3 {
+            let weekday = check.weekday().num_days_from_monday();
+            if weekday < 5 {
+                // 是工作日
+                break;
+            }
+            // 周末，往前推一天
+            check = check - chrono::Duration::try_days(1).unwrap_or_default();
+        }
+        // 最后数据日期 >= 最近工作日 → 最新
+        return last >= check;
+    }
+
+    // fallback: 检查是否是昨天
+    let yesterday = (chrono::Local::now() - chrono::Duration::try_days(1).unwrap_or_default())
+        .format("%Y-%m-%d")
+        .to_string();
+    last_dt == yesterday
 }
 
 /// 获取所有股票代码列表（扫描所有级别目录，用 HashSet 去重）

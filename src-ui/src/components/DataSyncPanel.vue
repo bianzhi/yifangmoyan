@@ -638,7 +638,8 @@ function severityColor(s: string) {
 // ═══════════════════════════════════════════════════════════════
 
 onMounted(async () => {
-  await refreshStatus();
+  // 两个请求并行发起，不阻塞 UI 渲染
+  refreshStatus();
   loadBoardOnlineInfo();
 
   // 检查是否有后台同步正在运行

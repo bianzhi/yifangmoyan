@@ -164,10 +164,15 @@ fn parse_timeframe(s: &str) -> Option<TimeFrame> {
 
 /// 获取数据目录整体状态
 #[tauri::command]
-pub fn get_data_status(state: State<'_, AppState>) -> Result<DataStatus, String> {
-    let manager = state.manager.read().map_err(|e| e.to_string())?;
-    let data_dir = manager.data_dir();
-    Ok(yifang_data::get_data_status(data_dir))
+pub async fn get_data_status(state: State<'_, AppState>) -> Result<DataStatus, String> {
+    let data_dir = {
+        let manager = state.manager.read().map_err(|e| e.to_string())?;
+        manager.data_dir().to_path_buf()
+    };
+    // 释放读写锁后，在阻塞线程执行文件扫描，避免阻塞 Tauri 主线程
+    tauri::async_runtime::spawn_blocking(move || {
+        yifang_data::get_data_status(&data_dir)
+    }).await.map_err(|e| e.to_string())
 }
 
 /// 同步单只股票的 K 线数据
@@ -350,10 +355,15 @@ pub fn get_board_stats(state: State<'_, AppState>) -> Result<Vec<BoardStats>, St
 
 /// 获取板块在线信息（各板块在线股票数 + 本地已有数）
 #[tauri::command]
-pub fn get_board_online_info(state: State<'_, AppState>) -> Result<Vec<BoardOnlineInfo>, String> {
-    let manager = state.manager.read().map_err(|e| e.to_string())?;
-    let data_dir = manager.data_dir();
-    Ok(yifang_data::get_board_online_info(data_dir))
+pub async fn get_board_online_info(state: State<'_, AppState>) -> Result<Vec<BoardOnlineInfo>, String> {
+    let data_dir = {
+        let manager = state.manager.read().map_err(|e| e.to_string())?;
+        manager.data_dir().to_path_buf()
+    };
+    // 释放读写锁后，在阻塞线程执行网络请求，避免阻塞 Tauri 主线程
+    tauri::async_runtime::spawn_blocking(move || {
+        yifang_data::get_board_online_info(&data_dir)
+    }).await.map_err(|e| e.to_string())
 }
 
 /// 获取指定板块的股票代码列表（从在线 API 获取）

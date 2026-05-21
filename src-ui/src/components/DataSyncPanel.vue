@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, computed, watch } from "vue";
+import { ref, onMounted, onUnmounted, computed, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 
@@ -63,6 +63,8 @@ const dataStatus = ref<DataStatus | null>(null);
 const boardOnlineInfo = ref<BoardOnlineInfo[]>([]);
 const loadingStatus = ref(true);
 const loadingOnlineInfo = ref(false);
+const refreshing = ref(false);
+let autoRefreshTimer: ReturnType<typeof setInterval> | null = null;
 
 // 同步
 const syncing = ref(false);
@@ -277,6 +279,16 @@ async function loadBoardOnlineInfo() {
     console.error("获取在线信息失败:", e);
   } finally {
     loadingOnlineInfo.value = false;
+  }
+}
+
+async function refreshAll() {
+  if (refreshing.value) return;
+  refreshing.value = true;
+  try {
+    await Promise.all([refreshStatus(), loadBoardOnlineInfo()]);
+  } finally {
+    refreshing.value = false;
   }
 }
 
@@ -643,6 +655,15 @@ onMounted(async () => {
   // 两个请求并行发起
   await Promise.all([refreshStatus(), loadBoardOnlineInfo()]);
 
+  // 自动刷新：每 30 秒静默刷新一次（不显示 loading 态，避免闪烁）
+  autoRefreshTimer = setInterval(async () => {
+    try {
+      await Promise.all([refreshStatus(), loadBoardOnlineInfo()]);
+    } catch {
+      // 静默失败
+    }
+  }, 30_000);
+
   // 检查是否有后台同步正在运行
   // 注意：不自动进入 syncing 页面状态，只显示顶部横幅提示
   try {
@@ -711,6 +732,13 @@ onMounted(async () => {
     }
   } catch {
     // 获取状态失败不影响页面
+  }
+});
+
+onUnmounted(() => {
+  if (autoRefreshTimer) {
+    clearInterval(autoRefreshTimer);
+    autoRefreshTimer = null;
   }
 });
 </script>
@@ -823,7 +851,14 @@ onMounted(async () => {
             </div>
           </div>
           <span class="text-xs text-[#999] font-mono">{{ allALocalCount }}/{{ allAOnlineTotal ?? '—' }}</span>
-          <div v-if="loadingOnlineInfo" class="w-3 h-3 border border-[#555] border-t-transparent rounded-full animate-spin"></div>
+          <button @click="refreshAll()" :disabled="refreshing"
+            class="p-1 rounded-lg transition"
+            :class="refreshing ? 'text-[#26a69a] animate-spin' : 'text-[#666] hover:text-white hover:bg-[#0f3460]/50'"
+            title="刷新状态">
+            <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+            </svg>
+          </button>
         </div>
 
         <!-- ──── 各板块迷你进度 ──── -->

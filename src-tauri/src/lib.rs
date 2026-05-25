@@ -55,6 +55,7 @@ pub fn run() {
             commands::get_last_sync_failures,
             commands::clear_sync_failures,
             commands::retry_failed_syncs,
+            commands::save_analysis_report,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

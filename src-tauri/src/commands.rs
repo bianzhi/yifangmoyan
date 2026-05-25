@@ -213,6 +213,138 @@ pub async fn get_sub_level_data(
     })
 }
 
+/// 保存分析判定报告到文件
+///
+/// 在程序运行目录创建 analysis_reports 文件夹，
+/// 生成以"股票名称_时间级别.md"命名的判定报告，
+/// 记录每个买卖点的判定理由。
+#[tauri::command]
+pub fn save_analysis_report(
+    symbol: String,
+    name: String,
+    timeframe: String,
+    chart_data: ChartData,
+) -> Result<String, String> {
+    use std::io::Write;
+
+    // 确定保存目录：程序当前运行目录下的 analysis_reports
+    let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
+    let report_dir = cwd.join("analysis_reports");
+    std::fs::create_dir_all(&report_dir).map_err(|e| e.to_string())?;
+
+    // 生成文件名：股票名称_时间级别_日期.md
+    let today = chrono::Local::now().format("%Y%m%d").to_string();
+    let tf_label = match timeframe.as_str() {
+        "d" => "日线", "w" => "周线", "m" => "月线",
+        "f60" => "60分钟", "f30" => "30分钟", "f15" => "15分钟",
+        "f5" => "5分钟", "f1" => "1分钟",
+        _ => &timeframe,
+    };
+    let filename = format!("{}_{}_{}.md", name, tf_label, today);
+    let filepath = report_dir.join(&filename);
+
+    let mut f = std::fs::File::create(&filepath).map_err(|e| e.to_string())?;
+
+    // ── 报告头部 ──
+    writeln!(f, "# 缠论买卖点判定报告").map_err(|e| e.to_string())?;
+    writeln!(f).map_err(|e| e.to_string())?;
+    writeln!(f, "| 项目 | 内容 |").map_err(|e| e.to_string())?;
+    writeln!(f, "|------|------|").map_err(|e| e.to_string())?;
+    writeln!(f, "| 股票 | {} ({}) |", name, symbol).map_err(|e| e.to_string())?;
+    writeln!(f, "| 时间级别 | {} |", tf_label).map_err(|e| e.to_string())?;
+    writeln!(f, "| 生成时间 | {} |", chrono::Local::now().format("%Y-%m-%d %H:%M:%S")).map_err(|e| e.to_string())?;
+    writeln!(f, "| K线根数 | {} |", chart_data.klines.len()).map_err(|e| e.to_string())?;
+    writeln!(f).map_err(|e| e.to_string())?;
+
+    // ── 缠论分析结果 ──
+    if let Some(ref czsc) = chart_data.czsc {
+        writeln!(f, "## 缠论分析概览").map_err(|e| e.to_string())?;
+        writeln!(f).map_err(|e| e.to_string())?;
+        writeln!(f, "| 指标 | 数量 |").map_err(|e| e.to_string())?;
+        writeln!(f, "|------|------|").map_err(|e| e.to_string())?;
+        writeln!(f, "| 笔 | {} |", czsc.bi.len()).map_err(|e| e.to_string())?;
+        writeln!(f, "| 线段 | {} |", czsc.xd.len()).map_err(|e| e.to_string())?;
+        writeln!(f, "| 笔中枢 | {} |", czsc.bi_zs.len()).map_err(|e| e.to_string())?;
+        writeln!(f, "| 线段中枢 | {} |", czsc.xd_zs.len()).map_err(|e| e.to_string())?;
+        writeln!(f, "| 背驰 | {} |", czsc.beichi.len()).map_err(|e| e.to_string())?;
+        writeln!(f, "| 买卖点 | {} |", czsc.buy_sell.len()).map_err(|e| e.to_string())?;
+        writeln!(f, "| 走势 | {} |", czsc.zoushi.len()).map_err(|e| e.to_string())?;
+        writeln!(f).map_err(|e| e.to_string())?;
+
+        // ── 笔列表 ──
+        writeln!(f, "## 笔列表").map_err(|e| e.to_string())?;
+        writeln!(f).map_err(|e| e.to_string())?;
+        writeln!(f, "| # | 方向 | 起点 | 终点 | 起始价 | 结束价 | 起始日 | 结束日 |").map_err(|e| e.to_string())?;
+        writeln!(f, "|---|------|------|------|--------|--------|--------|--------|").map_err(|e| e.to_string())?;
+        for (i, bi) in czsc.bi.iter().enumerate() {
+            writeln!(f, "| {} | {} | {} | {} | {:.2} | {:.2} | {} | {} |",
+                i, bi.direction, bi.start_index, bi.end_index,
+                bi.start_price, bi.end_price, bi.start_dt, bi.end_dt
+            ).map_err(|e| e.to_string())?;
+        }
+        writeln!(f).map_err(|e| e.to_string())?;
+
+        // ── 笔中枢列表 ──
+        if !czsc.bi_zs.is_empty() {
+            writeln!(f, "## 笔中枢列表").map_err(|e| e.to_string())?;
+            writeln!(f).map_err(|e| e.to_string())?;
+            writeln!(f, "| # | ZG | ZD | GG | DD | 区间(idx) | 区间(日期) |").map_err(|e| e.to_string())?;
+            writeln!(f, "|---|------|------|------|------|-----------|------------|").map_err(|e| e.to_string())?;
+            for (i, zs) in czsc.bi_zs.iter().enumerate() {
+                writeln!(f, "| {} | {:.2} | {:.2} | {:.2} | {:.2} | {}-{} | {}-{} |",
+                    i, zs.zg, zs.zd, zs.gg, zs.dd,
+                    zs.start_index, zs.end_index, zs.start_dt, zs.end_dt
+                ).map_err(|e| e.to_string())?;
+            }
+            writeln!(f).map_err(|e| e.to_string())?;
+        }
+
+        // ── 买卖点详情 ──
+        writeln!(f, "## 买卖点详情").map_err(|e| e.to_string())?;
+        writeln!(f).map_err(|e| e.to_string())?;
+
+        // 按类型分组
+        let bs_types = ["1buy","2buy","2buy_break","3buy","2+3buy","2+3buy_break",
+                        "1sell","2sell","2sell_break","3sell","2+3sell","2+3sell_break"];
+        let bs_labels: std::collections::HashMap<&str, &str> = [
+            ("1buy","一买"),("2buy","二买"),("2buy_break","破位二买"),("3buy","三买"),
+            ("2+3buy","二三买重合"),("2+3buy_break","二三买重合(破位)"),
+            ("1sell","一卖"),("2sell","二卖"),("2sell_break","破位二卖"),("3sell","三卖"),
+            ("2+3sell","二三卖重合"),("2+3sell_break","二三卖重合(破位)"),
+        ].iter().cloned().collect();
+
+        let mut has_any = false;
+        for bs_type in &bs_types {
+            let points: Vec<_> = czsc.buy_sell.iter()
+                .filter(|p| p.bs_type == *bs_type)
+                .collect();
+            if points.is_empty() { continue; }
+            has_any = true;
+
+            let label = bs_labels.get(bs_type).unwrap_or(bs_type);
+            writeln!(f, "### {}", label).map_err(|e| e.to_string())?;
+            writeln!(f).map_err(|e| e.to_string())?;
+            writeln!(f, "| # | 日期 | 价格 | 判定理由 |").map_err(|e| e.to_string())?;
+            writeln!(f, "|---|------|------|----------|").map_err(|e| e.to_string())?;
+            for (i, bs) in points.iter().enumerate() {
+                writeln!(f, "| {} | {} | {:.2} | {} |",
+                    i + 1, bs.dt, bs.price, bs.reason
+                ).map_err(|e| e.to_string())?;
+            }
+            writeln!(f).map_err(|e| e.to_string())?;
+        }
+
+        if !has_any {
+            writeln!(f, "（该级别无买卖点信号）").map_err(|e| e.to_string())?;
+            writeln!(f).map_err(|e| e.to_string())?;
+        }
+    } else {
+        writeln!(f, "（缠论分析未启用）").map_err(|e| e.to_string())?;
+    }
+
+    Ok(filepath.to_string_lossy().to_string())
+}
+
 /// 解析时间周期字符串
 fn parse_timeframe(s: &str) -> Option<TimeFrame> {
     match s.to_lowercase().as_str() {

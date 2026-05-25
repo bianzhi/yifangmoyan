@@ -14,7 +14,7 @@ import {
   type ISeriesPrimitivePaneRenderer,
   type SeriesAttachedParameter,
 } from "lightweight-charts";
-import { getChartData, searchStocks, getAllStockCodes, getSubLevelData, cancelSync, triggerSingleSync, pollSingleSync } from "./composables/useApi";
+import { getChartData, searchStocks, getAllStockCodes, getSubLevelData, cancelSync, triggerSingleSync, pollSingleSync, saveAnalysisReport } from "./composables/useApi";
 import type { SyncProgress } from "./composables/useApi";
 import {
   type ChartData,
@@ -278,6 +278,22 @@ function hasAnyCzscEnabled(): boolean {
   return c.showFenxing || c.showBi || c.showXd || c.showBiZs || c.showXdZs
     || c.show1buy || c.show2buy || c.show3buy || c.show1sell || c.show2sell || c.show3sell
     || c.showBeichi;
+}
+
+// ===== 保存判定报告 =====
+async function saveReport() {
+  if (!chartData.value) return;
+  try {
+    const filepath = await saveAnalysisReport(
+      symbol.value,
+      chartData.value.name || symbol.value,
+      timeframe.value,
+      chartData.value,
+    );
+    alert(`报告已保存：${filepath}`);
+  } catch (e: any) {
+    alert(`保存失败：${e}`);
+  }
 }
 
 // ===== 时间格式化 =====
@@ -1535,6 +1551,16 @@ watch(currentView, (val) => {
           @select="selectStock"
           @close="showSearch = false"
         />
+
+        <!-- 保存判定报告按钮 -->
+        <button
+          v-if="currentView === 'chart' && chartData?.czsc"
+          @click="saveReport"
+          class="px-2.5 py-1 text-xs rounded transition-all bg-[#0f3460] text-[#9e9e9e] hover:bg-[#e94560] hover:text-white"
+          title="保存当前股票当前级别的缠论买卖点判定报告"
+        >
+          📄 保存报告
+        </button>
       </div>
 
       <div v-if="currentView === 'chart' && currentPrice" class="flex items-center gap-3 text-sm font-mono">

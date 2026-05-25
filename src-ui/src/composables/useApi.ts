@@ -188,3 +188,22 @@ export async function pollSingleSync(
 ): Promise<SingleSyncState> {
   return invoke<SingleSyncState>("poll_single_sync", { symbol, timeframe });
 }
+
+// ═══════════════════════════════════════════════════════════
+//  分析报告保存
+// ═══════════════════════════════════════════════════════════
+
+/// 保存缠论分析判定报告
+export async function saveAnalysisReport(
+  symbol: string,
+  name: string,
+  timeframe: string,
+  chartData: ChartData,
+): Promise<string> {
+  return invoke<string>("save_analysis_report", {
+    symbol,
+    name,
+    timeframe,
+    chartData,
+  });
+}

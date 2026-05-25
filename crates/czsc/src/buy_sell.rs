@@ -144,11 +144,11 @@ fn find_buy1_sell1(
     let mut sell1_list = Vec::new();
 
     for bd in trend_bds {
-        // 找到背驰点之前结束的中枢索引
+        // 找到与背驰点相关的中枢（背驰点可能在中枢内部，用start_index判断）
         let related_indices: Vec<usize> = zs_list
             .iter()
             .enumerate()
-            .filter(|(_, zs)| zs.end_index <= bd.index)
+            .filter(|(_, zs)| zs.start_index <= bd.index)
             .map(|(i, _)| i)
             .collect();
 

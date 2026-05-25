@@ -15,7 +15,7 @@ use crate::fenxing::{check_fxs, to_fenxing};
 use crate::bi::build_bi;
 use crate::xd::build_xd;
 use crate::zs::{build_bi_zs, build_xd_zs};
-use crate::beichi::{detect_bi_beichi, detect_xd_beichi};
+use crate::beichi::{detect_bi_beichi, detect_xd_beichi, detect_zoushi_beichi};
 use crate::buy_sell::{detect_buy_sell, detect_xd_buy_sell};
 use crate::zoushi::build_zoushi_from_xd;
 
@@ -70,11 +70,18 @@ impl CzscAnalyzer {
         let bi_zs = build_bi_zs(&bis);
         let xd_zs = build_xd_zs(&xds);
 
-        // 6. 背驰检测（笔级别 + 线段级别）
+        // 6. 背驰检测（笔级别 + 线段级别 + 走势级别）
         let bi_beichi = detect_bi_beichi(&bis, macd, &bi_zs);
         let xd_beichi = detect_xd_beichi(&xds, macd, &xd_zs);
         let mut beichi = bi_beichi.clone();
         beichi.extend(xd_beichi.clone());
+
+        // 8. 走势递归分解（放在背驰检测之前，因为走势级别背驰需要 zoushi）
+        let zoushi = build_zoushi_from_xd(&xds);
+
+        // 走势级别背驰：在递归后的走势对象上检测背驰（更接近缠论原文定义）
+        let zoushi_beichi = detect_zoushi_beichi(&zoushi, macd, &xds);
+        beichi.extend(zoushi_beichi);
 
         // 7. 买卖点识别（笔级别 + 线段级别）
         // 重要：笔级别买卖点只看笔背驰，线段级别买卖点只看线段背驰，避免重复
@@ -84,9 +91,6 @@ impl CzscAnalyzer {
         buy_sell.extend(xd_bs);
         buy_sell.sort_by_key(|p| p.index);
         buy_sell.dedup_by(|a, b| a.index == b.index && a.bs_type == b.bs_type);
-
-        // 8. 走势递归分解
-        let zoushi = build_zoushi_from_xd(&xds);
 
         // 9. 区间套——需要多级别数据，在单级别分析中暂不执行
         //    区间套由 MultiLevelAnalyzer 在多级别联立时使用

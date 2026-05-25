@@ -6,11 +6,20 @@
 //! Parquet 文件列: datetime(timestamp[ns]), Open, High, Low, Close, Volume
 
 use anyhow::{Context, Result};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use crate::source::DataSource;
 use crate::types::*;
 use serde::{Deserialize, Serialize};
+
+/// 股票名称缓存条目
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct StockNameEntry {
+    name: String,
+    pinyin: String,
+}
 
 /// 数据移动结果
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -23,6 +32,8 @@ pub struct MoveDataResult {
 /// K 线管理器
 pub struct KLineManager {
     data_dir: PathBuf,
+    /// 股票名称缓存: code -> StockNameEntry
+    stock_name_cache: Mutex<Option<HashMap<String, StockNameEntry>>>,
 }
 
 impl KLineManager {
@@ -32,7 +43,10 @@ impl KLineManager {
         let data_dir = data_dir
             .map(PathBuf::from)
             .unwrap_or_else(|| default_data_dir());
-        Self { data_dir }
+        Self {
+            data_dir,
+            stock_name_cache: Mutex::new(None),
+        }
     }
 
     /// 获取数据目录
@@ -307,7 +321,7 @@ impl KLineManager {
                     polars::prelude::TimeUnit::Microseconds => v / 1_000_000,
                     polars::prelude::TimeUnit::Milliseconds => v / 1_000,
                 };
-                if let Some(dt) = chrono::DateTime::from_timestamp(secs, 0).map(|dt| dt.naive_utc()) {
+                if let Some(dt) = chrono::DateTime::from_timestamp(secs, 0).map(|dt| dt.naive_local()) {
                     return dt.format("%Y-%m-%d %H:%M:%S").to_string();
                 }
                 return format!("{}", v);
@@ -425,6 +439,84 @@ impl KLineManager {
 
         Ok(result)
     }
+    /// 确保股票名称缓存已加载（懒加载，首次搜索时触发）
+    pub fn ensure_stock_name_cache(&self) {
+        let mut cache = self.stock_name_cache.lock().unwrap();
+        if cache.is_some() {
+            return;
+        }
+
+        // 尝试从本地 JSON 缓存文件加载
+        let cache_path = self.data_dir.join("stock_names.json");
+        if cache_path.exists() {
+            if let Ok(data) = std::fs::read_to_string(&cache_path) {
+                if let Ok(map) = serde_json::from_str::<HashMap<String, StockNameEntry>>(&data) {
+                    eprintln!("[搜索] 从缓存加载 {} 只股票名称", map.len());
+                    *cache = Some(map);
+                    return;
+                }
+            }
+        }
+
+        // 缓存文件不存在或无效，从在线 API 获取
+        eprintln!("[搜索] 从在线API获取股票名称列表...");
+        let mut map: HashMap<String, StockNameEntry> = HashMap::new();
+
+        // 优先使用 Tushare（数据最全，有 name 字段）
+        if let Ok(codes_with_names) = crate::sync::fetch_stock_list_with_names() {
+            for (code, name) in &codes_with_names {
+                let pinyin = to_pinyin_abbr(name);
+                map.insert(code.clone(), StockNameEntry {
+                    name: name.clone(),
+                    pinyin,
+                });
+            }
+            eprintln!("[搜索] Tushare 获取到 {} 只股票名称", codes_with_names.len());
+        }
+
+        // Tushare 失败，尝试东方财富
+        if map.is_empty() {
+            if let Ok(codes_with_names) = crate::sync::fetch_stock_names_eastmoney() {
+                for (code, name) in &codes_with_names {
+                    let pinyin = to_pinyin_abbr(name);
+                    map.insert(code.clone(), StockNameEntry {
+                        name: name.clone(),
+                        pinyin,
+                    });
+                }
+                eprintln!("[搜索] 东方财富获取到 {} 只股票名称", codes_with_names.len());
+            }
+        }
+
+        if !map.is_empty() {
+            // 保存缓存文件
+            if let Ok(json) = serde_json::to_string(&map) {
+                if let Err(e) = std::fs::write(&cache_path, json) {
+                    eprintln!("[搜索] 保存名称缓存失败: {}", e);
+                }
+            }
+        }
+
+        // 始终注入指数/板块指数名称（即使在线 API 失败也保证可搜索指数）
+        let index_map = crate::sync::get_index_name_map();
+        for (code, (name, pinyin)) in &index_map {
+            map.entry(code.clone()).or_insert_with(|| StockNameEntry {
+                name: name.clone(),
+                pinyin: pinyin.clone(),
+            });
+        }
+
+        *cache = Some(map);
+    }
+
+    /// 使股票名称缓存失效（数据同步后可调用）
+    pub fn invalidate_stock_name_cache(&self) {
+        let mut cache = self.stock_name_cache.lock().unwrap();
+        *cache = None;
+        // 删除缓存文件，下次搜索时重新获取
+        let cache_path = self.data_dir.join("stock_names.json");
+        let _ = std::fs::remove_file(cache_path);
+    }
 }
 
 impl DataSource for KLineManager {
@@ -469,7 +561,14 @@ impl DataSource for KLineManager {
     }
 
     fn search_stocks(&self, keyword: &str) -> Result<Vec<StockInfo>> {
-        // 从日线目录获取全部股票列表
+        // 确保缓存已加载
+        self.ensure_stock_name_cache();
+
+        let keyword_lower = keyword.to_lowercase();
+        let cache = self.stock_name_cache.lock().unwrap();
+        let name_cache = cache.as_ref().unwrap();
+
+        // 从日线目录获取全部股票代码
         let day_dir = self.cache_dir().join("1d");
         let dir = if day_dir.exists() {
             day_dir
@@ -477,41 +576,114 @@ impl DataSource for KLineManager {
             self.cache_dir()
         };
 
-        let entries = std::fs::read_dir(&dir)?;
+        let mut seen = std::collections::HashSet::new();
         let mut results = Vec::new();
 
-        for entry in entries.flatten() {
-            let name = entry.file_name().to_string_lossy().to_string();
-            if let Some(code) = name.strip_suffix(".parquet") {
-                if code.contains(keyword) {
-                    results.push(StockInfo {
-                        symbol: code.to_string(),
-                        name: String::new(),
-                        pinyin: String::new(),
-                        market: if code.starts_with('6') || code.starts_with('9') {
-                            "SH".to_string()
-                        } else {
-                            "SZ".to_string()
-                        },
-                    });
+        // ── 1. 从本地 parquet 文件匹配（已有缓存） ──
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                let fname = entry.file_name().to_string_lossy().to_string();
+                if let Some(code) = fname.strip_suffix(".parquet") {
+                    // 获取缓存的名称和拼音
+                    let (name, pinyin) = match name_cache.get(code) {
+                        Some(entry) => (entry.name.clone(), entry.pinyin.clone()),
+                        None => (String::new(), String::new()),
+                    };
+
+                    // 匹配：代码包含、名称包含、拼音前缀匹配
+                    let matched = code.contains(keyword)
+                        || name.contains(keyword)
+                        || pinyin.starts_with(&keyword_lower)
+                        || pinyin.contains(&keyword_lower);
+
+                    if matched {
+                        seen.insert(code.to_string());
+                        results.push(StockInfo {
+                            symbol: code.to_string(),
+                            name,
+                            pinyin,
+                            market: if code.starts_with("BK") || code.starts_with("88") {
+                                "BK".to_string()
+                            } else if code.starts_with('6') || code.starts_with('9') {
+                                "SH".to_string()
+                            } else {
+                                "SZ".to_string()
+                            },
+                        });
+                    }
                 }
             }
         }
 
-        results.sort_by(|a, b| a.symbol.cmp(&b.symbol));
+        // ── 2. 从名称缓存中补充匹配（未缓存的概念板块/指数等） ──
+        for (code, entry) in name_cache.iter() {
+            if seen.contains(code) {
+                continue;
+            }
+            let matched = code.contains(keyword)
+                || entry.name.contains(keyword)
+                || entry.pinyin.starts_with(&keyword_lower)
+                || entry.pinyin.contains(&keyword_lower);
+            if matched {
+                seen.insert(code.clone());
+                results.push(StockInfo {
+                    symbol: code.clone(),
+                    name: entry.name.clone(),
+                    pinyin: entry.pinyin.clone(),
+                    market: if code.starts_with("BK") || code.starts_with("88") {
+                        "BK".to_string()
+                    } else if code.starts_with('6') || code.starts_with('9') {
+                        "SH".to_string()
+                    } else {
+                        "SZ".to_string()
+                    },
+                });
+            }
+        }
+
+        // 排序：代码前缀匹配优先，然后拼音前缀匹配，最后按代码排序
+        results.sort_by(|a, b| {
+            let a_code_match = a.symbol.starts_with(keyword);
+            let b_code_match = b.symbol.starts_with(keyword);
+            let a_pinyin_match = a.pinyin.starts_with(&keyword_lower);
+            let b_pinyin_match = b.pinyin.starts_with(&keyword_lower);
+
+            match (a_code_match, b_code_match) {
+                (true, false) => std::cmp::Ordering::Less,
+                (false, true) => std::cmp::Ordering::Greater,
+                _ => match (a_pinyin_match, b_pinyin_match) {
+                    (true, false) => std::cmp::Ordering::Less,
+                    (false, true) => std::cmp::Ordering::Greater,
+                    _ => a.symbol.cmp(&b.symbol),
+                },
+            }
+        });
+
         Ok(results)
     }
 
     fn get_stock_info(&self, symbol: &str) -> Result<StockInfo> {
-        let market = if symbol.starts_with('6') || symbol.starts_with('9') {
+        // 确保缓存已加载
+        self.ensure_stock_name_cache();
+
+        let market = if symbol.starts_with("BK") || symbol.starts_with("88") {
+            "BK"
+        } else if symbol.starts_with('6') || symbol.starts_with('9') {
             "SH"
         } else {
             "SZ"
         };
+
+        let cache = self.stock_name_cache.lock().unwrap();
+        let (name, pinyin) = match cache.as_ref().unwrap().get(symbol) {
+            Some(entry) => (entry.name.clone(), entry.pinyin.clone()),
+            None => (String::new(), String::new()),
+        };
+
         Ok(StockInfo {
             symbol: symbol.to_string(),
-            name: String::new(),
-            pinyin: String::new(),
+            name,
+            pinyin,
             market: market.to_string(),
         })
     }
@@ -536,6 +708,27 @@ fn default_data_dir() -> PathBuf {
 
     // 兜底：当前目录下的 data
     PathBuf::from("data")
+}
+
+/// 汉字转拼音缩写（取每个汉字的首字母）
+/// 例: "平安银行" -> "payh", "贵州茅台" -> "gzmt"
+fn to_pinyin_abbr(name: &str) -> String {
+    use pinyin::ToPinyin;
+
+    let mut result = String::new();
+    for c in name.chars() {
+        if let Some(pinyin) = c.to_pinyin() {
+            if let Some(first) = pinyin.with_tone_num().chars().next() {
+                result.push(first.to_ascii_lowercase());
+            }
+        } else {
+            // 非汉字字符（数字、字母等）直接保留
+            if c.is_ascii_alphanumeric() {
+                result.push(c.to_ascii_lowercase());
+            }
+        }
+    }
+    result
 }
 
 /// 递归尝试删除空目录

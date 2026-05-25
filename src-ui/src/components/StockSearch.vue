@@ -86,7 +86,7 @@ function onBlur() {
           @input="onInput"
           @keyup="onKeyup"
           @blur="onBlur"
-          placeholder="输入代码/拼音"
+          placeholder="输入代码/名称/拼音"
           class="bg-transparent text-sm text-white ml-2 w-44 outline-none placeholder-[#666]"
         />
       </div>
@@ -106,6 +106,7 @@ function onBlur() {
         <div class="flex items-center gap-2">
           <span class="text-gray-300 font-mono">{{ stock.symbol }}</span>
           <span class="text-white">{{ stock.name }}</span>
+          <span v-if="stock.pinyin" class="text-[#666] text-xs">{{ stock.pinyin }}</span>
         </div>
         <span class="text-[#9e9e9e] text-xs">{{ stock.market }}</span>
       </div>

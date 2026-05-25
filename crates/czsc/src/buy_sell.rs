@@ -348,10 +348,22 @@ fn find_buy3_sell3(
         // 扫描所有段对：离开段 + 回抽段
         // 三买：需要找到一个向上的离开段（高点>Zg），其后紧接一个向下回抽段（低点>Zg）
         // 三卖：需要找到一个向下的离开段（低点<Zd），其后紧接一个向上回抽段（高点<Zd）
+        //
+        // 关键：如果中枢 A 和离开段之间有新中枢 B 形成（B.start_index 在 A.end 和 leave.start 之间），
+        // 说明离开段属于新中枢 B 的领域，不应为旧中枢 A 产生三买/三卖。
+        // 否则会出现旧中枢用"穿越"了新中枢的段对来错误触发信号的情况。
 
         for i in 0..after_segs.len() - 1 {
             let leave_seg = after_segs[i];
             let back_seg = after_segs[i + 1];
+
+            // 检查是否有新中枢在当前中枢结束和离开段开始之间形成
+            let has_newer_zs = zs_list.iter().any(|other| {
+                other.start_index > zs.end_index && other.start_index <= leave_seg.start_idx
+            });
+            if has_newer_zs {
+                continue; // 此离开段属于新中枢领域，跳过
+            }
 
             // 三买：向上离开 + 向下回抽
             if leave_seg.direction == "up" && back_seg.direction == "down" {
@@ -373,7 +385,7 @@ fn find_buy3_sell3(
                         });
                     }
                     // 无论回抽是否成功，离开段已经脱离中枢，
-                    // 后续的段对可能构成新的三买，继续扫描
+                    // 后续段对可能构成新的三买，继续扫描
                 }
             }
 
@@ -944,5 +956,55 @@ mod tests {
         let overlap: Vec<_> = pts.iter().filter(|p| p.bs_type == "2+3buy").collect();
         assert!(!overlap.is_empty(), "二三买在同一位置应重合为'2+3buy'");
         assert_eq!(overlap[0].index, 33);
+    }
+
+    // ─── 多中枢三买：离开段属于新中枢领域，不应为旧中枢触发三买 ───
+
+    #[test]
+    fn test_no_third_buy_from_old_zs_when_newer_zs_exists() {
+        // ● 用户场景复现（stock 688008, 2026-03-31日线）：
+        //
+        //   旧中枢 A: ZG=88.20 → 很早形成，早已被后续走势覆盖
+        //   新中枢 B: ZG=126.45 → 当前时间点"前一个中枢"的真实上沿
+        //   离开段: 向上，高点 153.95
+        //   回抽段: 向下，低点 125.00
+        //
+        // ● 缠论定义（20课）：
+        //   "第三类买卖点：某级别中枢之上，次级别离开后次级别回抽不回到中枢"
+        //   一旦新中枢 B 形成，旧中枢 A 不再活跃，"某级别中枢"指的就是新中枢 B。
+        //
+        // ● 修复前（错误）：
+        //   对中枢 A: 153.95 > 88.20 ✓ 且 125.00 >= 88.20 ✓ → 误判三买！
+        // ● 修复后（正确）：
+        //   中枢 B 在 A.end 和离开段.start 之间已形成 → 跳过 A 的检查
+        //   对中枢 B: 153.95 > 126.45 ✓ 但 125.00 < 126.45 ✗ → 不是三买（中枢扩展）
+
+        let bis = vec![
+            make_bi(0,"up",  10., 20.,   0, 3),
+            make_bi(1,"down",20., 15.,   3, 6),
+            make_bi(2,"up",  15., 18.,   6, 9),
+            // 中枢 A: ZG=88.20, ZD=80, end_index=9
+
+            make_bi(3,"down", 88., 40.,   9,12),   // 过渡段（真正的向下笔）
+
+            make_bi(4,"up",   40., 125., 12,15),
+            make_bi(5,"down",125., 120., 15,18),
+            // 中枢 B: ZG=126.45, ZD=120, start_index=12, end_index=18
+
+            make_bi(6,"up",  120.,153.95,18,21),  // 离开段, high=153.95
+            make_bi(7,"down",153.95,125.,21,24),   // 回抽段, low=125.00
+        ];
+
+        let zs = vec![
+            make_zs("bi_zs", 3, 9,  88.20, 80.),     // 旧中枢 A
+            make_zs("bi_zs", 12, 18, 126.45, 120.),   // 新中枢 B
+        ];
+
+        let pts = detect_buy_sell(&bis, &zs, &[]);
+        let b3: Vec<_> = pts.iter().filter(|p| p.bs_type == "3buy").collect();
+
+        assert!(b3.is_empty(),
+            "旧中枢A不应产生三买：新中枢B已形成（start=12在A.end=9和离开段start=18之间），\
+             离开段属于新中枢B的领域；对新中枢B，回抽125.00<126.45应判定为中枢扩展");
     }
 }

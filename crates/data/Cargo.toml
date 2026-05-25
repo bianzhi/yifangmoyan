@@ -13,3 +13,4 @@ anyhow = { workspace = true }
 polars = { workspace = true }
 reqwest = { version = "0.12", features = ["blocking", "json"] }
 dirs = "6"
+pinyin = "0.11"

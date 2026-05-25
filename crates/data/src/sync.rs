@@ -1072,11 +1072,28 @@ pub struct ValidateStockResult {
 //  股票代码转换
 // ═══════════════════════════════════════════════════════════
 
+/// 判断是否为上证指数代码（000xxx 格式，非深证股票）
+fn is_sh_index(code: &str) -> bool {
+    matches!(code, "000001" | "000016" | "000300" | "000688" | "000905" | "000852")
+}
+
+/// 判断是否为概念板块代码（BK 或 88-开头）
+pub(crate) fn is_concept_board_code(code: &str) -> bool {
+    code.starts_with("BK") || code.starts_with("88")
+}
+
 /// 股票代码转新浪 symbol (sz000001, sh600000)
+/// 概念板块新浪不支持，返回空（后续被 fallback 链跳过）
 fn code_to_sina(code: &str) -> String {
+    // 概念板块：新浪不支持
+    if is_concept_board_code(code) {
+        return format!("sina_unsupported_{}", code);
+    }
     // 北交所（92/83/43开头）优先判断，否则9开头被误判为上海B股
     if code.starts_with("92") || code.starts_with("93") || code.starts_with("83") || code.starts_with("43") {
         format!("bj{}", code)
+    } else if is_sh_index(code) {
+        format!("sh{}", code)
     } else if code.starts_with('6') || code.starts_with('9') {
         format!("sh{}", code)
     } else if code.starts_with('0') || code.starts_with('3') {
@@ -1089,10 +1106,16 @@ fn code_to_sina(code: &str) -> String {
 }
 
 /// 股票代码转腾讯 symbol (bj830799, sh600000, sz000001)
+/// 概念板块腾讯不支持
 fn code_to_tencent(code: &str) -> String {
+    if is_concept_board_code(code) {
+        return format!("tencent_unsupported_{}", code);
+    }
     // 北交所（92/83/43开头）优先判断
     if code.starts_with("92") || code.starts_with("93") || code.starts_with("83") || code.starts_with("43") {
         format!("bj{}", code)
+    } else if is_sh_index(code) {
+        format!("sh{}", code)
     } else if code.starts_with('6') || code.starts_with('9') {
         format!("sh{}", code)
     } else if code.starts_with('0') || code.starts_with('3') {
@@ -1104,11 +1127,20 @@ fn code_to_tencent(code: &str) -> String {
     }
 }
 
-/// 股票代码转东方财富 secid (上海: 1.600000, 深圳: 0.000001, 北京: 0.920001)
+/// 股票代码转东方财富 secid (上海: 1.600000, 深圳: 0.000001, 概念板块: 90.BKxxxx)
 fn code_to_eastmoney(code: &str) -> String {
+    // 概念板块：东方财富是主要数据源
+    if code.starts_with("BK") {
+        return format!("90.{}", code); // 概念板块
+    }
+    if code.starts_with("88") {
+        return format!("90.{}", code); // 概念指数（同花顺/雪球代码，尝试东方财富兼容）
+    }
     // 北交所（92/83/43开头）优先判断，东方财富对北交所市场编号为0
     if code.starts_with("92") || code.starts_with("93") || code.starts_with("83") || code.starts_with("43") {
         format!("0.{}", code) // 北京
+    } else if is_sh_index(code) {
+        format!("1.{}", code) // 上证指数（000xxx）
     } else if code.starts_with('6') || code.starts_with('9') {
         format!("1.{}", code) // 上海
     } else if code.starts_with('0') || code.starts_with('3') {
@@ -1121,10 +1153,16 @@ fn code_to_eastmoney(code: &str) -> String {
 }
 
 /// 股票代码转 Tushare ts_code (600000.SH, 000001.SZ, 920001.BJ, 830001.BJ)
+/// 概念板块 Tushare 不支持 K 线数据（仅 dc_index 概念板块列表）
 fn code_to_tushare(code: &str) -> String {
+    if is_concept_board_code(code) {
+        return format!("tushare_unsupported_{}", code);
+    }
     // 北交所（92/83/43开头）优先判断，否则92开头被误判为上海
     if code.starts_with("92") || code.starts_with("93") || code.starts_with("83") || code.starts_with("43") {
         format!("{}.BJ", code)
+    } else if is_sh_index(code) {
+        format!("{}.SH", code)
     } else if code.starts_with('6') || code.starts_with('9') {
         format!("{}.SH", code)
     } else if code.starts_with('0') || code.starts_with('3') {
@@ -1520,6 +1558,21 @@ fn fetch_kline_multi_source(
         None => return Ok(FetchResult { records: Vec::new(), source: "none".into() }),
     };
 
+    // ═══ 概念板块快速路径：仅东方财富支持（Tushare/Sina/Tencent 不支持概念板块 K 线） ═══
+    let is_concept = is_concept_board_code(code);
+    if is_concept {
+        if let Some(klt) = cfg.eastmoney_klt {
+            match fetch_eastmoney_kline(&em_secid, klt, cfg.eastmoney_lmt, since_eastmoney) {
+                Ok(data) if !data.is_empty() => {
+                    return Ok(FetchResult { records: data, source: "eastmoney".into() });
+                }
+                _ => {}
+            }
+        }
+        // 东方财富不支持月线/周线（没有 klt），概念板块仅支持日线+分钟线
+        return Ok(FetchResult { records: Vec::new(), source: "eastmoney_unsupported".into() });
+    }
+
     let _is_daily_or_above = matches!(tf, TimeFrame::M | TimeFrame::W | TimeFrame::D);
     let is_minute = matches!(tf, TimeFrame::F60 | TimeFrame::F30 | TimeFrame::F15 | TimeFrame::F5 | TimeFrame::F1);
 
@@ -1579,6 +1632,28 @@ fn fetch_kline_multi_source(
         if let Some(freq) = cfg.tushare_freq {
             match fetch_tushare_kline(&ts_code, freq, since_tushare) {
                 Ok(data) if !data.is_empty() => {
+                    // Tushare 日线数据为 T+1：交易时段内可能不含今日 K 线。
+                    // 若最新日期不是今天，尝试东方财富补充今日数据后合并
+                    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+                    let is_daily = tf == TimeFrame::D;
+                    let missing_today = is_daily && data.last()
+                        .map(|r| !r.datetime.starts_with(&today))
+                        .unwrap_or(false);
+                    if missing_today {
+                        if let Some(klt) = cfg.eastmoney_klt {
+                            // 只请求最近几条，看是否有今日数据
+                            let today_nohyphen = today.replace("-", "");
+                            if let Ok(em) = fetch_eastmoney_kline(&em_secid, klt, 5, Some(&today_nohyphen)) {
+                                let today_data: Vec<_> = em.into_iter()
+                                    .filter(|r| r.datetime.starts_with(&today))
+                                    .collect();
+                                if !today_data.is_empty() {
+                                    let merged = merge_records(&data, &today_data);
+                                    return Ok(FetchResult { records: merged, source: "tushare+eastmoney".into() });
+                                }
+                            }
+                        }
+                    }
                     return Ok(FetchResult { records: data, source: "tushare".into() });
                 }
                 _ => {}
@@ -2353,13 +2428,15 @@ pub fn sync_stock(
         }
 
         // ─── 增量逻辑: 非 force 时, 以本地最后日期的前一天作为增量起始点 ───
+        // force 时把 start_date 传给数据源，避免 P1 数据源取不到更早的历史数据
         let inc_since: Option<String> = if !force {
             get_parquet_last_date(&filepath).map(|last_dt| {
                 // 从最后日期前一天开始请求, 确保覆盖修正
                 subtract_one_day(&last_dt)
             })
         } else {
-            None
+            // force 模式下，告诉数据源从 start_date 开始取（而非默认近5年）
+            Some(start_date.to_string())
         };
 
         let result = match tf {
@@ -2381,22 +2458,25 @@ pub fn sync_stock(
                 }
                 match daily_records.as_ref().map(|d| resample_to_monthly(d)) {
                     Some(mut recs) => {
-                        if !force {
-                            // 快速判断：新数据最后日期 vs 本地最后日期
+                        // 如果本地已有数据，始终 merge（防止 force=true 时覆盖历史数据）
+                        if filepath.exists() {
+                            // 快速判断：新数据最后日期 vs 本地最后日期 → 跳过
                             let local_last = get_parquet_last_date(&filepath);
                             let new_last = recs.last().map(|r| r.datetime.as_str()).unwrap_or("");
-                            if let Some(ref old_last) = local_last {
-                                if old_last == new_last && !new_last.is_empty() {
-                                    let count = get_parquet_row_count(&filepath).unwrap_or(0);
-                                    results.push(SyncLevelResult {
-                                        level: level_str, status: "skip".into(),
-                                        count, source: "resample_from_daily".into(),
-                                        msg: "already up to date".into(),
-                                    });
-                                    continue;
+                            if !force {
+                                if let Some(ref old_last) = local_last {
+                                    if old_last == new_last && !new_last.is_empty() {
+                                        let count = get_parquet_row_count(&filepath).unwrap_or(0);
+                                        results.push(SyncLevelResult {
+                                            level: level_str, status: "skip".into(),
+                                            count, source: "resample_from_daily".into(),
+                                            msg: "already up to date".into(),
+                                        });
+                                        continue;
+                                    }
                                 }
                             }
-                            // 有新数据，需要 merge
+                            // 有新数据，合并旧数据（force 模式下也要 merge）
                             if let Ok(old) = load_existing_parquet(&filepath) {
                                 recs = merge_records(&old, &recs);
                             }
@@ -2431,22 +2511,25 @@ pub fn sync_stock(
 
                 match records {
                     Some(mut recs) => {
-                        if !force {
-                            // 快速判断：新数据最后日期 vs 本地最后日期
+                        // 如果本地已有数据，始终 merge（防止 force=true 时覆盖历史数据）
+                        if filepath.exists() {
+                            // 快速判断：新数据最后日期 vs 本地最后日期 → 跳过
                             let local_last = get_parquet_last_date(&filepath);
                             let new_last = recs.last().map(|r| r.datetime.as_str()).unwrap_or("");
-                            if let Some(ref old_last) = local_last {
-                                if old_last == new_last && !new_last.is_empty() {
-                                    let count = get_parquet_row_count(&filepath).unwrap_or(0);
-                                    results.push(SyncLevelResult {
-                                        level: level_str, status: "skip".into(),
-                                        count, source: fetch.source.clone(),
-                                        msg: "already up to date".into(),
-                                    });
-                                    continue;
+                            if !force {
+                                if let Some(ref old_last) = local_last {
+                                    if old_last == new_last && !new_last.is_empty() {
+                                        let count = get_parquet_row_count(&filepath).unwrap_or(0);
+                                        results.push(SyncLevelResult {
+                                            level: level_str, status: "skip".into(),
+                                            count, source: fetch.source.clone(),
+                                            msg: "already up to date".into(),
+                                        });
+                                        continue;
+                                    }
                                 }
                             }
-                            // 有新数据，需要 merge
+                            // 有新数据，合并旧数据（force 模式下也要 merge）
                             if let Ok(old) = load_existing_parquet(&filepath) {
                                 recs = merge_records(&old, &recs);
                             }
@@ -2496,22 +2579,25 @@ pub fn sync_stock(
                     if tf == TimeFrame::D {
                         daily_records = Some(records.clone());
                     }
-                    if !force {
-                        // 快速判断：新数据最后日期 vs 本地最后日期
+                    // 如果本地已有数据，始终 merge（防止 force=true 时覆盖历史数据）
+                    if filepath.exists() {
+                        // 快速判断：新数据最后日期 == 本地最后日期 → 跳过
                         let local_last = get_parquet_last_date(&filepath);
                         let new_last = records.last().map(|r| r.datetime.as_str()).unwrap_or("");
-                        if let Some(ref old_last) = local_last {
-                            if old_last == new_last && !new_last.is_empty() {
-                                let count = get_parquet_row_count(&filepath).unwrap_or(0);
-                                results.push(SyncLevelResult {
-                                    level: level_str, status: "skip".into(),
-                                    count, source: fetch.source.clone(),
-                                    msg: "already up to date".into(),
-                                });
-                                continue;
+                        if !force {
+                            if let Some(ref old_last) = local_last {
+                                if old_last == new_last && !new_last.is_empty() {
+                                    let count = get_parquet_row_count(&filepath).unwrap_or(0);
+                                    results.push(SyncLevelResult {
+                                        level: level_str, status: "skip".into(),
+                                        count, source: fetch.source.clone(),
+                                        msg: "already up to date".into(),
+                                    });
+                                    continue;
+                                }
                             }
                         }
-                        // 有新数据，需要 merge
+                        // 有新数据，合并旧数据（force 模式下也要 merge，确保历史数据不丢失）
                         if let Ok(old) = load_existing_parquet(&filepath) {
                             records = merge_records(&old, &records);
                         }
@@ -2755,15 +2841,19 @@ pub fn quick_check_board_up_to_date(
         return (0, 0, false, String::new());
     }
 
-    // 检查每只股票的每个级别文件修改时间
+    // 快速扫描：只检查文件的修改日期（不读 parquet 内容）
+    // 如果所有文件的修改日期都是今天，说明刚同步完，数据必定最新
+    // 否则交由 run_sync_parallel 做精确的 parquet 日期检查
     let mut today_count = 0usize;
     let mut latest_date = String::new();
+    let mut total_files = 0usize;
 
     for code in &local_codes {
-        let mut all_today = true;
+        let mut stock_all_today = true;
         for &tf in levels {
             let dir_name = tf_dir_name(tf);
             let filepath = cache_dir.join(dir_name).join(format!("{}.parquet", code));
+            total_files += 1;
             if let Ok(metadata) = std::fs::metadata(&filepath) {
                 if let Ok(modified) = metadata.modified() {
                     let modified_date: chrono::DateTime<chrono::Local> = modified.into();
@@ -2772,23 +2862,22 @@ pub fn quick_check_board_up_to_date(
                         latest_date = mod_str.clone();
                     }
                     if mod_str != today {
-                        // 不是今天修改，用 is_local_up_to_date 进一步检查
-                        if !is_local_up_to_date(&filepath) {
-                            all_today = false;
-                        }
+                        stock_all_today = false;
                     }
                 } else {
-                    all_today = false;
+                    stock_all_today = false;
                 }
             } else {
-                all_today = false;
+                stock_all_today = false;
             }
         }
-        if all_today {
+        if stock_all_today {
             today_count += 1;
         }
     }
 
+    // 所有文件都是今天修改的 → 刚同步完，全量跳过
+    // 注意：即使不是今天修改，也不在这里读 parquet，交给 run_sync_parallel 处理
     let all_up_to_date = today_count == total && total > 0;
     (total, today_count, all_up_to_date, latest_date)
 }
@@ -2814,14 +2903,16 @@ fn is_local_up_to_date(filepath: &Path) -> bool {
     }
 
     // 方法1: 文件修改时间检查（极快，不解析 parquet）
+    // 仅当文件在最近 1 小时内被修改过才假定数据最新 ——
+    // 覆盖"刚同步完马上再点同步"的场景；超过 1 小时回退到精确的 parquet 日期检查，
+    // 避免盘后新数据被错误跳过（如 14:00 同步过，16:00 再次同步时应发现今日新 K 线）。
     if let Ok(metadata) = std::fs::metadata(filepath) {
         if let Ok(modified) = metadata.modified() {
-            let modified_date: chrono::DateTime<chrono::Local> = modified.into();
             let now = chrono::Local::now();
-            let today = now.format("%Y-%m-%d").to_string();
-            let mod_date = modified_date.format("%Y-%m-%d").to_string();
-            // 文件今天被修改过，很大概率数据已是最新
-            if mod_date == today {
+            let modified_dt: chrono::DateTime<chrono::Local> = modified.into();
+            let elapsed = now.signed_duration_since(modified_dt);
+            // elapsed 可能为负（系统时间回拨等极端情况），此时不走快速路径
+            if elapsed.num_seconds() >= 0 && elapsed.num_seconds() < 3600 {
                 return true;
             }
         }
@@ -3104,4 +3195,333 @@ pub fn sync_board(
     codes.iter()
         .map(|sym| sync_stock(data_dir, sym, levels, start_date, force))
         .collect()
+}
+
+// ═══════════════════════════════════════════════════════════
+//  股票名称获取（用于搜索时匹配中文名称和拼音）
+// ═══════════════════════════════════════════════════════════
+
+/// 从 Tushare 获取全市场股票代码+名称列表
+pub fn fetch_stock_list_with_names() -> Result<Vec<(String, String)>> {
+    let params = serde_json::json!({
+        "api_name": "stock_basic",
+        "token": TUSHARE_TOKEN,
+        "params": {
+            "list_status": "L",
+            "fields": "ts_code,symbol,name"
+        }
+    });
+
+    let client = reqwest::blocking::Client::builder()
+        .user_agent("Mozilla/5.0")
+        .timeout(std::time::Duration::from_secs(15))
+        .connect_timeout(std::time::Duration::from_secs(5))
+        .build()?;
+
+    let resp = client
+        .post("https://api.tushare.pro")
+        .json(&params)
+        .send()?;
+    let body = resp.text()?;
+
+    if body.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let json: serde_json::Value = serde_json::from_str(&body)
+        .context("解析 Tushare stock_basic 响应失败")?;
+
+    let code_val = json.get("code").and_then(|c| c.as_i64()).unwrap_or(-1);
+    if code_val != 0 {
+        let msg = json.get("msg").and_then(|m| m.as_str()).unwrap_or("unknown");
+        anyhow::bail!("Tushare stock_basic error: {}", msg);
+    }
+
+    let fields = json.get("data")
+        .and_then(|d| d.get("fields"))
+        .and_then(|f| f.as_array());
+    let items = json.get("data")
+        .and_then(|d| d.get("items"))
+        .and_then(|f| f.as_array());
+
+    let Some(fields) = fields else { return Ok(Vec::new()); };
+    let Some(items) = items else { return Ok(Vec::new()); };
+
+    let field_names: Vec<&str> = fields.iter().filter_map(|f| f.as_str()).collect();
+    let symbol_idx = field_names.iter().position(|f| *f == "symbol");
+    let name_idx = field_names.iter().position(|f| *f == "name");
+
+    let Some(sym_idx) = symbol_idx else {
+        anyhow::bail!("Tushare 响应缺少 symbol 字段");
+    };
+
+    let results: Vec<(String, String)> = items.iter()
+        .filter_map(|item| {
+            let arr = item.as_array()?;
+            let code = arr.get(sym_idx)?.as_str()?.to_string();
+            let name = if let Some(ni) = name_idx {
+                arr.get(ni)?.as_str()?.to_string()
+            } else {
+                String::new()
+            };
+            // 只保留6位A股代码
+            if code.len() == 6 && code.chars().all(|c| c.is_ascii_digit())
+                && (code.starts_with('0') || code.starts_with('3')
+                    || code.starts_with('6') || code.starts_with('4')
+                    || code.starts_with('8') || code.starts_with('9'))
+            {
+                Some((code, name))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    Ok(results)
+}
+
+/// 从东方财富获取全市场股票代码+名称列表
+pub fn fetch_stock_names_eastmoney() -> Result<Vec<(String, String)>> {
+    let client = build_eastmoney_client()?;
+    let mut all_stocks = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    // 遍历各板块
+    for board in &["sh_main", "sz_main", "gem", "star", "bse"] {
+        let strategies = get_eastmoney_strategies(board);
+        for strategy in &strategies {
+            // 跳过混合策略
+            if strategy.fs.contains(",") {
+                continue;
+            }
+
+            let mut page = 1u64;
+            loop {
+                let url = format!(
+                    "http://push2.eastmoney.com/api/qt/clist/get?pn={}&pz=500&po=1&np=1&ut=bd1d9ddb04089700cf9c27f6f7426281&fltt=2&invt=2&fid={}&fs={}&fields=f12,f14",
+                    page, strategy.fid, strategy.fs
+                );
+
+                let resp = match client.get(&url).send() {
+                    Ok(r) => r,
+                    Err(_) => break,
+                };
+                let body = match resp.text() {
+                    Ok(b) => b,
+                    Err(_) => break,
+                };
+
+                if body.is_empty() {
+                    break;
+                }
+
+                let json: serde_json::Value = match serde_json::from_str(&body) {
+                    Ok(j) => j,
+                    Err(_) => break,
+                };
+
+                let total = json.get("data")
+                    .and_then(|d| d.get("total"))
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+
+                let diff = json.get("data")
+                    .and_then(|d| d.get("diff"))
+                    .and_then(|v| v.as_array());
+
+                let Some(diff) = diff else { break; };
+
+                let mut page_count = 0usize;
+                for item in diff {
+                    let code = item.get("f12").and_then(|v| v.as_str()).unwrap_or("");
+                    let name = item.get("f14").and_then(|v| v.as_str()).unwrap_or("");
+                    if !code.is_empty() && code.len() == 6 && code.chars().all(|c| c.is_ascii_digit()) {
+                        // 过滤非A股代码（指数、基金等以1/5开头的不含在A股中）
+                        if code.starts_with('0') || code.starts_with('3')
+                            || code.starts_with('6') || code.starts_with('4')
+                            || code.starts_with('8') || code.starts_with('9')
+                        {
+                            if seen.insert(code.to_string()) {
+                                all_stocks.push((code.to_string(), name.to_string()));
+                            }
+                        }
+                    }
+                    page_count += 1;
+                }
+
+                if (page * 500) >= total as u64 || page_count < 500 {
+                    break;
+                }
+                page += 1;
+            }
+        }
+    }
+
+    Ok(all_stocks)
+}
+
+// ═══════════════════════════════════════════════════════════
+//  指数 & 板块指数定义与同步
+// ═══════════════════════════════════════════════════════════
+
+/// 主要指数定义：代码、名称、拼音缩写
+pub static INDEX_LIST: &[(&str, &str, &str)] = &[
+    ("000001", "上证指数", "szzs"),
+    ("000016", "上证50",   "sz50"),
+    ("000300", "沪深300",  "hs300"),
+    ("000688", "科创50",   "kc50"),
+    ("000905", "中证500",  "zz500"),
+    ("000852", "中证1000", "zz1000"),
+    ("399001", "深证成指", "szcz"),
+    ("399006", "创业板指", "cybz"),
+    ("399005", "中小100",  "zx100"),
+    ("399330", "深证100",  "sz100"),
+];
+
+/// 板块指数定义（静态部分保留空，概念板块由 fetch_concept_board_list 动态获取）
+/// 概念板块约 400+，数量过多不适合全部预同步。仅注入名称缓存供搜索，K 线按需同步。
+pub static SECTOR_INDEX_LIST: &[(&str, &str)] = &[];
+
+/// 获取所有需要同步的指数代码（仅主要市场指数，不包括概念板块）
+/// 概念板块通过 fetch_concept_board_list 按需同步
+pub fn get_index_codes() -> Vec<(String, String)> {
+    let mut codes = Vec::new();
+    for (code, name, _) in INDEX_LIST {
+        codes.push((code.to_string(), name.to_string()));
+    }
+    // 概念板块不在此预同步，由用户搜索后按需触发 get_chart_data → auto-sync
+    codes
+}
+
+/// 获取指数名称映射（用于搜索功能）
+/// 包含：主要市场指数 + 概念板块（从东方财富动态获取）
+pub fn get_index_name_map() -> std::collections::HashMap<String, (String, String)> {
+    let mut map = std::collections::HashMap::new();
+
+    // 1. 主要指数（硬编码）
+    for (code, name, pinyin) in INDEX_LIST {
+        map.insert(code.to_string(), (name.to_string(), pinyin.to_string()));
+    }
+
+    // 2. 概念板块（从东方财富 API 动态获取）
+    match fetch_concept_board_list() {
+        Ok(boards) => {
+            eprintln!("[索引] 从东方财富获取到 {} 个概念板块", boards.len());
+            for (code, name) in boards {
+                let pinyin = chinese_to_pinyin_abbr(&name);
+                map.entry(code).or_insert_with(|| (name, pinyin));
+            }
+        }
+        Err(e) => {
+            eprintln!("[索引] 概念板块获取失败: {}", e);
+        }
+    }
+
+    map
+}
+
+/// 简单的中文字符→拼音首字母映射（覆盖常见指数/板块名称字符）
+fn chinese_to_pinyin_abbr(s: &str) -> String {
+    let map: std::collections::HashMap<char, &str> = [
+        ('上', "s"), ('证', "z"), ('指', "z"), ('数', "s"),
+        ('深', "s"), ('创', "c"), ('业', "y"), ('板', "b"),
+        ('中', "z"), ('小', "x"), ('成', "c"), ('科', "k"),
+        ('沪', "h"), ('农', "n"), ('林', "l"), ('牧', "m"),
+        ('渔', "y"), ('银', "y"), ('行', "h"), ('房', "f"),
+        ('地', "d"), ('产', "c"), ('医', "y"), ('药', "y"),
+        ('生', "s"), ('物', "w"), ('电', "d"), ('子', "z"),
+        ('汽', "q"), ('车', "c"), ('机', "j"), ('械', "x"),
+        ('设', "s"), ('备', "b"), ('食', "s"), ('品', "p"),
+        ('饮', "y"), ('料', "l"), ('计', "j"), ('算', "s"),
+        ('通', "t"), ('信', "x"), ('国', "g"), ('防', "f"),
+        ('军', "j"), ('工', "g"), ('非', "f"), ('金', "j"),
+        ('融', "r"), ('基', "j"), ('础', "c"), ('化', "h"),
+        ('传', "c"), ('媒', "m"), ('存', "c"), ('储', "c"),
+        ('芯', "x"), ('片', "p"), ('人', "r"), ('智', "z"),
+        ('能', "n"), ('网', "w"), ('联', "l"), ('区', "q"),
+        ('块', "k"), ('新', "x"), ('源', "y"), ('光', "g"),
+        ('伏', "f"), ('风', "f"), ('元', "y"), ('器', "q"),
+        ('件', "j"), ('制', "z"), ('造', "z"), ('材', "c"),
+        ('料', "l"), ('激', "j"), ('半', "b"), ('导', "d"),
+        ('体', "t"), ('统', "t"), ('大', "d"), ('据', "j"),
+        ('云', "y"), ('服', "f"), ('务', "w"), ('互', "h"),
+        ('虚', "x"), ('拟', "n"), ('增', "z"), ('强', "q"),
+        ('现', "x"), ('实', "s"), ('安', "a"), ('全', "q"),
+        ('软', "r"), ('件', "j"), ('移', "y"), ('动', "d"),
+        ('支', "z"), ('付', "f"), ('物', "w"), ('流', "l"),
+        ('环', "h"), ('保', "b"), ('建', "j"), ('筑', "z"),
+        ('装', "z"), ('饰', "s"), ('纺', "f"), ('织', "z"),
+        ('化', "h"), ('工', "g"), ('钢', "g"), ('铁', "t"),
+        ('有', "y"), ('色', "s"), ('煤', "m"), ('炭', "t"),
+        ('石', "s"), ('油', "y"), ('天', "t"), ('然', "r"),
+        ('气', "q"), ('航', "h"), ('空', "k"), ('精', "j"),
+        ('密', "m"), ('酒', "j"), ('白', "b"), ('家', "j"),
+        ('用', "y"), ('文', "w"), ('化', "h"), ('旅', "l"),
+        ('游', "y"), ('教', "j"), ('育', "y"), ('体', "t"),
+        ('育', "y"), ('医', "y"), ('疗', "l"), ('美', "m"),
+        ('容', "r"), ('护', "h"), ('理', "l"), ('百', "b"),
+        ('货', "h"), ('超', "c"), ('市', "s"), ('商', "s"),
+        ('业', "y"), ('贸', "m"), ('易', "y"), ('港', "g"),
+        ('口', "k"), ('航', "h"), ('运', "y"), ('铁', "t"),
+        ('路', "l"), ('公', "g"), ('路', "l"), ('桥', "q"),
+        ('梁', "l"), ('市', "s"), ('政', "z"), ('园', "y"),
+        ('林', "l"), ('能', "n"), ('源', "y"), ('金', "j"),
+        ('属', "s"), ('非', "f"), ('矿', "k"), ('采', "c"),
+        ('掘', "j"), ('养', "y"), ('殖', "z"), ('种', "z"),
+        ('植', "z"), ('农', "n"), ('业', "y"), ('兽', "s"),
+        ('饲', "s"), ('料', "l"),
+    ].iter().cloned().collect();
+    s.chars().filter_map(|c| map.get(&c).copied()).collect()
+}
+
+/// 从东方财富获取概念板块列表（BK代码 + 名称）
+pub fn fetch_concept_board_list() -> Result<Vec<(String, String)>> {
+    let client = build_eastmoney_client()?;
+    // 东方财富概念板块列表 API: m:90+t:3 表示概念板块
+    // 概念板块通常 400+，一页最多取 1000 条
+    let url = "http://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=1000&po=1&np=1&ut=bd1d9ddb04089700cf9c27f6f7426281&fltt=2&invt=2&fid=f3&fs=m:90+t:3&fields=f12,f14";
+
+    let resp = client.get(url)
+        .header("Referer", "http://quote.eastmoney.com/")
+        .header("Accept", "*/*")
+        .send()?;
+    let body = resp.text()?;
+
+    let json: serde_json::Value = serde_json::from_str(&body)
+        .context("解析东方财富概念板块列表失败")?;
+
+    let data = json.get("data");
+    let items = data.and_then(|d| d.get("diff"));
+
+    let Some(arr) = items.and_then(|i| i.as_array()) else {
+        return Ok(Vec::new());
+    };
+
+    let mut boards = Vec::new();
+    for item in arr {
+        let code = item.get("f12").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let name = item.get("f14").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        if !code.is_empty() && !name.is_empty() {
+            boards.push((code, name));
+        }
+    }
+
+    Ok(boards)
+}
+
+/// 同步所有指数（主要市场指数 + 概念板块）
+pub fn sync_all_indices(data_dir: &Path, levels: &[TimeFrame], start_date: &str, force: bool) -> Vec<SyncStockResult> {
+    let indices = get_index_codes();
+    let mut results = Vec::new();
+
+    // 1. 同步主要市场指数
+    for (code, _name) in &indices {
+        let result = sync_stock(data_dir, code, levels, start_date, force);
+        results.push(result);
+    }
+
+    // 2. 概念板块仅注入搜索缓存，不预同步（400+ 数量太多，按需同步）
+    // 当用户搜索并选择某个概念板块时，get_chart_data → auto-sync 会按需同步
+
+    results
 }

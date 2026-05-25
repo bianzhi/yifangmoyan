@@ -63,10 +63,35 @@ impl Default for SyncProgress {
     }
 }
 
+/// 持久化的同步失败记录：运行结束后仍保留，供前端展示和手动重试
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SyncFailureRecord {
+    pub symbol: String,
+    pub level: String,
+    pub msg: String,
+}
+
+/// 单股票单级别后台同步状态（用于图表切换时按需同步）
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SingleSyncState {
+    pub symbol: String,
+    pub timeframe: String,
+    pub running: bool,
+    pub done: bool,
+    /// 同步结果（done 为 true 时有效）
+    pub status: String,   // "ok" | "fail" | ""
+    pub count: usize,
+    pub msg: String,
+}
+
 pub struct AppState {
     pub manager: RwLock<KLineManager>,
     /// 后台同步进度（用于前端轮询 + 后台线程共享）
     pub sync_progress: Arc<Mutex<SyncProgress>>,
+    /// 上一次同步的失败列表（同步结束后保留，直到重试成功或用户清除）
+    pub last_sync_failures: Arc<Mutex<Vec<SyncFailureRecord>>>,
+    /// 单股票同步状态（图表按需同步用）
+    pub single_sync_states: Arc<Mutex<Vec<SingleSyncState>>>,
 }
 
 impl AppState {
@@ -76,6 +101,8 @@ impl AppState {
         Self {
             manager: RwLock::new(KLineManager::new(data_dir.as_deref())),
             sync_progress: Arc::new(Mutex::new(SyncProgress::default())),
+            last_sync_failures: Arc::new(Mutex::new(Vec::new())),
+            single_sync_states: Arc::new(Mutex::new(Vec::new())),
         }
     }
 }

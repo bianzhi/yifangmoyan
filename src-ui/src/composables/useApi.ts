@@ -135,3 +135,56 @@ export interface SyncProgress {
   skipped_count: number;
   latest_date: string;
 }
+
+export interface SyncFailureRecord {
+  symbol: string;
+  level: string;
+  msg: string;
+}
+
+export async function getLastSyncFailures(): Promise<SyncFailureRecord[]> {
+  return invoke<SyncFailureRecord[]>("get_last_sync_failures");
+}
+
+export async function clearSyncFailures(): Promise<void> {
+  return invoke("clear_sync_failures");
+}
+
+export async function retryFailedSyncs(startDate?: string): Promise<void> {
+  return invoke("retry_failed_syncs", { startDate: startDate || null });
+}
+
+// ═══════════════════════════════════════════════════════════
+//  单股票按需同步（无数据自动同步 / 光标左移历史扩展）
+// ═══════════════════════════════════════════════════════════
+
+export interface SingleSyncState {
+  symbol: string;
+  timeframe: string;
+  running: boolean;
+  done: boolean;
+  status: string;   // "ok" | "fail" | ""
+  count: number;
+  msg: string;
+}
+
+/// 触发后台同步单只股票。start_date 为 None 时同步最新数据。
+export async function triggerSingleSync(
+  symbol: string,
+  timeframe: string,
+  startDate?: string,
+): Promise<void> {
+  return invoke("trigger_single_sync", {
+    symbol,
+    timeframe,
+    startDate: startDate || null,
+  });
+}
+
+/// 轮询单股票同步状态
+export async function pollSingleSync(
+  symbol: string,
+  timeframe: string,
+): Promise<SingleSyncState> {
+  return invoke<SingleSyncState>("poll_single_sync", { symbol, timeframe });
+}

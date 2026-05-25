@@ -35,6 +35,8 @@ pub fn run() {
             commands::start_sync_board,
             commands::get_sync_status,
             commands::cancel_sync,
+            commands::trigger_single_sync,
+            commands::poll_single_sync,
             commands::auto_sync_on_startup,
             commands::get_all_stock_codes,
             commands::validate_stock,
@@ -50,6 +52,9 @@ pub fn run() {
             commands::clear_all_data,
             commands::trim_old_data,
             commands::clean_delisted_stocks,
+            commands::get_last_sync_failures,
+            commands::clear_sync_failures,
+            commands::retry_failed_syncs,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

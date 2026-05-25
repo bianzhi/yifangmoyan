@@ -107,6 +107,12 @@ const lastSyncStockCount = ref(0);
 const syncAllSkipped = ref(false);
 const showSyncResult = ref(false);
 
+// 持久化失败列表（同步结束后仍保留，独立于当前同步进度）
+interface FailureRecord { symbol: string; level: string; msg: string; }
+const lastFailures = ref<FailureRecord[]>([]);
+const loadingFailures = ref(false);
+const retryingFailed = ref(false);
+
 // 后台同步状态（仅用于横幅提示，不自动进入 syncing 页面状态）
 const bgSyncRunning = ref(false);
 const bgSyncBoard = ref<string | null>(null);
@@ -292,6 +298,45 @@ async function refreshAll() {
   }
 }
 
+async function loadLastFailures() {
+  loadingFailures.value = true;
+  try {
+    lastFailures.value = await invoke<FailureRecord[]>("get_last_sync_failures");
+  } catch { /* ignore */ }
+  finally {
+    loadingFailures.value = false;
+  }
+}
+
+async function retryFailures() {
+  if (retryingFailed.value || syncing.value) return;
+  retryingFailed.value = true;
+  error.value = "";
+  try {
+    await invoke("retry_failed_syncs", { startDate: startDate.value || null });
+    // retry_failed_syncs 也在后台执行，进入轮询
+    syncing.value = true;
+    syncingBoard.value = null;
+    syncRetrying.value = true;
+    syncRetryRound.value = 1;
+    syncTotal.value = 0;
+    syncCompleted.value = 0;
+    syncFailedDetails.value = [];
+    startSyncTimer();
+    startStatusPolling();
+  } catch (e: any) {
+    error.value = `启动重试失败: ${e}`;
+    retryingFailed.value = false;
+  }
+}
+
+async function clearFailures() {
+  try {
+    await invoke("clear_sync_failures");
+    lastFailures.value = [];
+  } catch { /* ignore */ }
+}
+
 // ═══════════════════════════════════════════════════════════════
 //  同步
 // ═══════════════════════════════════════════════════════════════
@@ -300,6 +345,15 @@ function toggleLevel(key: string) {
   const idx = selectedLevels.value.indexOf(key);
   if (idx >= 0) selectedLevels.value.splice(idx, 1);
   else selectedLevels.value.push(key);
+}
+
+function selectAllLevels() {
+  const allKeys = LEVELS.map(l => l.key);
+  if (selectedLevels.value.length === allKeys.length) {
+    selectedLevels.value = [];
+  } else {
+    selectedLevels.value = [...allKeys];
+  }
 }
 
 function startSyncTimer() {
@@ -419,11 +473,12 @@ function startStatusPolling() {
         syncAllSkipped.value = status.all_skipped;
         syncing.value = false;
         syncingBoard.value = null;
+        retryingFailed.value = false;
         stopSyncTimer();
         showSyncResult.value = true;
         setTimeout(() => { showSyncResult.value = false; }, 5_000);
-        // 同步完成后刷新数据，await 确保UI更新
-        await Promise.all([refreshStatus(), loadBoardOnlineInfo()]);
+        // 同步完成后刷新数据 + 失败列表
+        await Promise.all([refreshStatus(), loadBoardOnlineInfo(), loadLastFailures()]);
       }
     } catch {
       // 轮询失败不中断，继续重试
@@ -652,8 +707,8 @@ function severityColor(s: string) {
 // ═══════════════════════════════════════════════════════════════
 
 onMounted(async () => {
-  // 两个请求并行发起
-  await Promise.all([refreshStatus(), loadBoardOnlineInfo()]);
+  // 并行加载
+  await Promise.all([refreshStatus(), loadBoardOnlineInfo(), loadLastFailures()]);
 
   // 自动刷新：每 30 秒静默刷新一次（不显示 loading 态，避免闪烁）
   autoRefreshTimer = setInterval(async () => {
@@ -833,6 +888,37 @@ onUnmounted(() => {
     </div>
 
     <!-- ═══════════════════════════════════════════════════════════
+         失败列表 + 重试按钮（同步结束后保留，独立于主同步流程）
+         ═══════════════════════════════════════════════════════════ -->
+    <div v-if="lastFailures.length > 0 && !syncing" class="shrink-0 bg-[#ff5722]/5 border-b border-[#ff5722]/20">
+      <div class="px-4 py-2 flex items-center justify-between">
+        <div class="flex items-center gap-2">
+          <svg class="w-4 h-4 text-[#ff5722]" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4.5c-.77-.833-2.694-.833-3.464 0L3.34 16.5c-.77.833.192 2.5 1.732 2.5z"/>
+          </svg>
+          <span class="text-xs font-bold text-[#ff5722]">{{ lastFailures.length }} 项同步失败</span>
+        </div>
+        <div class="flex items-center gap-2">
+          <button @click="retryFailures" :disabled="retryingFailed"
+            class="text-[10px] px-2.5 py-1 rounded bg-[#ff5722] text-white hover:bg-[#e64a19] transition disabled:opacity-50 disabled:cursor-not-allowed">
+            {{ retryingFailed ? '重试中...' : '重试失败项' }}
+          </button>
+          <button @click="clearFailures" class="text-[10px] px-2 py-1 rounded border border-[#666] text-[#666] hover:text-white hover:border-white transition">清除</button>
+        </div>
+      </div>
+      <!-- 失败详情（展开显示，限制高度可滚动） -->
+      <div class="px-4 pb-2 max-h-24 overflow-y-auto text-[10px]">
+        <div v-for="(f, i) in lastFailures" :key="i" class="flex items-center gap-2 py-0.5">
+          <span class="font-mono text-[#9e9e9e]">{{ f.symbol }}</span>
+          <span class="text-[#666]">·</span>
+          <span class="text-[#ff9800]">{{ f.level }}</span>
+          <span class="text-[#666]">·</span>
+          <span class="text-[#ff5722] truncate">{{ f.msg }}</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══════════════════════════════════════════════════════════
          主操作区（始终显示，同步中禁用按钮）
          ═════════════════════════════════════════════════════════ -->
     <div class="flex-1 overflow-y-auto">
@@ -916,6 +1002,13 @@ onUnmounted(() => {
                   ? 'bg-[#e94560]/20 text-[#e94560] ring-1 ring-[#e94560]/40'
                   : 'bg-[#0f3460]/50 text-[#555] hover:text-[#888]'">
                 {{ lv.label }}
+              </button>
+              <button @click="selectAllLevels"
+                class="px-2.5 py-1 text-[10px] rounded-md transition-all"
+                :class="selectedLevels.length === LEVELS.length
+                  ? 'bg-[#e94560]/20 text-[#e94560] ring-1 ring-[#e94560]/40'
+                  : 'bg-[#0f3460]/50 text-[#9e9e9e] hover:text-[#ccc]'">
+                全选
               </button>
             </div>
           </div>

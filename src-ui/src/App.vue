@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, watch, computed, nextTick } from "vue";
+import { ref, onMounted, onUnmounted, watch, computed, nextTick } from "vue";
 import {
   createChart,
   ColorType,
@@ -14,7 +14,7 @@ import {
   type ISeriesPrimitivePaneRenderer,
   type SeriesAttachedParameter,
 } from "lightweight-charts";
-import { getChartData, searchStocks, getAllStockCodes, getSubLevelData, cancelSync } from "./composables/useApi";
+import { getChartData, searchStocks, getAllStockCodes, getSubLevelData, cancelSync, triggerSingleSync, pollSingleSync } from "./composables/useApi";
 import type { SyncProgress } from "./composables/useApi";
 import {
   type ChartData,
@@ -107,6 +107,9 @@ const symbol = ref("000001");
 const timeframe = ref<TimeFrame>("d");
 const chartData = ref<ChartData | null>(null);
 const loading = ref(false);
+const syncing = ref(false);  // 正在从网络同步数据（get_chart_data 内置）
+const syncingHistory = ref(false); // 正在扩展历史数据（光标左移触发）
+const syncingHistoryMsg = ref(""); // 扩展历史数据的反馈消息（"暂无更早数据" 等）
 const error = ref("");
 const settings = ref<AnalysisSettings>({ ...DEFAULT_SETTINGS });
 const currentView = ref<"chart" | "sync">("chart");
@@ -237,7 +240,16 @@ const priceChange = computed(() => {
 // ===== 数据加载 =====
 async function loadData() {
   loading.value = true;
+  syncing.value = false;
   error.value = "";
+
+  // 1秒后如果仍在加载，显示"同步中"提示
+  const syncTimer = setTimeout(() => {
+    if (loading.value) {
+      syncing.value = true;
+    }
+  }, 1000);
+
   try {
     const data = await getChartData(
       symbol.value,
@@ -255,7 +267,9 @@ async function loadData() {
   } catch (e: any) {
     error.value = e.toString();
   } finally {
+    clearTimeout(syncTimer);
     loading.value = false;
+    syncing.value = false;
   }
 }
 
@@ -301,7 +315,7 @@ function toTime(dt: string): Time {
 // ===== 图表渲染 =====
 const MAX_VISIBLE_KLINES = 5000; // 性能阈值：超过此数量截断
 
-function renderChart() {
+function renderChart(historyAdded?: number) {
   if (!chartData.value || !chartContainer.value) {
     return;
   }
@@ -312,7 +326,7 @@ function renderChart() {
   const containerWidth = chartContainer.value.clientWidth;
   const containerHeight = chartContainer.value.clientHeight;
   if (containerWidth === 0 || containerHeight === 0) {
-    setTimeout(() => renderChart(), 100);
+    setTimeout(() => renderChart(historyAdded), 100);
     return;
   }
 
@@ -348,10 +362,13 @@ function renderChart() {
     },
   });
 
-  // K 线数据（性能优化：超过阈值截断）
-  const startIdx = data.klines.length > MAX_VISIBLE_KLINES
-    ? data.klines.length - MAX_VISIBLE_KLINES
-    : 0;
+  // K 线数据（扩展历史数据时显示全量，否则截断到阈值）
+ const fullDisplay = historyAdded != null && historyAdded > 0;
+ const startIdx = fullDisplay
+   ? 0  // 历史扩展模式：显示全部数据，让新添加的旧数据可见
+   : (data.klines.length > MAX_VISIBLE_KLINES
+     ? data.klines.length - MAX_VISIBLE_KLINES
+     : 0);
   const visibleKlines = data.klines.slice(startIdx);
 
 
@@ -672,7 +689,109 @@ function renderChart() {
     }
   }
 
-  mainChart.timeScale().fitContent();
+  // 扩展历史数据后，定位到新增数据的起始处（让用户看到新旧交界）
+  if (historyAdded != null && historyAdded > 0 && visibleKlines.length > historyAdded) {
+    // 显示从新增数据末尾往前 200 根K线开始的范围（让用户看到新数据并可以继续往左翻）
+    const ts = mainChart.timeScale();
+    const targetFrom = Math.max(0, historyAdded - 200);
+    const targetTo = Math.min(visibleKlines.length, historyAdded + 50);
+    try {
+      ts.setVisibleLogicalRange({ from: targetFrom, to: targetTo });
+    } catch (e) {
+      ts.fitContent();
+    }
+  } else {
+    mainChart.timeScale().fitContent();
+  }
+
+  // ── 可见范围变化 → 检测是否需要扩展历史数据 ──
+ const timeScale = mainChart.timeScale();
+ const onVisibleRangeChange = () => {
+   const visRange = timeScale.getVisibleLogicalRange();
+   if (!visRange || !chartData.value || chartData.value.klines.length === 0) return;
+
+   // dataStartIdx 需与上面 candleSeries 的 startIdx 一致
+   const dataStartIdx = fullDisplay
+     ? 0  // 历史扩展模式：candleSeries 包含全量数据
+     : (chartData.value.klines.length > MAX_VISIBLE_KLINES
+       ? chartData.value.klines.length - MAX_VISIBLE_KLINES
+       : 0);
+
+    // 当可见范围的起始位置接近数据起始点（全文索引 < 50），触发历史数据扩展
+    // 注意：visRange.from 是 candleSeries 中的逻辑索引，dataStartIdx 是全文偏移量
+    // 两者相加得到该 bar 在全量 klines 中的真实索引
+    const fullIndex = dataStartIdx + visRange.from;
+    const nearBoundary = fullIndex < 50;
+
+    if (nearBoundary && !syncingHistory.value) {
+      const earliestK = chartData.value.klines[dataStartIdx];
+      if (!earliestK) return;
+
+      // 计算需要扩展到的 target_start_date（最早日期往前推）
+      const earlyDt = new Date(earliestK.dt);
+      let targetStart: string;
+      if (timeframe.value === "d") {
+        // 日线：往前推3年
+        earlyDt.setFullYear(earlyDt.getFullYear() - 3);
+        targetStart = earlyDt.toISOString().split("T")[0];
+      } else if (timeframe.value === "w" || timeframe.value === "m") {
+        // 周线/月线：往前推5年
+        earlyDt.setFullYear(earlyDt.getFullYear() - 5);
+        targetStart = earlyDt.toISOString().split("T")[0];
+      } else {
+        // 分钟级别：往前推1年
+        earlyDt.setFullYear(earlyDt.getFullYear() - 1);
+        targetStart = earlyDt.toISOString().split("T")[0];
+      }
+
+      syncingHistory.value = true;
+      console.log(`[历史扩展] ${symbol.value} ${timeframe.value} 最早=${earliestK.dt} → 请求 ${targetStart}`);
+
+      // 触发后台同步 + 轮询
+      triggerSingleSync(symbol.value, timeframe.value, targetStart).then(() => {
+        // 轮询直到完成
+        const pollTimer = setInterval(async () => {
+          try {
+            const state = await pollSingleSync(symbol.value, timeframe.value);
+            if (!state.running && state.done) {
+              clearInterval(pollTimer);
+              syncingHistory.value = false;
+              if (state.status === "ok") {
+                console.log(`[历史扩展] 完成，${state.count} 条数据`);
+                // 重新加载数据（全部数据）
+                const data = await getChartData(symbol.value, timeframe.value, true, true);
+                const oldKlineCount = chartData.value?.klines.length || 0;
+                const newKlineCount = data.klines.length;
+                const addedCount = newKlineCount - oldKlineCount;
+                chartData.value = data;
+                await nextTick();
+                // 重新渲染，但保留用户当前视角位置
+                // 传递新增的历史数据量，让 renderChart 从适当位置开始显示
+                renderChart(addedCount > 0 ? addedCount : undefined);
+                // 无新增数据时提示用户
+                if (addedCount <= 0) {
+                  syncingHistoryMsg.value = "已是最早数据";
+                  setTimeout(() => { syncingHistoryMsg.value = ""; }, 2000);
+                }
+              } else {
+                console.log(`[历史扩展] 失败: ${state.msg}`);
+                syncingHistoryMsg.value = "历史数据扩展失败";
+                setTimeout(() => { syncingHistoryMsg.value = ""; }, 2000);
+              }
+            }
+          } catch (e) {
+            clearInterval(pollTimer);
+            syncingHistory.value = false;
+            console.error("[历史扩展] 轮询异常:", e);
+          }
+        }, 1000);
+      }).catch((e) => {
+        syncingHistory.value = false;
+        console.error("[历史扩展] 触发同步异常:", e);
+      });
+    }
+  };
+  timeScale.subscribeVisibleLogicalRangeChange(onVisibleRangeChange);
 
   // 悬停事件
   mainChart.subscribeCrosshairMove((param) => {
@@ -795,10 +914,7 @@ function navigateToSignal(dt: string, price?: number) {
       // timeToCoordinate 返回像素坐标，我们需要 logical index
       // 使用 candleSeries 的 data 来找到 index
       const klines = chartData.value.klines;
-      const startIdx = klines.length > MAX_VISIBLE_KLINES
-        ? klines.length - MAX_VISIBLE_KLINES : 0;
-      const visKlines = klines.slice(startIdx);
-      const ki = visKlines.findIndex((k) => toTime(k.dt) === time);
+      const ki = klines.findIndex((k) => toTime(k.dt) === time);
       if (ki >= 0) {
         const logicalIdx = ki;  // 在截断数据中的索引 = 逻辑索引
         ts.scrollToPosition(logicalIdx - barCount / 2, true);
@@ -1137,6 +1253,25 @@ function onViewModeChange(mode: ViewMode) {
   loadData();
 }
 
+// ===== 一键开关全部威科夫事件 =====
+const ALL_WYCKOFF_EVENT_KEYS: (keyof AnalysisSettings["wyckoff"])[] = [
+  "showSC", "showAR", "showST", "showSpring", "showSOS", "showLPS", "showJOC",
+  "showPSY", "showBC", "showUTAD", "showSOW", "showLPSY",
+];
+
+function toggleAllWyckoffEvents() {
+  const wyckoff = settings.value.wyckoff;
+  const allOn = ALL_WYCKOFF_EVENT_KEYS.every((k) => wyckoff[k]);
+  const newVal = !allOn;
+  const newSettings = JSON.parse(JSON.stringify(settings.value));
+  for (const k of ALL_WYCKOFF_EVENT_KEYS) {
+    newSettings.wyckoff[k] = newVal;
+  }
+  settings.value = newSettings;
+  persistedSettings.value = JSON.parse(JSON.stringify(newSettings));
+  loadData();
+}
+
 // ===== 键盘快捷键 =====
 function handleKeydown(e: KeyboardEvent) {
   // 不在输入框时才响应
@@ -1168,10 +1303,17 @@ function handleKeydown(e: KeyboardEvent) {
     return;
   }
 
-  // W 切换威科夫
+  // W 切换威科夫视图
   if (e.key === "w" || e.key === "W") {
     e.preventDefault();
     onViewModeChange("wyckoff");
+    return;
+  }
+
+  // E 一键开关全部威科夫事件信号
+  if (e.key === "e" || e.key === "E") {
+    e.preventDefault();
+    toggleAllWyckoffEvents();
     return;
   }
 
@@ -1293,6 +1435,14 @@ onMounted(async () => {
 
   // 键盘快捷键
   document.addEventListener("keydown", handleKeydown);
+});
+
+onUnmounted(() => {
+  // 清理图表资源
+  if (mainChart) {
+    mainChart.remove();
+    mainChart = null;
+  }
 });
 
 // 监听 timeframe 变化
@@ -1479,7 +1629,7 @@ watch(currentView, (val) => {
         <!-- 自选股按钮 -->
         <button
           @click="isInWatchlist(symbol) ? null : addToWatchlist(symbol)"
-          class="text-sm transition-all"
+          class="text-xl transition-all mr-3"
           :class="isInWatchlist(symbol) ? 'text-[#ffd700]' : 'text-[#666] hover:text-[#ffd700]'"
           :title="isInWatchlist(symbol) ? '已在自选股' : '添加到自选股 (Cmd+S)'"
         >
@@ -1523,13 +1673,21 @@ watch(currentView, (val) => {
           <div ref="chartContainer" class="flex-1 min-h-0 relative"></div>
           <!-- 加载/错误/空数据提示 -->
           <div v-if="loading" class="absolute inset-0 flex items-center justify-center bg-[#1a1a2e]/80 z-10">
-            <div class="text-[#9e9e9e] animate-pulse">加载中...</div>
+            <div class="text-[#9e9e9e] animate-pulse">{{ syncing ? '同步中...' : '加载中...' }}</div>
           </div>
           <div v-else-if="error" class="absolute inset-0 flex items-center justify-center bg-[#1a1a2e]/80 z-10">
             <div class="text-[#ff5722]">{{ error }}</div>
           </div>
           <div v-else-if="chartData && chartData.klines.length === 0" class="absolute inset-0 flex items-center justify-center bg-[#1a1a2e]/80 z-10">
-            <div class="text-[#9e9e9e]">暂无数据 — 请先同步该股票的 K 线数据</div>
+            <div class="text-[#9e9e9e]">暂无数据 — 正在自动同步，请稍候</div>
+          </div>
+          <!-- 历史数据扩展提示（光标左移触发） -->
+          <div v-if="syncingHistory" class="absolute top-2 left-1/2 -translate-x-1/2 bg-[#2196f3]/90 text-white text-xs px-3 py-1 rounded-full z-10 animate-pulse">
+            正在扩展历史数据...
+          </div>
+          <!-- 历史数据扩展结果提示 -->
+          <div v-if="syncingHistoryMsg" class="absolute top-8 left-1/2 -translate-x-1/2 bg-[#ff9800]/90 text-white text-xs px-3 py-1 rounded-full z-10">
+            {{ syncingHistoryMsg }}
           </div>
 
           <!-- 悬停信息弹窗 -->

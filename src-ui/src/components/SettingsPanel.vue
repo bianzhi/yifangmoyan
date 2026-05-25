@@ -22,6 +22,21 @@ function toggleWyckoff(key: keyof AnalysisSettings["wyckoff"]) {
   emit("change", newSettings);
 }
 
+const ALL_WYCKOFF_EVENT_KEYS: (keyof AnalysisSettings["wyckoff"])[] = [
+  "showSC", "showAR", "showST", "showSpring", "showSOS", "showLPS", "showJOC",
+  "showPSY", "showBC", "showUTAD", "showSOW", "showLPSY",
+];
+
+function toggleAllWyckoffEvents() {
+  const newSettings = JSON.parse(JSON.stringify(props.settings));
+  const allOn = ALL_WYCKOFF_EVENT_KEYS.every((k) => newSettings.wyckoff[k]);
+  const newVal = !allOn;
+  for (const k of ALL_WYCKOFF_EVENT_KEYS) {
+    newSettings.wyckoff[k] = newVal;
+  }
+  emit("change", newSettings);
+}
+
 function toggleFusion(key: keyof AnalysisSettings["fusion"]) {
   const newSettings = JSON.parse(JSON.stringify(props.settings));
   newSettings.fusion[key] = !newSettings.fusion[key];
@@ -204,7 +219,14 @@ function resetStyles() {
 
     <!-- 威科夫设置 -->
     <div>
-      <h3 class="text-[10px] font-bold text-[#00bcd4] uppercase tracking-wider mb-1.5">威科夫分析</h3>
+      <div class="flex items-center justify-between mb-1.5">
+        <h3 class="text-[10px] font-bold text-[#00bcd4] uppercase tracking-wider">威科夫分析</h3>
+        <button
+          @click="toggleAllWyckoffEvents"
+          class="text-[9px] px-1.5 py-0.5 rounded bg-[#0f3460] text-[#00bcd4] hover:bg-[#1a4a7a] hover:text-white transition-colors"
+          title="一键开关全部事件信号"
+        >全部开/关</button>
+      </div>
       <div class="space-y-1">
         <label
           v-for="(label, key) in ({ showPhase: '阶段色带', showTR: '交易区间', showIceLine: '冰线', showSupplyDemand: '供需线' } as const)"
@@ -342,6 +364,7 @@ function resetStyles() {
         <div><kbd class="bg-[#0f3460] px-1 rounded">0</kbd> 纯K线</div>
         <div><kbd class="bg-[#0f3460] px-1 rounded">B</kbd> 缠论模式</div>
         <div><kbd class="bg-[#0f3460] px-1 rounded">W</kbd> 威科夫模式</div>
+        <div><kbd class="bg-[#0f3460] px-1 rounded">E</kbd> 开关威科夫事件</div>
         <div><kbd class="bg-[#0f3460] px-1 rounded">F</kbd> 融合模式</div>
         <div><kbd class="bg-[#0f3460] px-1 rounded">1-8</kbd> 切换周期</div>
         <div><kbd class="bg-[#0f3460] px-1 rounded">/</kbd> 搜索</div>

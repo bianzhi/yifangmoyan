@@ -111,6 +111,7 @@ const syncing = ref(false);  // 正在从网络同步数据（get_chart_data 内
 const syncingHistory = ref(false); // 正在扩展历史数据（光标左移触发）
 const syncingHistoryMsg = ref(""); // 扩展历史数据的反馈消息（"暂无更早数据" 等）
 const historyReachedEnd = ref(false); // 当前股票/级别是否已到最早数据（阻止重复触发）
+let lastHistoryExpandTime = 0; // 上次触发 Phase 2 的时间戳（防抖，阻止级联触发）
 let unsubVisChange: ((range: any) => void) | null = null; // 取消 onVisibleRangeChange 订阅
 const error = ref("");
 const settings = ref<AnalysisSettings>({ ...DEFAULT_SETTINGS });
@@ -749,8 +750,11 @@ function renderChart(historyAdded?: number) {
 
     // Phase 2: 全文索引接近 0，触发后端扩展历史数据
     // 已到达最早数据时不再触发，避免无限循环
+    // 防抖：距上次 Phase 2 触发不足 2 秒则跳过（阻止级联触发）
     const fullIndex = dataStartIdx + visRange.from;
-    if (fullIndex < 50 && !syncingHistory.value && !historyReachedEnd.value) {
+    const now = Date.now();
+    if (fullIndex < 50 && !syncingHistory.value && !historyReachedEnd.value && (now - lastHistoryExpandTime) > 2000) {
+      lastHistoryExpandTime = now;
       const earliestK = chartData.value.klines[dataStartIdx];
       if (!earliestK) return;
 
@@ -782,7 +786,8 @@ function renderChart(historyAdded?: number) {
             const state = await pollSingleSync(symbol.value, timeframe.value);
             if (!state.running && state.done) {
               clearInterval(pollTimer);
-              syncingHistory.value = false;
+              // ⚠️ 不要在这里释放 syncingHistory！必须在所有 async 处理完成后释放，
+              // 否则 onVisibleRangeChange 会在 async gap 中重复触发 Phase 2（竞态条件）。
               if (state.status === "ok") {
                 console.log(`[历史扩展] 完成，${state.count} 条数据`);
                 // 重新加载数据（全部数据）
@@ -794,15 +799,18 @@ function renderChart(historyAdded?: number) {
                 await nextTick();
                 // 无新增数据时提示用户，不重渲染图表
                 if (addedCount <= 0) {
+                  historyReachedEnd.value = true;  // ⚠️ 先设标记再释放锁！
+                  syncingHistory.value = false;
                   syncingHistoryMsg.value = "已是最早数据";
-                  historyReachedEnd.value = true;  // 已到最早，阻止后续重复触发
                   setTimeout(() => { syncingHistoryMsg.value = ""; }, 2000);
                 } else {
                   // 重新渲染，保留用户当前视角位置
                   // 传递新增的历史数据量，让 renderChart 从适当位置开始显示
+                  syncingHistory.value = false;
                   renderChart(addedCount);
                 }
               } else {
+                syncingHistory.value = false;
                 console.log(`[历史扩展] 失败: ${state.msg}`);
                 syncingHistoryMsg.value = "历史数据扩展失败";
                 setTimeout(() => { syncingHistoryMsg.value = ""; }, 2000);
@@ -1278,6 +1286,7 @@ function selectStock(sym: string, name?: string) {
   persistedSymbol.value = sym;
   showSearch.value = false;
   historyReachedEnd.value = false;  // 切换股票，重置最早数据标记
+  lastHistoryExpandTime = 0;       // 重置防抖时间戳
   // 保留搜索框中显示的股票名称
   if (name) {
     searchKeyword.value = name;
@@ -1306,6 +1315,7 @@ function onTimeframeChange(tf: TimeFrame) {
   timeframe.value = tf;
   persistedTf.value = tf;
   historyReachedEnd.value = false;  // 切换级别，重置最早数据标记
+  lastHistoryExpandTime = 0;       // 重置防抖时间戳
   loadData();
 }
 

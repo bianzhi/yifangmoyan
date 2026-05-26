@@ -227,9 +227,15 @@ pub fn save_analysis_report(
 ) -> Result<String, String> {
     use std::io::Write;
 
-    // 确定保存目录：程序当前运行目录下的 analysis_reports
-    let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
-    let report_dir = cwd.join("analysis_reports");
+    // 确定保存目录：桌面下的 analysis_reports 文件夹
+    // macOS 打包后 current_dir() 指向只读的 App Bundle，必须用可写目录
+    let report_dir = match std::env::var("HOME") {
+        Ok(home) => std::path::PathBuf::from(home).join("Desktop").join("analysis_reports"),
+        Err(_) => {
+            let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
+            cwd.join("analysis_reports")
+        }
+    };
     std::fs::create_dir_all(&report_dir).map_err(|e| e.to_string())?;
 
     // 生成文件名：股票名称_时间级别_日期.md

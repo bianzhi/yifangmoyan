@@ -111,6 +111,7 @@ const syncing = ref(false);  // 正在从网络同步数据（get_chart_data 内
 const syncingHistory = ref(false); // 正在扩展历史数据（光标左移触发）
 const syncingHistoryMsg = ref(""); // 扩展历史数据的反馈消息（"暂无更早数据" 等）
 const historyReachedEnd = ref(false); // 当前股票/级别是否已到最早数据（阻止重复触发）
+let unsubVisChange: ((range: any) => void) | null = null; // 取消 onVisibleRangeChange 订阅
 const error = ref("");
 const settings = ref<AnalysisSettings>({ ...DEFAULT_SETTINGS });
 const currentView = ref<"chart" | "sync">("chart");
@@ -737,8 +738,17 @@ function renderChart(historyAdded?: number) {
        ? chartData.value.klines.length - MAX_VISIBLE_KLINES
        : 0);
 
-    // 当可见范围的起始位置接近数据起始点（全文索引 < 50），触发历史数据扩展
-    // 但已到达最早数据时不再触发，避免无限循环
+    // Phase 1: 可见数据左边还有已加载但未显示的数据 → 先展开所有已加载数据
+    if (visRange.from < 50 && dataStartIdx > 0 && !fullDisplay && !syncingHistory.value && !historyReachedEnd.value) {
+      console.log(`[数据展开] 展开已加载数据，dataStartIdx=${dataStartIdx}`);
+      // Reveal all loaded data by re-rendering in fullDisplay mode
+      if (unsubVisChange) { timeScale.unsubscribeVisibleLogicalRangeChange(unsubVisChange); unsubVisChange = null; }
+      renderChart(1);
+      return;
+    }
+
+    // Phase 2: 全文索引接近 0，触发后端扩展历史数据
+    // 已到达最早数据时不再触发，避免无限循环
     const fullIndex = dataStartIdx + visRange.from;
     if (fullIndex < 50 && !syncingHistory.value && !historyReachedEnd.value) {
       const earliestK = chartData.value.klines[dataStartIdx];
@@ -810,10 +820,15 @@ function renderChart(historyAdded?: number) {
       });
     }
   };
+  // 取消旧订阅（renderChart 可能被多次调用），再注册新的
+  if (unsubVisChange) timeScale.unsubscribeVisibleLogicalRangeChange(unsubVisChange);
+  unsubVisChange = onVisibleRangeChange;
   timeScale.subscribeVisibleLogicalRangeChange(onVisibleRangeChange);
 
-  // ── 滚轮缩放：以光标位置为锚点 ──
+  // ── 滚轮缩放：以光标位置为锚点（仅垂直滚轮，水平留给触摸板平移）──
   const onWheel = (e: WheelEvent) => {
+    // 水平滚动占主导 = 触摸板左右滑动 = 不缩放，让图表自身处理平移
+    if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) return;
     e.preventDefault();
     const ts = mainChart!.timeScale();
     const visRange = ts.getVisibleLogicalRange();

@@ -12,13 +12,14 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_updater::Builder::new().build())
+        // updater: GitCode raw 链接返回 HTML → Rust panic，暂时禁用
+        // .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(AppState::new())
-        .setup(|app| {
+        .setup(|_app| {
             // 开发模式启用 devtools（右键 → 检查元素）
             #[cfg(debug_assertions)]
             {
-                let window = app.get_webview_window("main").unwrap();
+                let window = _app.get_webview_window("main").unwrap();
                 window.open_devtools();
             }
             Ok(())

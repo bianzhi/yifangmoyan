@@ -5,7 +5,7 @@
   "platforms": {
     "darwin-aarch64": {
       "signature": "",
-      "url": "https://gitcode.com/Ai3/yifangmoyan/raw/main/releases/v0.1.0/Yifang_0.1.0_aarch64.dmg"
+      "url": "https://github.com/YOUR_USERNAME/yifangmoyan-releases/releases/download/v0.1.0/Yifang_0.1.0_aarch64.dmg"
     }
   }
 }

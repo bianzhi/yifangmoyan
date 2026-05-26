@@ -37,7 +37,8 @@ import DataSyncPanel from "./components/DataSyncPanel.vue";
 import SignalPanel from "./components/SignalPanel.vue";
 import WatchlistPanel from "./components/WatchlistPanel.vue";
 import { useWatchlist, usePersistedSettings } from "./composables/useStorage";
-import { check } from "@tauri-apps/plugin-updater";
+// updater: GitCode raw 链接返回 HTML 导致 Rust 层 panic，暂时禁用
+// import { check } from "@tauri-apps/plugin-updater";
 
 // ===== 矩形图元：用于绘制中枢矩形 =====
 interface RectangleProps {
@@ -1519,15 +1520,14 @@ onMounted(async () => {
   };
   window.addEventListener("resize", onWindowResize);
 
-  // ===== 自动检查更新 =====
-  try {
-    const update = await check();
-    if (update && window.confirm(`发现新版本 ${update.version}\n\n更新说明：${update.body || "无"}\n\n是否立即下载并安装？`)) {
-      await update.downloadAndInstall();
-    }
-  } catch {
-    // 更新检查失败不影响主流程
-  }
+  // ===== 自动检查更新（已禁用：GitCode private repo raw 链接返回 HTML 导致 Rust panic）=====
+  // TODO: 迁移到 GitHub public release 后重新启用
+  // try {
+  //   const update = await check();
+  //   if (update && window.confirm(`发现新版本 ${update.version}\\n\\n更新说明：${update.body || "无"}\\n\\n是否立即下载并安装？`)) {
+  //     await update.downloadAndInstall();
+  //   }
+  // } catch { }
 
   // 键盘快捷键
   document.addEventListener("keydown", handleKeydown);

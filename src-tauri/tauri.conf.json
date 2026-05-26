@@ -26,11 +26,6 @@
         }
     },
     "plugins": {
-        "updater": {
-            "endpoints": [
-                "https://gitcode.com/Ai3/yifangmoyan/raw/main/releases/latest.json"
-            ]
-        }
     },
     "bundle": {
         "active": true,

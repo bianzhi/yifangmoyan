@@ -1,11 +1,11 @@
 {
   "version": "0.1.0",
   "notes": "墨岩K线 v0.1.0 首个测试版本\n\n功能:\n- K线图表展示（日线/周线/月线/30分钟/5分钟）\n- 缠论笔、线段、中枢、买卖点\n- 威科夫供需分析\n- MACD/RSI指标\n- 数据同步（新浪财经）",
-  "pub_date": "2025-01-17T00:00:00Z",
+  "pub_date": "2025-05-26T10:30:00Z",
   "platforms": {
     "darwin-aarch64": {
       "signature": "",
-      "url": "https://gitcode.com/Ai3/yifangmoyan/raw/main/releases/v0.1.0/墨岩K线_0.1.0_aarch64.dmg"
+      "url": "https://gitcode.com/Ai3/yifangmoyan/raw/main/releases/v0.1.0/Yifang_0.1.0_aarch64.dmg"
     }
   }
 }

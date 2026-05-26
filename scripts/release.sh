@@ -19,7 +19,7 @@ echo "[1/5] 正在编译 macOS 版本..."
 cargo tauri build --bundles dmg
 
 # Tauri 构建产物通常在 src-tauri/target/release/bundle/
-BUNDLE_DIR="src-tauri/target/release/bundle"
+BUNDLE_DIR="target/release/bundle"
 DMG_DIR="${BUNDLE_DIR}/dmg"
 DMG_FILE=$(ls -t "${DMG_DIR}"/*.dmg 2>/dev/null | head -1)
 
@@ -28,6 +28,7 @@ if [ ! -f "${DMG_FILE}" ]; then
     exit 1
 fi
 
+# 目标文件名：Yifang_{version}_{arch}.dmg (纯 ASCII，避免 URL 编码问题)
 DMG_NAME=$(basename "${DMG_FILE}")
 ARCH=""
 
@@ -47,16 +48,18 @@ else
     fi
 fi
 
+DMG_ASCII="Yifang_${VERSION}_${ARCH}.dmg"
+
 echo ""
 echo "[2/5] 构建完成: ${DMG_NAME}"
 echo "       架构: ${ARCH}"
 
-# 2. 创建版本目录并复制 DMG
+# 2. 创建版本目录并复制 DMG（重命名为 ASCII）
 RELEASE_DIR="releases/v${VERSION}"
 mkdir -p "${RELEASE_DIR}"
-cp "${DMG_FILE}" "${RELEASE_DIR}/"
+cp "${DMG_FILE}" "${RELEASE_DIR}/${DMG_ASCII}"
 
-echo "[3/5] DMG 已复制到 ${RELEASE_DIR}/"
+echo "[3/5] DMG 已复制到 ${RELEASE_DIR}/${DMG_ASCII}"
 
 # 3. 生成签名（如果启用了签名）
 # Tauri v2 使用 ZIP + 签名，如果签名不存在则跳过签名验证
@@ -71,7 +74,7 @@ fi
 # 4. 更新 latest.json 清单
 echo "[4/5] 更新 latest.json..."
 
-DMG_URL="https://gitcode.com/Ai3/yifangmoyan/raw/main/releases/v${VERSION}/${DMG_NAME}"
+DMG_URL="https://gitcode.com/Ai3/yifangmoyan/raw/main/releases/v${VERSION}/${DMG_ASCII}"
 
 # 平台键名
 OS_ARCH="darwin-${ARCH}"

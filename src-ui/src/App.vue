@@ -306,20 +306,21 @@ function toTime(dt: string): Time {
   //   2. BusinessDay 字符串 "YYYY-MM-DD"（仅日线及以上，timeVisible=true 时也可用）
   //   3. BusinessDay 对象 { year, month, day }
   //
-  // 关键：Date.parse("2024-01-15") 按 UTC 解析，而 Date.parse("2024-01-15 09:30") 按本地时间解析，
-  // 混用会导致时区偏移不一致，K线时间错乱无法渲染。
-  // 因此：纯日期格式直接用字符串（BusinessDay），带时间的统一用本地时间转 UTCTimestamp。
+  // lightweight-charts 将所有 UTCTimestamp 按 UTC 显示（不做本地时区转换），
+  // 因此通过 Date.UTC() 计算时间戳，使显示时间与数据中的本地时间一致。
+  // 纯日期格式直接用字符串（BusinessDay），不经过时间戳转换。
 
   if (/^\d{4}-\d{2}-\d{2}$/.test(dt)) {
     // 纯日期 "YYYY-MM-DD" → 直接作为 BusinessDay 字符串
     return dt as Time;
   }
-  // "YYYY-MM-DD HH:MM" 或 "YYYY-MM-DD HH:MM:SS" → 手动解析为本地时间 UTCTimestamp
-  // 避免用 Date.parse()，因为它对 "YYYY-MM-DD" 和 "YYYY-MM-DD HH:MM" 的时区处理不一致
+  // "YYYY-MM-DD HH:MM" 或 "YYYY-MM-DD HH:MM:SS" → 手动解析
+  // lightweight-charts 将所有 UTCTimestamp 按 UTC 显示（不做本地时区转换），
+  // 因此用 Date.UTC() 计算时间戳，使显示时间与数据中的本地时间一致。
   const m = dt.match(/^(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2})/);
   if (m) {
     const [, y, mo, d, h, mi] = m;
-    const sec = Math.floor(new Date(+y, +mo - 1, +d, +h, +mi).getTime() / 1000);
+    const sec = Math.floor(Date.UTC(+y, +mo - 1, +d, +h, +mi) / 1000);
     return sec as Time;
   }
   // 兜底：尝试 Date.parse

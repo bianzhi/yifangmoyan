@@ -110,6 +110,7 @@ const loading = ref(false);
 const syncing = ref(false);  // 正在从网络同步数据（get_chart_data 内置）
 const syncingHistory = ref(false); // 正在扩展历史数据（光标左移触发）
 const syncingHistoryMsg = ref(""); // 扩展历史数据的反馈消息（"暂无更早数据" 等）
+const historyReachedEnd = ref(false); // 当前股票/级别是否已到最早数据（阻止重复触发）
 const error = ref("");
 const settings = ref<AnalysisSettings>({ ...DEFAULT_SETTINGS });
 const currentView = ref<"chart" | "sync">("chart");
@@ -375,6 +376,9 @@ function renderChart(historyAdded?: number) {
       borderColor: "#2a2a4a",
       timeVisible: true,
       secondsVisible: false,
+    },
+    handleScale: {
+      mouseWheel: false,  // 禁用默认滚轮缩放，改用手动处理（以光标为锚点）
     },
   });
 
@@ -734,12 +738,9 @@ function renderChart(historyAdded?: number) {
        : 0);
 
     // 当可见范围的起始位置接近数据起始点（全文索引 < 50），触发历史数据扩展
-    // 注意：visRange.from 是 candleSeries 中的逻辑索引，dataStartIdx 是全文偏移量
-    // 两者相加得到该 bar 在全量 klines 中的真实索引
+    // 但已到达最早数据时不再触发，避免无限循环
     const fullIndex = dataStartIdx + visRange.from;
-    const nearBoundary = fullIndex < 50;
-
-    if (nearBoundary && !syncingHistory.value) {
+    if (fullIndex < 50 && !syncingHistory.value && !historyReachedEnd.value) {
       const earliestK = chartData.value.klines[dataStartIdx];
       if (!earliestK) return;
 
@@ -781,13 +782,15 @@ function renderChart(historyAdded?: number) {
                 const addedCount = newKlineCount - oldKlineCount;
                 chartData.value = data;
                 await nextTick();
-                // 重新渲染，但保留用户当前视角位置
-                // 传递新增的历史数据量，让 renderChart 从适当位置开始显示
-                renderChart(addedCount > 0 ? addedCount : undefined);
-                // 无新增数据时提示用户
+                // 无新增数据时提示用户，不重渲染图表
                 if (addedCount <= 0) {
                   syncingHistoryMsg.value = "已是最早数据";
+                  historyReachedEnd.value = true;  // 已到最早，阻止后续重复触发
                   setTimeout(() => { syncingHistoryMsg.value = ""; }, 2000);
+                } else {
+                  // 重新渲染，保留用户当前视角位置
+                  // 传递新增的历史数据量，让 renderChart 从适当位置开始显示
+                  renderChart(addedCount);
                 }
               } else {
                 console.log(`[历史扩展] 失败: ${state.msg}`);
@@ -808,6 +811,44 @@ function renderChart(historyAdded?: number) {
     }
   };
   timeScale.subscribeVisibleLogicalRangeChange(onVisibleRangeChange);
+
+  // ── 滚轮缩放：以光标位置为锚点 ──
+  const onWheel = (e: WheelEvent) => {
+    e.preventDefault();
+    const ts = mainChart!.timeScale();
+    const visRange = ts.getVisibleLogicalRange();
+    if (!visRange || visRange.from === null || visRange.to === null) return;
+
+    // 鼠标在 chart 容器中的 X 坐标
+    const rect = chartContainer.value!.getBoundingClientRect();
+    const mouseX = e.clientX - rect.left;
+
+    // 将坐标转换为逻辑索引（光标位置的 bar）
+    const cursorLogical = ts.coordinateToLogical(mouseX);
+    if (cursorLogical === null) return;
+
+    // 缩放系数：向上滚放大（范围缩小），向下滚缩小（范围扩大）
+    const zoomFactor = e.deltaY > 0 ? 1.15 : 0.87;
+    const currentRange = visRange.to - visRange.from;
+    let newRange = Math.max(5, Math.floor(currentRange * zoomFactor));
+    // 防止缩得太小或太大
+    if (newRange < 5) newRange = 5;
+    if (newRange > visibleKlines.length) newRange = visibleKlines.length;
+
+    // 保持光标位置的 bar 在视口中的比例不变
+    const cursorRatio = (cursorLogical - visRange.from) / currentRange;
+    let newFrom = cursorLogical - newRange * cursorRatio;
+    let newTo = newFrom + newRange;
+
+    // 边界限制
+    if (newFrom < 0) { newFrom = 0; newTo = newRange; }
+    if (newTo > visibleKlines.length) { newTo = visibleKlines.length; newFrom = newTo - newRange; }
+
+    try {
+      ts.setVisibleLogicalRange({ from: newFrom, to: newTo });
+    } catch (e) { /* 忽略范围设置错误 */ }
+  };
+  chartContainer.value!.addEventListener("wheel", onWheel, { passive: false });
 
   // 悬停事件
   mainChart.subscribeCrosshairMove((param) => {
@@ -1221,6 +1262,7 @@ function selectStock(sym: string, name?: string) {
   symbol.value = sym;
   persistedSymbol.value = sym;
   showSearch.value = false;
+  historyReachedEnd.value = false;  // 切换股票，重置最早数据标记
   // 保留搜索框中显示的股票名称
   if (name) {
     searchKeyword.value = name;
@@ -1248,6 +1290,7 @@ async function stopBgSyncFromChart() {
 function onTimeframeChange(tf: TimeFrame) {
   timeframe.value = tf;
   persistedTf.value = tf;
+  historyReachedEnd.value = false;  // 切换级别，重置最早数据标记
   loadData();
 }
 

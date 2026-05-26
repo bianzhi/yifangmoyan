@@ -37,6 +37,7 @@ import DataSyncPanel from "./components/DataSyncPanel.vue";
 import SignalPanel from "./components/SignalPanel.vue";
 import WatchlistPanel from "./components/WatchlistPanel.vue";
 import { useWatchlist, usePersistedSettings } from "./composables/useStorage";
+import { check } from "@tauri-apps/plugin-updater";
 
 // ===== 矩形图元：用于绘制中枢矩形 =====
 interface RectangleProps {
@@ -1517,6 +1518,16 @@ onMounted(async () => {
     }
   };
   window.addEventListener("resize", onWindowResize);
+
+  // ===== 自动检查更新 =====
+  try {
+    const update = await check();
+    if (update && window.confirm(`发现新版本 ${update.version}\n\n更新说明：${update.body || "无"}\n\n是否立即下载并安装？`)) {
+      await update.downloadAndInstall();
+    }
+  } catch {
+    // 更新检查失败不影响主流程
+  }
 
   // 键盘快捷键
   document.addEventListener("keydown", handleKeydown);

@@ -46,7 +46,6 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         with:
           projectPath: src-tauri
-          beforeBuildCommand: echo "frontend already built"
           args: --target x86_64-pc-windows-msvc
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}

@@ -4,9 +4,9 @@
     "version": "0.1.0",
     "identifier": "com.moyan.yifang",
     "build": {
-        "beforeDevCommand": "npm run dev",
+        "beforeDevCommand": "npm --prefix src-ui run dev",
         "devUrl": "http://localhost:5173",
-        "beforeBuildCommand": "npm run build",
+        "beforeBuildCommand": "npm --prefix src-ui run build",
         "frontendDist": "../src-ui/dist"
     },
     "app": {

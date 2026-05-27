@@ -24,5 +24,6 @@ Thumbs.db
 *.pdb
 **/__pycache__/
 
-# Keep release files
-!releases/
+# Release artifacts
+releases/
+*.dmg
